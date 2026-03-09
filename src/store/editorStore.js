@@ -81,7 +81,14 @@ export function resolvePagePadding(padding, bpId) {
   if (bpId === 'tablet') return p.tablet ?? p.desktop ?? ZERO_PAD;
   return p.desktop ?? ZERO_PAD;
 }
-export function getChildEls(elements, parentId) { return elements.filter(e => e.parentId === parentId); }
+export function getChildEls(elements, parentId) {
+  const parent = elements.find(e => e.id === parentId);
+  if (parent?.children?.length) {
+    // Return in parent.children order so reorderElementInParent is reflected
+    return parent.children.map(cid => elements.find(e => e.id === cid)).filter(Boolean);
+  }
+  return elements.filter(e => e.parentId === parentId);
+}
 export function findEl(elements, id) { return elements.find(e => e.id === id) ?? null; }
 
 // ── History helpers ──────────────────────────────────────────
@@ -348,6 +355,27 @@ export const useEditorStore = create((set, get) => {
           return e;
         });
       });
+    },
+
+    /** Eject element to root. Assigns a canvas position if the element had none (e.g. was relative/nested).
+     *  toOffCanvas=true places it beyond the artboard right edge. */
+    ejectElement(elementId, { toOffCanvas = false, artboardWidth = 1440 } = {}) {
+      const el = findEl(getEls(), elementId);
+      if (!el) return;
+      const wasNested = !!el.parentId;
+      const hasX = el.base.x != null;
+      const hasY = el.base.y != null;
+      get().reparentElement(elementId, null);
+      if (wasNested && (!hasX || !hasY)) {
+        get().updateElementLayout(elementId, 'desktop', {
+          x: toOffCanvas ? artboardWidth + 80 : 40,
+          y: 40,
+          width: el.base.width ?? 200,
+          height: el.base.height ?? 80,
+        });
+      } else if (toOffCanvas && hasX) {
+        get().updateElementLayout(elementId, 'desktop', { x: artboardWidth + 80 });
+      }
     },
 
     // ── History ────────────────────────────────────────────

@@ -202,7 +202,11 @@ html, body, #framebuilder-root {
   border-bottom: 1px solid transparent;
   transition: background 0.1s;
 }
+.fb-layer-item--drag-before { box-shadow: 0 -2px 0 0 var(--accent-light) !important; }
+.fb-layer-item--drag-after  { box-shadow: 0  2px 0 0 var(--accent-light) !important; }
+.fb-layer-item--drag-into   { background: rgba(99,102,241,0.18) !important; outline: 1px solid var(--accent-light); outline-offset: -1px; }
 .fb-layer-item:hover { background: var(--bg-panel-hover); }
+.fb-layer-item--hovered { background: rgba(99, 102, 241, 0.10); outline: 1px solid rgba(99,102,241,0.35); outline-offset: -1px; }
 .fb-layer-item--selected { background: var(--accent-dim) !important; }
 
 .fb-layer-icon {
@@ -587,10 +591,15 @@ html, body, #framebuilder-root {
   cursor: default;
   box-sizing: border-box;
 }
-/* Hover from layers panel: light blue tint border, no fill */
+/* Drop-target highlight: container shows accent outline only when dragged element hovers over it */
+.fb-el--drop-target {
+  outline: 3px solid var(--accent-light) !important;
+  outline-offset: -1px;
+}
+/* Hover from layers panel: thicker outline only, no background */
 .fb-el--hovered {
-  outline: 1.5px solid var(--accent-light);
-  outline-offset: 0px;
+  outline: 3px solid var(--accent-light);
+  outline-offset: -1px;
 }
 /* Selection: bounding box only — pure outline + handles, no fill change */
 .fb-el--selected {

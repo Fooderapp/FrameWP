@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
 
 const Icons = {
@@ -63,9 +63,10 @@ function checkOffCanvas(el, bpId, bpDef) {
   return (r.x + r.width <= 0 || r.x >= bpDef.width || r.y + r.height <= 0 || r.y >= bpDef.height);
 }
 
-function LayerItem({ el, depth, bpId, onReparent, offCanvas = false }) {
+function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }) {
   const selection         = useEditorStore(s => s.selection);
   const setSelection      = useEditorStore(s => s.setSelection);
+  const hoveredId         = useEditorStore(s => s.hoveredId);
   const setHoveredId      = useEditorStore(s => s.setHoveredId);
   const toggleVisibility  = useEditorStore(s => s.toggleElementVisibility);
   const updateElementBase = useEditorStore(s => s.updateElementBase);
@@ -73,6 +74,17 @@ function LayerItem({ el, depth, bpId, onReparent, offCanvas = false }) {
   const [expanded, setExpanded] = useState(true);
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState('');
+  const [dragOverPart, setDragOverPart] = useState(null); // 'before' | 'into' | 'after'
+  const itemRef = useRef(null);
+
+  const isSel = selection?.elementId === el.id;
+  const isHov = hoveredId === el.id;
+
+  useEffect(() => {
+    if (isSel && itemRef.current) {
+      itemRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [isSel]);
 
   const startRename = (e) => {
     e.stopPropagation();
@@ -85,8 +97,6 @@ function LayerItem({ el, depth, bpId, onReparent, offCanvas = false }) {
     if (trimmed) updateElementBase(el.id, { name: trimmed });
   };
 
-  const isSel = selection?.elementId === el.id;
-
   const handleDragStart = (e) => {
     e.stopPropagation();
     e.dataTransfer.setData('fb-layer-id', el.id);
@@ -97,21 +107,34 @@ function LayerItem({ el, depth, bpId, onReparent, offCanvas = false }) {
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
+    const rect = itemRef.current?.getBoundingClientRect();
+    if (rect) {
+      const rel = (e.clientY - rect.top) / rect.height;
+      setDragOverPart(rel < 0.33 ? 'before' : rel > 0.67 ? 'after' : 'into');
+    }
+  };
+  const handleDragLeave = (e) => {
+    if (!itemRef.current?.contains(e.relatedTarget)) setDragOverPart(null);
   };
 
   const handleDrop = (e) => {
     e.preventDefault();
     e.stopPropagation();
+    const part = dragOverPart;
+    setDragOverPart(null);
     const draggedId = e.dataTransfer.getData('fb-layer-id');
     if (draggedId && draggedId !== el.id) {
-      onReparent(draggedId, el.id);
+      if (part === 'before') onReorder(draggedId, el.id, false);
+      else if (part === 'after') onReorder(draggedId, el.id, true);
+      else onReparent(draggedId, el.id);
     }
   };
 
   return (
     <>
       <div
-        className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}`}
+        ref={itemRef}
+        className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${isHov && !isSel ? ' fb-layer-item--hovered' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}${dragOverPart === 'before' ? ' fb-layer-item--drag-before' : ''}${dragOverPart === 'after' ? ' fb-layer-item--drag-after' : ''}${dragOverPart === 'into' ? ' fb-layer-item--drag-into' : ''}`}
         style={{ paddingLeft: 12 + depth * 16 }}
         draggable
         onClick={() => setSelection({ elementId: el.id, bpId: bpId || 'desktop' })}
@@ -119,6 +142,7 @@ function LayerItem({ el, depth, bpId, onReparent, offCanvas = false }) {
         onMouseLeave={() => setHoveredId(null)}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {children.length > 0 ? (
@@ -172,6 +196,7 @@ function LayerItem({ el, depth, bpId, onReparent, offCanvas = false }) {
           depth={depth + 1}
           bpId={bpId}
           onReparent={onReparent}
+          onReorder={onReorder}
         />
       ))}
     </>
@@ -181,8 +206,10 @@ function LayerItem({ el, depth, bpId, onReparent, offCanvas = false }) {
 export default function LayersPanel() {
   const allElements     = useEditorStore(s => s.getAllElements());
   const bpDefs          = useEditorStore(s => s.breakpointDefs);
-  const reparentElement = useEditorStore(s => s.reparentElement);
-  const pushHistory     = useEditorStore(s => s.pushHistory);
+  const reparentElement        = useEditorStore(s => s.reparentElement);
+  const ejectElement           = useEditorStore(s => s.ejectElement);
+  const reorderElementInParent = useEditorStore(s => s.reorderElementInParent);
+  const pushHistory            = useEditorStore(s => s.pushHistory);
   const selection       = useEditorStore(s => s.selection);
   const artboardSel     = useEditorStore(s => s.artboardSel);
   const setArtboardSel  = useEditorStore(s => s.setArtboardSel);
@@ -195,11 +222,41 @@ export default function LayersPanel() {
     reparentElement(draggedId, newParentId);
     pushHistory();
   };
+  const handleReorder = (draggedId, targetId, insertAfter) => {
+    const allEls = useEditorStore.getState().getAllElements();
+    const target = allEls.find(e => e.id === targetId);
+    const dragged = allEls.find(e => e.id === draggedId);
+    if (!target || !dragged) return;
+    const targetParentId = target.parentId;
+    if (dragged.parentId !== targetParentId) {
+      reparentElement(draggedId, targetParentId ?? null);
+    }
+    const updEls = useEditorStore.getState().getAllElements();
+    const siblings = targetParentId
+      ? (updEls.find(e => e.id === targetParentId)?.children ?? []).filter(id => id !== draggedId)
+      : updEls.filter(e => !e.parentId && e.id !== draggedId).map(e => e.id);
+    let idx = siblings.indexOf(targetId);
+    if (insertAfter) idx = Math.max(0, idx + 1);
+    if (idx < 0) idx = 0;
+    reorderElementInParent(draggedId, idx);
+    pushHistory();
+  };
 
   const handleRootDrop = (e) => {
     const draggedId = e.dataTransfer.getData('fb-layer-id');
     if (draggedId) {
-      reparentElement(draggedId, null);
+      const bp = bpDefs[activeBpId] ?? bpDefs['desktop'];
+      ejectElement(draggedId, { toOffCanvas: true, artboardWidth: bp?.width ?? 1440 });
+      pushHistory();
+    }
+  };
+
+  const handleArtboardHeaderDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const draggedId = e.dataTransfer.getData('fb-layer-id');
+    if (draggedId) {
+      ejectElement(draggedId, { toOffCanvas: false });
       pushHistory();
     }
   };
@@ -231,13 +288,15 @@ export default function LayersPanel() {
             <div
               className="fb-layer-artboard-header"
               onClick={() => { setArtboardSel(bpId); setSelection(null); }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleArtboardHeaderDrop}
             >
               <span className="fb-layer-artboard-icon">{Icons[bpId] ?? Icons.desktop}</span>
               <span className="fb-layer-artboard-name">{bp.name}</span>
               <span className="fb-layer-artboard-dim">{bp.width}×{bp.height}</span>
             </div>
             {visibleEls.map(el => (
-              <LayerItem key={el.id} el={el} depth={0} bpId={bpId} offCanvas={false} onReparent={handleReparent} />
+              <LayerItem key={el.id} el={el} depth={0} bpId={bpId} offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} />
             ))}
             {visibleEls.length === 0 && (
               <div className="fb-layers-empty fb-layers-empty--bp">No elements</div>
@@ -248,14 +307,27 @@ export default function LayersPanel() {
 
       {/* Outside Artboards — elements off-canvas on any breakpoint */}
       {outsideEls.length > 0 && (
-        <div className="fb-layer-outside">
+        <div
+          className="fb-layer-outside"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const id = e.dataTransfer.getData('fb-layer-id');
+            if (id) {
+              const bp = bpDefs['desktop'];
+              ejectElement(id, { toOffCanvas: true, artboardWidth: bp?.width ?? 1440 });
+              pushHistory();
+            }
+          }}
+        >
           <div className="fb-layer-outside-header">
             <span>⚠</span>
             <span>Outside Artboards</span>
             <span className="fb-layer-artboard-dim">{outsideEls.length}</span>
           </div>
           {outsideEls.map(el => (
-            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas onReparent={handleReparent} />
+            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas onReparent={handleReparent} onReorder={handleReorder} />
           ))}
         </div>
       )}

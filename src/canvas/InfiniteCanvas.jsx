@@ -149,6 +149,7 @@ export default function InfiniteCanvas() {
   const spaceDown  = useRef(false);
   const [spacePanCursor, setSpacePanCursor] = useState(false);
   const [reorderTarget,    setReorderTarget]    = useState(null); // { insertBeforeId, bpId, parentId, dragId }
+  const [dropTargetId,     setDropTargetId]     = useState(null); // elementId hovered during a 'move' drag
   const [radiusDragInfo,   setRadiusDragInfo]   = useState(null); // { value, clientX, clientY }
   const [paddingDragInfo,  setPaddingDragInfo]  = useState(null); // { value, side, clientX, clientY }
   const clipboard = useRef(null);
@@ -325,10 +326,64 @@ export default function InfiniteCanvas() {
     drag.current.lastMY = e.clientY;
 
     if (type === 'move') {
-      useEditorStore.getState().updateElementLayout(elementId, bpId, {
-        x: startX + dxWorld,
-        y: startY + dyWorld,
-      });
+      // If nested, check whether cursor has left the parent container → eject to root
+      (() => {
+        const st = useEditorStore.getState();
+        const els = st.getAllElements();
+        const mvEl = els.find(ee => ee.id === elementId);
+        if (!mvEl?.parentId || drag.current.wasEjected) return;
+        const artboardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+        const parentDom   = artboardDom?.querySelector(`[data-id="${mvEl.parentId}"]`);
+        const parentRect  = parentDom?.getBoundingClientRect();
+        if (!parentRect) return;
+        const outside = e.clientX < parentRect.left || e.clientX > parentRect.right ||
+                        e.clientY < parentRect.top  || e.clientY > parentRect.bottom;
+        if (!outside) return;
+        drag.current.wasEjected = true;
+        const { x: pX, y: pY, scale: sc } = st.viewport;
+        const bp2  = st.breakpointDefs[bpId];
+        const pad2 = resolvePagePadding(st.getCurrentPage?.()?.padding, bpId);
+        const cRect = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+        const nx = Math.round((e.clientX - cRect.left - pX) / sc - bp2.x - (pad2?.left ?? 0) - (startW ?? 100) / 2);
+        const ny = Math.round((e.clientY - cRect.top  - pY) / sc - bp2.y - (pad2?.top  ?? 0) - (startH ?? 40)  / 2);
+        st.reparentElement(elementId, null);
+        st.updateElementLayout(elementId, bpId, { positionType: 'absolute', x: nx, y: ny });
+        drag.current = { type: 'move', bpId, elementId, startMX: e.clientX, startMY: e.clientY, startX: nx, startY: ny, wasEjected: true };
+        setDropTargetId(null);
+      })();
+      if (drag.current.wasEjected && drag.current.startMX !== undefined) {
+        // recalc after possible mutation above
+        const { startMX: sMX2, startMY: sMY2, startX: sX2, startY: sY2 } = drag.current;
+        const { scale: sc2 } = useEditorStore.getState().viewport;
+        useEditorStore.getState().updateElementLayout(elementId, bpId, {
+          x: sX2 + (e.clientX - sMX2) / sc2,
+          y: sY2 + (e.clientY - sMY2) / sc2,
+        });
+      } else {
+        useEditorStore.getState().updateElementLayout(elementId, bpId, {
+          x: startX + dxWorld,
+          y: startY + dyWorld,
+        });
+      }
+      // Live hit-test: find deepest .fb-el container under cursor that isn't the dragged element or its descendants
+      (() => {
+        const mvSt = useEditorStore.getState();
+        const mvEls = mvSt.getAllElements();
+        const mvEl = mvEls.find(e => e.id === elementId);
+        if (!mvEl) { setDropTargetId(null); return; }
+        const desc = new Set([elementId]);
+        const collectD = (id) => { const e = mvEls.find(x => x.id === id); (e?.children ?? []).forEach(cid => { desc.add(cid); collectD(cid); }); };
+        collectD(elementId);
+        const hits = document.elementsFromPoint(e.clientX, e.clientY);
+        let best = null;
+        for (const node of hits) {
+          const did = node.dataset?.id;
+          if (!did || desc.has(did)) continue;
+          const candidate = mvEls.find(x => x.id === did);
+          if (candidate) { best = candidate; break; }
+        }
+        setDropTargetId(best?.id ?? null);
+      })();
     } else if (type === 'artboard-move') {
       useEditorStore.getState().updateBreakpointDef(bpId, {
         x: drag.current.startBpX + dxWorld,
@@ -367,10 +422,40 @@ export default function InfiniteCanvas() {
       const rEl    = allEls.find(el => el.id === elementId);
       if (!rEl) return;
       const parentId = rEl.parentId;
-      // Check if cursor is outside artboard bounds → off-canvas eject mode
-      const bp = useEditorStore.getState().breakpointDefs[bpId];
       const artboardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
       const artboardRect = artboardDom?.getBoundingClientRect();
+
+      // Check if cursor left the parent container (drag out from container)
+      if (parentId && !drag.current.wasEjected) {
+        const parentDom  = artboardDom?.querySelector(`[data-id="${parentId}"]`);
+        const parentRect = parentDom?.getBoundingClientRect();
+        if (parentRect && (
+          e.clientX < parentRect.left || e.clientX > parentRect.right ||
+          e.clientY < parentRect.top  || e.clientY > parentRect.bottom
+        )) {
+          drag.current.wasEjected = true;
+          const state2 = useEditorStore.getState();
+          const rect2  = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+          const { x: pX2, y: pY2, scale: sc2 } = state2.viewport;
+          const bp2  = state2.breakpointDefs[bpId];
+          const pad2 = resolvePagePadding(state2.getCurrentPage?.()?.padding, bpId);
+          const wx2  = (e.clientX - rect2.left - pX2) / sc2 - bp2.x - (pad2?.left ?? 0);
+          const wy2  = (e.clientY - rect2.top  - pY2) / sc2 - bp2.y - (pad2?.top  ?? 0);
+          const rEl2 = state2.getAllElements().find(el => el.id === elementId);
+          const res2 = resolveElement(rEl2, bpId);
+          const nx2  = Math.round(wx2 - (res2.width  ?? 100) / 2);
+          const ny2  = Math.round(wy2 - (res2.height ?? 40)  / 2);
+          state2.reparentElement(elementId, null);
+          state2.updateElementLayout(elementId, bpId, { positionType: 'absolute', x: nx2, y: ny2 });
+          drag.current = { type: 'move', bpId, elementId, startMX: e.clientX, startMY: e.clientY, startX: nx2, startY: ny2, wasEjected: true };
+          setReorderTarget(null);
+          setDropTargetId(null);
+          return;
+        }
+      }
+
+      // Check if cursor is outside artboard bounds → off-canvas eject mode
+      const bp = useEditorStore.getState().breakpointDefs[bpId];
       const isOutside = artboardRect
         ? (e.clientX < artboardRect.left || e.clientX > artboardRect.right ||
            e.clientY < artboardRect.top  || e.clientY > artboardRect.bottom)
@@ -391,6 +476,7 @@ export default function InfiniteCanvas() {
           const res2 = resolveElement(rEl2, bpId);
           const nx2  = Math.round(wx2 - (res2.width  ?? 100) / 2);
           const ny2  = Math.round(wy2 - (res2.height ?? 40)  / 2);
+          state2.reparentElement(elementId, null);
           state2.updateElementLayout(elementId, bpId, { positionType: 'absolute', x: nx2, y: ny2 });
           drag.current = {
             type: 'move', bpId, elementId,
@@ -411,8 +497,12 @@ export default function InfiniteCanvas() {
         ? (allEls.find(p => p.id === parentId)?.children ?? []).filter(id => id !== elementId)
         : allEls.filter(el => !el.parentId && el.id !== elementId).map(el => el.id);
       let insertBeforeId = null;
+      // Search siblings within the parent DOM element if possible (avoids wrong-level matches)
+      const parentDomEl = parentId
+        ? artboardDom?.querySelector(`[data-id="${parentId}"]`)
+        : artboardDom;
       for (const sibId of siblingIds) {
-        const domEl = artboardDom?.querySelector(`[data-id="${sibId}"]`);
+        const domEl = parentDomEl?.querySelector(`[data-id="${sibId}"]`);
         if (!domEl) continue;
         const rect = domEl.getBoundingClientRect();
         const mid    = axis === 'x' ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
@@ -484,6 +574,70 @@ export default function InfiniteCanvas() {
           }
         }
         setReorderTarget(null);
+      }
+      setDropTargetId(null);
+      if (drag.current.type === 'move') {
+        const { elementId: mvId, bpId: mvBpId } = drag.current;
+        const mvState = useEditorStore.getState();
+        const mvAllEls = mvState.getAllElements();
+        const mvEl = mvAllEls.find(e => e.id === mvId);
+        // DOM-based hit-test: find deepest .fb-el under last cursor position that isn't the dragged element
+        if (mvEl) {
+          const resolved = resolveElement(mvEl, mvBpId);
+          const bp = mvState.breakpointDefs[mvBpId];
+          if (bp) {
+            const elW = typeof resolved.width  === 'number' ? resolved.width  : 100;
+            const elH = typeof resolved.height === 'number' ? resolved.height :  40;
+            const lastMX2 = drag.current.lastMX ?? drag.current.startMX;
+            const lastMY2 = drag.current.lastMY ?? drag.current.startMY;
+            const desc2 = new Set([mvId]);
+            const collectD2 = (id) => { const e = mvAllEls.find(x => x.id === id); (e?.children ?? []).forEach(cid => { desc2.add(cid); collectD2(cid); }); };
+            collectD2(mvId);
+            const hits2 = document.elementsFromPoint(lastMX2, lastMY2);
+            let targetContainer = null;
+            for (const node of hits2) {
+              const did = node.dataset?.id;
+              if (!did || desc2.has(did)) continue;
+              const candidate = mvAllEls.find(x => x.id === did);
+              if (candidate) { targetContainer = candidate; break; }
+            }
+            if (targetContainer) {
+              const tRes = resolveElement(targetContainer, mvBpId);
+              const isAutoLayout = tRes.styles?.display === 'flex';
+              if (isAutoLayout) {
+                mvState.updateElementLayout(mvId, mvBpId, { positionType: 'relative' });
+                mvState.reparentElement(mvId, targetContainer.id);
+              } else {
+                // Compute position relative to the target container via DOM
+                const artboardDom2 = document.querySelector(`.fb-artboard[data-bp="${mvBpId}"]`);
+                const parentDom2   = artboardDom2?.querySelector(`[data-id="${targetContainer.id}"]`);
+                const elDom2       = artboardDom2?.querySelector(`[data-id="${mvId}"]`);
+                const parentRect2  = parentDom2?.getBoundingClientRect();
+                const elRect2      = elDom2?.getBoundingClientRect();
+                const { scale: sc3 } = mvState.viewport;
+                const relX = parentRect2 && elRect2 ? Math.round((elRect2.left - parentRect2.left) / sc3) : 0;
+                const relY = parentRect2 && elRect2 ? Math.round((elRect2.top  - parentRect2.top)  / sc3) : 0;
+                mvState.updateElementLayout(mvId, mvBpId, {
+                  positionType: 'absolute',
+                  widthMode: 'fixed', heightMode: 'fixed',
+                  width: elW, height: elH,
+                  x: relX, y: relY,
+                });
+                mvState.reparentElement(mvId, targetContainer.id);
+              }
+            } else {
+              // Dropped on artboard / empty canvas → ensure absolute + fixed
+              if (mvEl.parentId) {
+                mvState.reparentElement(mvId, null);
+              }
+              mvState.updateElementLayout(mvId, mvBpId, {
+                positionType: 'absolute',
+                widthMode: 'fixed', heightMode: 'fixed',
+                width: elW, height: elH,
+              });
+            }
+          }
+        }
       }
       if (drag.current.type === 'radius') {
         setRadiusDragInfo(null);
@@ -734,6 +888,7 @@ export default function InfiniteCanvas() {
             onStartRadiusDrag={startRadiusDrag}
             onStartPaddingDrag={startElementPaddingDrag}
             reorderTarget={reorderTarget}
+            dropTargetId={dropTargetId}
           />
         ))}
         <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} />

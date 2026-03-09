@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
 
-export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag, onStartResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag }) {
+export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget }) {
   const [dropOver, setDropOver] = useState(false);
 
   const el             = useEditorStore(s => s.getAllElements().find(e => e.id === elementId));
   const children       = useEditorStore(s => s.getChildElements(elementId));
   const setSelection   = useEditorStore(s => s.setSelection);
+  const setHoveredId   = useEditorStore(s => s.setHoveredId);
   const deleteElement  = useEditorStore(s => s.deleteElement);
   const selection      = useEditorStore(s => s.selection);
   const isHovered      = useEditorStore(s => s.hoveredId === elementId);
@@ -36,7 +37,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
       setSelection({ elementId: id, bpId });
       return;
     }
-    onStartDrag(e);
+    onStartElementDrag && onStartElementDrag(e, bpId, { id });
   };
 
   const handleKeyDown = (e) => {
@@ -97,7 +98,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
     alignItems:       styles?.alignItems,
     justifyContent:   styles?.justifyContent,
     boxShadow:        styles?.boxShadow || undefined,
-    outline: dropOver ? '2px dashed #3b82f6' : undefined,
+    outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
     cursor:  locked ? 'not-allowed' : 'move',
     zIndex:  isSelected ? 9999 : undefined,
     boxSizing: 'border-box',
@@ -105,9 +106,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
 
   return (
     <div
-      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}`}
+      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}`}
       style={inlineStyle}
       onMouseDown={handleMouseDown}
+      onMouseEnter={(e) => { e.stopPropagation(); setHoveredId(id); }}
+      onMouseLeave={() => setHoveredId(null)}
       onKeyDown={handleKeyDown}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -143,7 +146,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
             <div
               key={h}
               className={`fb-sel-overlay__handle fb-sel-overlay__handle--${h}`}
-              onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onStartResize && onStartResize(e, h); }}
+              onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onStartElementResize && onStartElementResize(e, bpId, { id }, h); }}
             />
           ))}
           {onStartRadiusDrag && (() => {
@@ -176,25 +179,32 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
       )}
 
       {/* Child elements — rendered relative to this element */}
-      {children.map(child => (
-        <CanvasElement
-          key={child.id}
-          elementId={child.id}
-          bpId={bpId}
-          isSelected={selection?.elementId === child.id}
-          onStartDrag={(e) => {
-            e.stopPropagation();
-            onStartDrag(e);
-          }}
-          onStartResize={(e, handle) => {
-            e.stopPropagation();
-            onStartResize(e, handle);
-          }}
-          onDropOntoElement={onDropOntoElement}
-          onStartRadiusDrag={onStartRadiusDrag}
-          onStartPaddingDrag={onStartPaddingDrag}
-        />
-      ))}
+      {children.map(child => {
+        const showBefore = reorderTarget?.bpId === bpId
+          && reorderTarget?.parentId === id
+          && reorderTarget?.insertBeforeId === child.id;
+        return (
+          <React.Fragment key={child.id}>
+            {showBefore && <div className="fb-reorder-indicator" />}
+            <CanvasElement
+              elementId={child.id}
+              bpId={bpId}
+              isSelected={selection?.elementId === child.id}
+              isDropTarget={dropTargetId === child.id}
+              dropTargetId={dropTargetId}
+              onStartElementDrag={onStartElementDrag}
+              onStartElementResize={onStartElementResize}
+              onDropOntoElement={onDropOntoElement}
+              onStartRadiusDrag={onStartRadiusDrag}
+              onStartPaddingDrag={onStartPaddingDrag}
+              reorderTarget={reorderTarget}
+            />
+          </React.Fragment>
+        );
+      })}
+      {reorderTarget?.bpId === bpId && reorderTarget?.parentId === id && !reorderTarget?.insertBeforeId && (
+        <div className="fb-reorder-indicator" />
+      )}
     </div>
   );
 }

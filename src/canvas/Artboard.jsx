@@ -48,6 +48,7 @@ export default function Artboard({
   onStartRadiusDrag,
   onStartPaddingDrag,
   reorderTarget,
+  dropTargetId,
 }) {
   const allElements      = useEditorStore(s => s.getAllElements());
   const breakpointDefs   = useEditorStore(s => s.breakpointDefs);
@@ -152,11 +153,14 @@ export default function Artboard({
                   elementId={el.id}
                   bpId={bp.id}
                   isSelected={selection?.elementId === el.id}
-                  onStartDrag={(e) => onStartElementDrag(e, bp.id, el)}
-                  onStartResize={(e, handle) => onStartResize(e, bp.id, el, handle)}
+                  isDropTarget={dropTargetId === el.id}
+                  dropTargetId={dropTargetId}
+                  onStartElementDrag={onStartElementDrag}
+                  onStartElementResize={onStartResize}
                   onDropOntoElement={onDropOntoElement}
                   onStartRadiusDrag={(e, elementId, startRadius, corner) => onStartRadiusDrag && onStartRadiusDrag(e, bp.id, elementId, startRadius, corner)}
                   onStartPaddingDrag={(e, elementId, side) => onStartPaddingDrag && onStartPaddingDrag(e, bp.id, elementId, side)}
+                  reorderTarget={reorderTarget}
                 />
               </React.Fragment>
             );
@@ -201,8 +205,8 @@ export default function Artboard({
                 elementId={el.id}
                 bpId={bp.id}
                 isSelected={selection?.elementId === el.id}
-                onStartDrag={(e) => onStartElementDrag(e, bp.id, el)}
-                onStartResize={(e, handle) => onStartResize(e, bp.id, el, handle)}
+                onStartElementDrag={onStartElementDrag}
+                onStartElementResize={onStartResize}
                 onDropOntoElement={onDropOntoElement}
               />
             ))}
