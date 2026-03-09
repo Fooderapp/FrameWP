@@ -229,6 +229,15 @@ class FrameBuilder_Exporter {
 			if ( is_numeric( $val ) && $kebab === 'border-radius' ) $val .= 'px';
 			$inline .= $kebab . ':' . $this->sanitize_css_value( $val ) . ';';
 		}
+		// Independent corner radius overrides the shorthand set above
+		if ( ( $styles['borderRadiusMode'] ?? '' ) === 'independent' ) {
+			$br = (float) ( $styles['borderRadius'] ?? 0 );
+			$tl = (float) ( $styles['borderRadiusTL'] ?? $br );
+			$tr = (float) ( $styles['borderRadiusTR'] ?? $br );
+			$brc = (float) ( $styles['borderRadiusBR'] ?? $br );
+			$bl = (float) ( $styles['borderRadiusBL'] ?? $br );
+			$inline .= "border-radius:{$tl}px {$tr}px {$brc}px {$bl}px;";
+		}
 
 		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '">';
 
@@ -360,6 +369,16 @@ class FrameBuilder_Exporter {
 				$val .= 'px';
 			}
 			$rules[] = $css_key . ': ' . $this->sanitize_css_value( $val );
+		}
+		// Independent corner radius
+		if ( ( $styles['borderRadiusMode'] ?? '' ) === 'independent' ) {
+			$br = (float) ( $styles['borderRadius'] ?? 0 );
+			$tl = (float) ( $styles['borderRadiusTL'] ?? $br );
+			$tr = (float) ( $styles['borderRadiusTR'] ?? $br );
+			$brc = (float) ( $styles['borderRadiusBR'] ?? $br );
+			$bl = (float) ( $styles['borderRadiusBL'] ?? $br );
+			$rules = array_filter( $rules, fn( $r ) => strpos( $r, 'border-radius' ) === false );
+			$rules[] = "border-radius: {$tl}px {$tr}px {$brc}px {$bl}px";
 		}
 
 		$this->css[] = $selector . ' { ' . implode( '; ', $rules ) . ' }';

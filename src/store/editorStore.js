@@ -280,6 +280,45 @@ export const useEditorStore = create((set, get) => {
       get().updateElementLayout(elementId, bpId, { hidden: !resolved.hidden });
     },
 
+    /** Reorder element among its siblings (same parent or root).
+     *  newIndex is 0-based among siblings excluding the element itself. */
+    reorderElementInParent(elementId, newIndex) {
+      withPage(els => {
+        const el = findEl(els, elementId);
+        if (!el) return els;
+        const parentId = el.parentId;
+        if (parentId) {
+          return els.map(e => {
+            if (e.id !== parentId) return e;
+            const children = [...(e.children ?? [])];
+            const cur = children.indexOf(elementId);
+            if (cur === -1) return e;
+            children.splice(cur, 1);
+            children.splice(Math.min(Math.max(0, newIndex), children.length), 0, elementId);
+            return { ...e, children };
+          });
+        } else {
+          const without = els.filter(e => e.id !== elementId);
+          let rootCount = 0;
+          let insertAt = without.length;
+          for (let i = 0; i < without.length; i++) {
+            if (!without[i].parentId) {
+              if (rootCount === newIndex) { insertAt = i; break; }
+              rootCount++;
+            }
+          }
+          const result = [...without];
+          result.splice(insertAt, 0, el);
+          return result;
+        }
+      });
+    },
+
+    /** Bulk-add a flat array of pre-cloned elements (for paste). */
+    addElements(elements) {
+      withPage(els => [...els, ...elements]);
+    },
+
     /** Move element under a new parent (or null = root). Prevents circular nesting. */
     reparentElement(elementId, newParentId) {
       if (elementId === newParentId) return;

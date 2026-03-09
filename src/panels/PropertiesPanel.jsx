@@ -458,12 +458,36 @@ export default function PropertiesPanel() {
           {/* Radius */}
           <div className="fb-prop-row">
             <span className="fb-prop-label">Radius</span>
-            <NumberInput
-              value={s.borderRadius ?? 0}
-              min={0}
-              onChange={v => updS('borderRadius', v)}
-            />
+            <div style={{ display: 'flex', gap: 4 }}>
+              <div
+                className={`fb-icon-btn${(s.borderRadiusMode ?? 'linked') === 'linked' ? ' fb-icon-btn--active' : ''}`}
+                title="All corners equal" style={{ fontSize: 11, padding: '0 6px' }}
+                onClick={() => { updS('borderRadiusMode', 'linked'); commit(); }}
+              >⊔ All</div>
+              <div
+                className={`fb-icon-btn${s.borderRadiusMode === 'independent' ? ' fb-icon-btn--active' : ''}`}
+                title="Individual corners" style={{ fontSize: 11, padding: '0 6px' }}
+                onClick={() => { updS('borderRadiusMode', 'independent'); commit(); }}
+              >⊓ ×4</div>
+            </div>
           </div>
+          {(s.borderRadiusMode ?? 'linked') === 'linked' ? (
+            <div className="fb-prop-row">
+              <span className="fb-prop-label" />
+              <NumberInput value={s.borderRadius ?? 0} min={0} onChange={v => { updS('borderRadius', v); commit(); }} />
+            </div>
+          ) : (
+            <>
+              <div className="fb-quad" style={{ marginTop: 4 }}>
+                <NumberInput value={s.borderRadiusTL ?? s.borderRadius ?? 0} min={0} label="TL" onChange={v => { updS('borderRadiusTL', v); commit(); }} />
+                <NumberInput value={s.borderRadiusTR ?? s.borderRadius ?? 0} min={0} label="TR" onChange={v => { updS('borderRadiusTR', v); commit(); }} />
+              </div>
+              <div className="fb-quad" style={{ marginTop: 4 }}>
+                <NumberInput value={s.borderRadiusBL ?? s.borderRadius ?? 0} min={0} label="BL" onChange={v => { updS('borderRadiusBL', v); commit(); }} />
+                <NumberInput value={s.borderRadiusBR ?? s.borderRadius ?? 0} min={0} label="BR" onChange={v => { updS('borderRadiusBR', v); commit(); }} />
+              </div>
+            </>
+          )}
           {/* Width */}
           <div className="fb-prop-row">
             <span className="fb-prop-label">Width</span>

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
 
-export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag, onStartResize, onDropOntoElement }) {
+export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag, onStartResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag }) {
   const [dropOver, setDropOver] = useState(false);
 
   const el             = useEditorStore(s => s.getAllElements().find(e => e.id === elementId));
@@ -71,7 +71,16 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
     ),
     transform: rotation ? `rotate(${rotation}deg)` : undefined,
     backgroundColor:  styles?.backgroundColor,
-    borderRadius:     typeof styles?.borderRadius === 'number' ? styles.borderRadius + 'px' : styles?.borderRadius,
+    borderRadius: (() => {
+      if (styles?.borderRadiusMode === 'independent') {
+        const tl = typeof styles.borderRadiusTL === 'number' ? styles.borderRadiusTL : (styles.borderRadius ?? 0);
+        const tr = typeof styles.borderRadiusTR === 'number' ? styles.borderRadiusTR : (styles.borderRadius ?? 0);
+        const br = typeof styles.borderRadiusBR === 'number' ? styles.borderRadiusBR : (styles.borderRadius ?? 0);
+        const bl = typeof styles.borderRadiusBL === 'number' ? styles.borderRadiusBL : (styles.borderRadius ?? 0);
+        return `${tl}px ${tr}px ${br}px ${bl}px`;
+      }
+      return typeof styles?.borderRadius === 'number' ? styles.borderRadius + 'px' : styles?.borderRadius;
+    })(),
     border: (styles?.borderWidth > 0)
       ? `${styles.borderWidth}px ${styles.borderStyle || 'solid'} ${styles.borderColor || '#000'}`
       : undefined,
@@ -106,6 +115,27 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
       tabIndex={isSelected ? 0 : -1}
       data-id={id}
     >
+      {/* Padding handles — shaded zones + drag lines (when selected and padding > 0) */}
+      {isSelected && !locked && onStartPaddingDrag && (() => {
+        const toNum = v => typeof v === 'number' ? v : parseFloat(v) || 0;
+        const pt = toNum(styles?.paddingTop);
+        const pr = toNum(styles?.paddingRight);
+        const pb = toNum(styles?.paddingBottom);
+        const pl = toNum(styles?.paddingLeft);
+        if (pt === 0 && pr === 0 && pb === 0 && pl === 0) return null;
+        return (
+          <>
+            {pt > 0 && <div className="fb-pad-zone fb-pad-zone--top"    style={{ height: pt }} />}
+            {pb > 0 && <div className="fb-pad-zone fb-pad-zone--bottom" style={{ height: pb }} />}
+            {pl > 0 && <div className="fb-pad-zone fb-pad-zone--left"   style={{ width: pl, top: pt, bottom: pb }} />}
+            {pr > 0 && <div className="fb-pad-zone fb-pad-zone--right"  style={{ width: pr, top: pt, bottom: pb }} />}
+            {pt > 0 && <div className="fb-pad-line fb-pad-line--top"    style={{ top:    pt }} onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onStartPaddingDrag(e, id, 'top');    }} />}
+            {pb > 0 && <div className="fb-pad-line fb-pad-line--bottom" style={{ bottom: pb }} onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onStartPaddingDrag(e, id, 'bottom'); }} />}
+            {pl > 0 && <div className="fb-pad-line fb-pad-line--left"   style={{ left:   pl }} onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onStartPaddingDrag(e, id, 'left');   }} />}
+            {pr > 0 && <div className="fb-pad-line fb-pad-line--right"  style={{ right:  pr }} onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onStartPaddingDrag(e, id, 'right');  }} />}
+          </>
+        );
+      })()}
       {/* Inline resize handles for relative-positioned selected elements */}
       {isRelative && isSelected && !locked && (
         <div className="fb-el-handles-wrap">
@@ -116,6 +146,32 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
               onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onStartResize && onStartResize(e, h); }}
             />
           ))}
+          {onStartRadiusDrag && (() => {
+            const isIndep = resolved.styles?.borderRadiusMode === 'independent';
+            const corners = isIndep
+              ? [
+                  { corner: 'TL', style: { top: 'calc(10px * var(--inv-scale,1))',    left:  'calc(10px * var(--inv-scale,1))' } },
+                  { corner: 'TR', style: { top: 'calc(10px * var(--inv-scale,1))',    right: 'calc(10px * var(--inv-scale,1))' } },
+                  { corner: 'BL', style: { bottom: 'calc(10px * var(--inv-scale,1))', left:  'calc(10px * var(--inv-scale,1))' } },
+                  { corner: 'BR', style: { bottom: 'calc(10px * var(--inv-scale,1))', right: 'calc(10px * var(--inv-scale,1))' } },
+                ]
+              : [{ corner: null, style: { top: 'calc(10px * var(--inv-scale,1))', left: 'calc(10px * var(--inv-scale,1))' } }];
+            return corners.map(({ corner, style }) => (
+              <div
+                key={corner ?? 'all'}
+                className="fb-radius-handle"
+                style={style}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  const sk   = corner ? `borderRadius${corner}` : 'borderRadius';
+                  const rv   = resolved.styles?.[sk] ?? resolved.styles?.borderRadius;
+                  const startR = typeof rv === 'number' ? rv : parseFloat(rv) || 0;
+                  onStartRadiusDrag(e, id, startR, corner);
+                }}
+              />
+            ));
+          })()}
         </div>
       )}
 
@@ -135,6 +191,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, onStartDrag
             onStartResize(e, handle);
           }}
           onDropOntoElement={onDropOntoElement}
+          onStartRadiusDrag={onStartRadiusDrag}
+          onStartPaddingDrag={onStartPaddingDrag}
         />
       ))}
     </div>

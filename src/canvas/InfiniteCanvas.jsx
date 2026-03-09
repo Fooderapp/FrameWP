@@ -7,9 +7,28 @@ const MAX_SCALE = 8;
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
 
+// ── Copy/paste helpers ─────────────────────────────────────────
+let _cpSeq = 0;
+function cloneSubtree(subtree, rootId) {
+  const idMap = {};
+  subtree.forEach(el => {
+    idMap[el.id] = `fr-${Date.now()}-${++_cpSeq}-${Math.random().toString(36).slice(2, 5)}`;
+  });
+  return subtree.map(el => ({
+    ...el,
+    id: idMap[el.id],
+    parentId: idMap[el.parentId] ?? null,
+    children: (el.children ?? []).map(cid => idMap[cid]).filter(Boolean),
+    base: el.id === rootId
+      ? { ...el.base, x: (el.base.x ?? 0) + 20, y: (el.base.y ?? 0) + 20 }
+      : { ...el.base },
+    overrides: { ...(el.overrides ?? {}) },
+  }));
+}
+
 /** Renders a bounding-box overlay in world-space, as a sibling of artboards.
  *  Not clipped by artboard's overflow:hidden, so it shows even for overflowing elements. */
-function SelectionOverlay({ onStartResize, onStartMove }) {
+function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
   const selection   = useEditorStore(s => s.selection);
   const bpDefs      = useEditorStore(s => s.breakpointDefs);
   const allElements = useEditorStore(s => s.getAllElements());
@@ -39,11 +58,16 @@ function SelectionOverlay({ onStartResize, onStartMove }) {
     cur = parent;
   }
   const pad    = resolvePagePadding(page?.padding, selection.bpId);
-  const worldX = bp.x + (pad?.left ?? 0) + absX;
-  const worldY = bp.y + (pad?.top  ?? 0) + absY;
   const w        = resolved.width  ?? 100;
   const h        = resolved.height ?? 100;
   const rotation = resolved.rotation;
+  // Off-canvas root elements live outside fb-bp-inner (no padding offset applied)
+  const isElOffCanvas = !el.parentId && (
+    absX + w <= 0 || absX >= bp.width ||
+    absY + h <= 0 || absY >= bp.height
+  );
+  const worldX = bp.x + (isElOffCanvas ? 0 : (pad?.left ?? 0)) + absX;
+  const worldY = bp.y + (isElOffCanvas ? 0 : (pad?.top  ?? 0)) + absY;
 
   return (
     <div
@@ -72,6 +96,32 @@ function SelectionOverlay({ onStartResize, onStartMove }) {
           }}
         />
       ))}
+      {!el.locked && onStartRadiusDrag && (() => {
+        const isIndep = resolved.styles?.borderRadiusMode === 'independent';
+        const corners = isIndep
+          ? [
+              { corner: 'TL', style: { top: 'calc(10px * var(--inv-scale,1))',    left:  'calc(10px * var(--inv-scale,1))' } },
+              { corner: 'TR', style: { top: 'calc(10px * var(--inv-scale,1))',    right: 'calc(10px * var(--inv-scale,1))' } },
+              { corner: 'BL', style: { bottom: 'calc(10px * var(--inv-scale,1))', left:  'calc(10px * var(--inv-scale,1))' } },
+              { corner: 'BR', style: { bottom: 'calc(10px * var(--inv-scale,1))', right: 'calc(10px * var(--inv-scale,1))' } },
+            ]
+          : [{ corner: null, style: { top: 'calc(10px * var(--inv-scale,1))', left: 'calc(10px * var(--inv-scale,1))' } }];
+        return corners.map(({ corner, style }) => (
+          <div
+            key={corner ?? 'all'}
+            className="fb-radius-handle"
+            style={style}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              const sk    = corner ? `borderRadius${corner}` : 'borderRadius';
+              const rv    = resolved.styles?.[sk] ?? resolved.styles?.borderRadius;
+              const startR = typeof rv === 'number' ? rv : parseFloat(rv) || 0;
+              onStartRadiusDrag(e, selection.bpId, el.id, startR, corner);
+            }}
+          />
+        ));
+      })()}
     </div>
   );
 }
@@ -98,6 +148,10 @@ export default function InfiniteCanvas() {
   const panStart   = useRef({ x: 0, y: 0 });
   const spaceDown  = useRef(false);
   const [spacePanCursor, setSpacePanCursor] = useState(false);
+  const [reorderTarget,    setReorderTarget]    = useState(null); // { insertBeforeId, bpId, parentId, dragId }
+  const [radiusDragInfo,   setRadiusDragInfo]   = useState(null); // { value, clientX, clientY }
+  const [paddingDragInfo,  setPaddingDragInfo]  = useState(null); // { value, side, clientX, clientY }
+  const clipboard = useRef(null);
 
   // ── Drag state ─────────────────────────────────────────────
   const drag = useRef(null);
@@ -117,6 +171,51 @@ export default function InfiniteCanvas() {
         e.preventDefault();
         if (e.shiftKey) useEditorStore.getState().redo();
         else useEditorStore.getState().undo();
+      }
+      // Arrow nudge (1px, or 10px with Shift)
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && !e.target.matches('input,textarea')) {
+        const { selection } = useEditorStore.getState();
+        if (!selection) return;
+        e.preventDefault();
+        const nudgeEl = useEditorStore.getState().getAllElements().find(el => el.id === selection.elementId);
+        if (!nudgeEl || nudgeEl.locked) return;
+        const nudgeRes = resolveElement(nudgeEl, selection.bpId);
+        if (nudgeRes.positionType === 'relative') return;
+        const step = e.shiftKey ? 10 : 1;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp'   ? -step : e.key === 'ArrowDown'  ? step : 0;
+        useEditorStore.getState().updateElementLayout(selection.elementId, selection.bpId, {
+          x: (nudgeRes.x ?? 0) + dx,
+          y: (nudgeRes.y ?? 0) + dy,
+        });
+        useEditorStore.getState().pushHistory();
+      }
+      // Copy (Cmd/Ctrl+C)
+      if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !e.target.matches('input,textarea')) {
+        const { selection } = useEditorStore.getState();
+        if (!selection) return;
+        const allEls = useEditorStore.getState().getAllElements();
+        const rootEl = allEls.find(el => el.id === selection.elementId);
+        if (!rootEl) return;
+        const subtree = [];
+        const collectSubtree = (id) => {
+          const elem = allEls.find(el => el.id === id);
+          if (!elem) return;
+          subtree.push(elem);
+          (elem.children ?? []).forEach(collectSubtree);
+        };
+        collectSubtree(rootEl.id);
+        clipboard.current = { subtree, rootId: rootEl.id, bpId: selection.bpId };
+      }
+      // Paste (Cmd/Ctrl+V)
+      if ((e.metaKey || e.ctrlKey) && e.key === 'v' && !e.target.matches('input,textarea')) {
+        if (!clipboard.current) return;
+        const { subtree, rootId, bpId: copiedBpId } = clipboard.current;
+        const currentBpId = useEditorStore.getState().selection?.bpId ?? copiedBpId;
+        const cloned = cloneSubtree(subtree, rootId);
+        useEditorStore.getState().addElements(cloned);
+        useEditorStore.getState().setSelection({ elementId: cloned[0].id, bpId: currentBpId });
+        useEditorStore.getState().pushHistory();
       }
     };
     const onKeyUp = (e) => {
@@ -194,7 +293,7 @@ export default function InfiniteCanvas() {
       isPanning.current = true;
       panOrigin.current = { x: e.clientX, y: e.clientY };
       panStart.current  = { x: viewport.x, y: viewport.y };
-    } else if (e.button === 0 && e.target === worldRef.current) {
+    } else if (e.button === 0 && (e.target === worldRef.current || e.target === containerRef.current)) {
       setSelection(null);
       setArtboardSel(null);
     }
@@ -221,6 +320,9 @@ export default function InfiniteCanvas() {
     const dyScreen = e.clientY - startMY;
     const dxWorld  = dxScreen / scale;
     const dyWorld  = dyScreen / scale;
+    // Track last mouse position (used for off-canvas eject)
+    drag.current.lastMX = e.clientX;
+    drag.current.lastMY = e.clientY;
 
     if (type === 'move') {
       useEditorStore.getState().updateElementLayout(elementId, bpId, {
@@ -244,6 +346,7 @@ export default function InfiniteCanvas() {
       if (side === 'left')   newPad.left   = Math.max(0, startPad.left   + dxWorld);
       if (side === 'right')  newPad.right  = Math.max(0, startPad.right  - dxWorld);
       useEditorStore.getState().setPagePadding(bpId, newPad);
+      setPaddingDragInfo({ side, value: Math.round(newPad[side]), clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'resize') {
       let newX = startX, newY = startY, newW = startW, newH = startH;
       switch (handle) {
@@ -258,6 +361,87 @@ export default function InfiniteCanvas() {
         default: break;
       }
       useEditorStore.getState().updateElementLayout(elementId, bpId, { x: newX, y: newY, width: newW, height: newH });
+    } else if (type === 'reorder') {
+      drag.current.hasMoved = true;
+      const allEls = useEditorStore.getState().getAllElements();
+      const rEl    = allEls.find(el => el.id === elementId);
+      if (!rEl) return;
+      const parentId = rEl.parentId;
+      // Check if cursor is outside artboard bounds → off-canvas eject mode
+      const bp = useEditorStore.getState().breakpointDefs[bpId];
+      const artboardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+      const artboardRect = artboardDom?.getBoundingClientRect();
+      const isOutside = artboardRect
+        ? (e.clientX < artboardRect.left || e.clientX > artboardRect.right ||
+           e.clientY < artboardRect.top  || e.clientY > artboardRect.bottom)
+        : false;
+      drag.current.reorderOffCanvas = isOutside;
+      if (isOutside) {
+        setReorderTarget(null);
+        // Immediately eject to absolute so element tracks cursor visually
+        if (!drag.current.wasEjected) {
+          drag.current.wasEjected = true;
+          const state2 = useEditorStore.getState();
+          const rect2  = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+          const { x: pX2, y: pY2, scale: sc2 } = state2.viewport;
+          const bp2  = state2.breakpointDefs[bpId];
+          const wx2  = (e.clientX - rect2.left - pX2) / sc2 - bp2.x;
+          const wy2  = (e.clientY - rect2.top  - pY2) / sc2 - bp2.y;
+          const rEl2 = state2.getAllElements().find(el => el.id === elementId);
+          const res2 = resolveElement(rEl2, bpId);
+          const nx2  = Math.round(wx2 - (res2.width  ?? 100) / 2);
+          const ny2  = Math.round(wy2 - (res2.height ?? 40)  / 2);
+          state2.updateElementLayout(elementId, bpId, { positionType: 'absolute', x: nx2, y: ny2 });
+          drag.current = {
+            type: 'move', bpId, elementId,
+            startMX: e.clientX, startMY: e.clientY,
+            startX: nx2, startY: ny2,
+            wasEjected: true,
+          };
+        }
+        return;
+      }
+      // Determine axis from parent flex direction
+      let axis = 'y';
+      if (parentId) {
+        const parent = allEls.find(p => p.id === parentId);
+        if (parent && resolveElement(parent, bpId)?.styles?.flexDirection === 'row') axis = 'x';
+      }
+      const siblingIds = parentId
+        ? (allEls.find(p => p.id === parentId)?.children ?? []).filter(id => id !== elementId)
+        : allEls.filter(el => !el.parentId && el.id !== elementId).map(el => el.id);
+      let insertBeforeId = null;
+      for (const sibId of siblingIds) {
+        const domEl = artboardDom?.querySelector(`[data-id="${sibId}"]`);
+        if (!domEl) continue;
+        const rect = domEl.getBoundingClientRect();
+        const mid    = axis === 'x' ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+        const cursor = axis === 'x' ? e.clientX : e.clientY;
+        if (cursor < mid) { insertBeforeId = sibId; break; }
+      }
+      drag.current.insertBeforeId = insertBeforeId;
+      setReorderTarget({ insertBeforeId, bpId, parentId, dragId: elementId });
+    } else if (type === 'radius') {
+      const { elementId: radId, bpId: radBp, startRadius, corner } = drag.current;
+      const allEls = useEditorStore.getState().getAllElements();
+      const radEl  = allEls.find(el => el.id === radId);
+      if (!radEl) return;
+      const res    = resolveElement(radEl, radBp);
+      const maxR   = Math.floor(Math.min(res.width ?? 9999, res.height ?? 9999) / 2);
+      const newR   = Math.max(0, Math.min(maxR, Math.round(startRadius + dxWorld)));
+      const styleKey = corner ? `borderRadius${corner}` : 'borderRadius';
+      useEditorStore.getState().updateElementStyles(radId, radBp, { [styleKey]: newR });
+      setRadiusDragInfo({ value: newR, clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'element-padding') {
+      const { side, startPad, elementId: elId, bpId: elBp } = drag.current;
+      const newPad = { ...startPad };
+      if (side === 'top')    newPad.paddingTop    = Math.max(0, Math.round(startPad.paddingTop    + dyWorld));
+      if (side === 'bottom') newPad.paddingBottom = Math.max(0, Math.round(startPad.paddingBottom - dyWorld));
+      if (side === 'left')   newPad.paddingLeft   = Math.max(0, Math.round(startPad.paddingLeft   + dxWorld));
+      if (side === 'right')  newPad.paddingRight  = Math.max(0, Math.round(startPad.paddingRight  - dxWorld));
+      const capKey = side.charAt(0).toUpperCase() + side.slice(1);
+      useEditorStore.getState().updateElementStyles(elId, elBp, newPad);
+      setPaddingDragInfo({ side, value: newPad[`padding${capKey}`], clientX: e.clientX, clientY: e.clientY });
     }
   }, [setViewport]);
 
@@ -266,6 +450,47 @@ export default function InfiniteCanvas() {
       isPanning.current = false;
     }
     if (drag.current) {
+      if (drag.current.type === 'reorder') {
+        const { elementId, insertBeforeId, reorderOffCanvas, hasMoved, bpId: rBpId } = drag.current;
+        if (hasMoved) {
+          const state  = useEditorStore.getState();
+          const allEls = state.getAllElements();
+          const rEl    = allEls.find(e => e.id === elementId);
+          if (rEl) {
+            if (reorderOffCanvas) {
+              // Eject: convert to absolute positioned off-canvas element
+              const bp        = state.breakpointDefs[rBpId];
+              const { x: panX, y: panY, scale } = state.viewport;
+              const lastMX    = drag.current.lastMX ?? drag.current.startMX;
+              const lastMY    = drag.current.lastMY ?? drag.current.startMY;
+              const rect      = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+              const worldX    = (lastMX - rect.left - panX) / scale - bp.x;
+              const worldY    = (lastMY - rect.top  - panY) / scale - bp.y;
+              const resolved  = resolveElement(rEl, rBpId);
+              state.updateElementLayout(elementId, rBpId, {
+                positionType: 'absolute',
+                x: Math.round(worldX - (resolved.width ?? 100) / 2),
+                y: Math.round(worldY - (resolved.height ?? 40) / 2),
+              });
+            } else {
+              const parentId = rEl.parentId;
+              const siblings = parentId
+                ? (allEls.find(p => p.id === parentId)?.children ?? []).filter(id => id !== elementId)
+                : allEls.filter(e => !e.parentId && e.id !== elementId).map(e => e.id);
+              let newIndex = insertBeforeId != null ? siblings.indexOf(insertBeforeId) : siblings.length;
+              if (newIndex < 0) newIndex = siblings.length;
+              state.reorderElementInParent(elementId, newIndex);
+            }
+          }
+        }
+        setReorderTarget(null);
+      }
+      if (drag.current.type === 'radius') {
+        setRadiusDragInfo(null);
+      }
+      if (drag.current.type === 'element-padding' || drag.current.type === 'artboard-padding') {
+        setPaddingDragInfo(null);
+      }
       pushHistory();
       drag.current = null;
       setInteracting(false);
@@ -329,6 +554,43 @@ export default function InfiniteCanvas() {
     setInteracting(true);
   }, [setInteracting]);
 
+  // ── Start element padding drag ─────────────────────────────
+  const startElementPaddingDrag = useCallback((e, bpId, elementId, side) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const el = useEditorStore.getState().getAllElements().find(el => el.id === elementId);
+    if (!el) return;
+    const s = resolveElement(el, bpId).styles ?? {};
+    const toNum = v => typeof v === 'number' ? v : parseFloat(v) || 0;
+    const startPad = {
+      paddingTop:    toNum(s.paddingTop),
+      paddingRight:  toNum(s.paddingRight),
+      paddingBottom: toNum(s.paddingBottom),
+      paddingLeft:   toNum(s.paddingLeft),
+    };
+    drag.current = {
+      type: 'element-padding', bpId, elementId, side,
+      startMX: e.clientX, startMY: e.clientY,
+      startPad,
+    };
+    const capKey = side.charAt(0).toUpperCase() + side.slice(1);
+    setPaddingDragInfo({ side, value: startPad[`padding${capKey}`], clientX: e.clientX, clientY: e.clientY });
+    setInteracting(true);
+  }, [setInteracting]);
+
+  // ── Start border-radius drag ──────────────────────────────
+  const startRadiusDrag = useCallback((e, bpId, elementId, startRadius, corner = null) => {
+    e.stopPropagation();
+    e.preventDefault();
+    drag.current = {
+      type: 'radius', bpId, elementId, corner,
+      startMX: e.clientX, startMY: e.clientY,
+      startRadius: startRadius ?? 0,
+    };
+    setInteracting(true);
+  }, [setInteracting]);
+
+
   // ── Select artboard (deselects any element) ───────────────
   const onSelectArtboard = useCallback((bpId) => {
     setArtboardSel(bpId);
@@ -344,8 +606,10 @@ export default function InfiniteCanvas() {
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
     setSelection({ elementId: el.id, bpId });
+    const isRelative = (resolved.positionType ?? 'absolute') === 'relative';
     drag.current = {
-      type: 'move', bpId, elementId: el.id,
+      type: isRelative ? 'reorder' : 'move',
+      bpId, elementId: el.id,
       startMX: e.clientX, startMY: e.clientY,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
@@ -467,10 +731,23 @@ export default function InfiniteCanvas() {
             onStartArtboardPaddingDrag={startArtboardPaddingDrag}
             onSelectArtboard={onSelectArtboard}
             isArtboardSelected={artboardSel === bp.id}
+            onStartRadiusDrag={startRadiusDrag}
+            onStartPaddingDrag={startElementPaddingDrag}
+            reorderTarget={reorderTarget}
           />
         ))}
-        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} />
+        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} />
       </div>
+      {radiusDragInfo && (
+        <div className="fb-radius-tooltip" style={{ position: 'fixed', left: radiusDragInfo.clientX + 14, top: radiusDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
+          {radiusDragInfo.value}px
+        </div>
+      )}
+      {paddingDragInfo && (
+        <div className="fb-radius-tooltip" style={{ position: 'fixed', left: paddingDragInfo.clientX + 14, top: paddingDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
+          {paddingDragInfo.side}: {paddingDragInfo.value}px
+        </div>
+      )}
     </div>
   );
 }

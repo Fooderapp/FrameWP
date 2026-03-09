@@ -45,6 +45,9 @@ export default function Artboard({
   onStartArtboardPaddingDrag,
   onSelectArtboard,
   isArtboardSelected,
+  onStartRadiusDrag,
+  onStartPaddingDrag,
+  reorderTarget,
 }) {
   const allElements      = useEditorStore(s => s.getAllElements());
   const breakpointDefs   = useEditorStore(s => s.breakpointDefs);
@@ -138,17 +141,29 @@ export default function Artboard({
           }}
           onClick={handleContentClick}
         >
-          {onCanvasEls.map(el => (
-            <CanvasElement
-              key={el.id}
-              elementId={el.id}
-              bpId={bp.id}
-              isSelected={selection?.elementId === el.id}
-              onStartDrag={(e) => onStartElementDrag(e, bp.id, el)}
-              onStartResize={(e, handle) => onStartResize(e, bp.id, el, handle)}
-              onDropOntoElement={onDropOntoElement}
-            />
-          ))}
+          {onCanvasEls.map(el => {
+            const showInsertBefore = reorderTarget?.bpId === bp.id
+              && reorderTarget?.parentId === null
+              && reorderTarget?.insertBeforeId === el.id;
+            return (
+              <React.Fragment key={el.id}>
+                {showInsertBefore && <div className="fb-reorder-indicator" />}
+                <CanvasElement
+                  elementId={el.id}
+                  bpId={bp.id}
+                  isSelected={selection?.elementId === el.id}
+                  onStartDrag={(e) => onStartElementDrag(e, bp.id, el)}
+                  onStartResize={(e, handle) => onStartResize(e, bp.id, el, handle)}
+                  onDropOntoElement={onDropOntoElement}
+                  onStartRadiusDrag={(e, elementId, startRadius, corner) => onStartRadiusDrag && onStartRadiusDrag(e, bp.id, elementId, startRadius, corner)}
+                  onStartPaddingDrag={(e, elementId, side) => onStartPaddingDrag && onStartPaddingDrag(e, bp.id, elementId, side)}
+                />
+              </React.Fragment>
+            );
+          })}
+          {reorderTarget?.bpId === bp.id && reorderTarget?.parentId === null && !reorderTarget?.insertBeforeId && (
+            <div className="fb-reorder-indicator" />
+          )}
         </div>
         {/* Artboard padding visual handles — shaded zones + pink drag lines */}
         {isArtboardSelected && onStartArtboardPaddingDrag && (

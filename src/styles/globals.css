@@ -643,6 +643,41 @@ html, body, #framebuilder-root {
 .fb-pad-line--top, .fb-pad-line--bottom { left: 0; right: 0; height: 2px; cursor: ns-resize; }
 .fb-pad-line--left, .fb-pad-line--right { top: 0; bottom: 0; width: 2px; cursor: ew-resize; }
 
+/* ─── Reorder insertion indicator (blue line between elements) ── */
+.fb-reorder-indicator {
+  width: 100%;
+  height: 2px;
+  background: #3b82f6;
+  border-radius: 2px;
+  pointer-events: none;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+/* ─── Border-radius drag handle (circle inside bounding box) ─── */
+.fb-radius-handle {
+  position: absolute;
+  width:   calc(8px * var(--inv-scale, 1));
+  height:  calc(8px * var(--inv-scale, 1));
+  background: #fff;
+  border: 1.5px solid #3b82f6;
+  border-radius: 50%;
+  cursor: crosshair;
+  pointer-events: all;
+  z-index: 10002;
+}
+
+/* ─── Tooltip showing radius value during drag ───────────────── */
+.fb-radius-tooltip {
+  background: rgba(0,0,0,0.75);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 /* ─── Inline handles for relative-positioned selected elements ─ */
 .fb-el-handles-wrap {
   position: absolute;
