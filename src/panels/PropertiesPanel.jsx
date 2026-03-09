@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useEditorStore, resolveElement, resolveBackground, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
+import FillPicker from '../components/FillPicker';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -280,6 +281,9 @@ export default function PropertiesPanel() {
   const setPagePadding          = useEditorStore(s => s.setPagePadding);
   const setPageLayout           = useEditorStore(s => s.setPageLayout);
   const page                    = useEditorStore(s => s.getCurrentPage());
+  // Remembers the last active layout per artboard bp before it was turned off,
+  // so toggling back on restores gap/direction/etc. instead of resetting to defaults.
+  const savedLayoutRef          = useRef({});
   const removeOverrideFn        = useEditorStore(s => s.removeOverride);
   const removeStyleOverrideFn   = useEditorStore(s => s.removeStyleOverride);
 
@@ -325,7 +329,7 @@ export default function PropertiesPanel() {
           </Section>
           <Section title="Background">
             <div className="fb-prop-row--full">
-              <ColorInput
+              <FillPicker
                 value={effectiveBg}
                 onChange={v => setPageBackground(artboardSel, v)}
               />
@@ -367,7 +371,7 @@ export default function PropertiesPanel() {
             const isLayoutInherited = artboardSel !== 'desktop' && rawLayout == null;
             const layoutOn       = effectiveLayout !== null;
             const DEFAULT_LAYOUT = { flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'flex-start', flexWrap: 'nowrap', gap: 0 };
-            const activeLayout   = effectiveLayout ?? DEFAULT_LAYOUT;
+            const activeLayout   = effectiveLayout ?? savedLayoutRef.current[artboardSel] ?? DEFAULT_LAYOUT;
             const updLayout      = (key, val) => {
               const cur = rawLayout ?? { ...activeLayout };
               setPageLayout(artboardSel, { ...cur, [key]: val });
@@ -381,12 +385,21 @@ export default function PropertiesPanel() {
                     <button
                       className={`fb-icon-btn${!layoutOn ? ' fb-icon-btn--active' : ''}`}
                       title="Off"
-                      onClick={() => setPageLayout(artboardSel, null)}
+                      onClick={() => {
+                        // Save the current layout before clearing, so re-enabling restores it
+                        if (layoutOn) savedLayoutRef.current[artboardSel] = { ...activeLayout };
+                        setPageLayout(artboardSel, null);
+                      }}
                     >✕</button>
                     <button
                       className={`fb-icon-btn${layoutOn ? ' fb-icon-btn--active' : ''}`}
                       title="On"
-                      onClick={() => !layoutOn && setPageLayout(artboardSel, { ...DEFAULT_LAYOUT })}
+                      onClick={() => {
+                        if (!layoutOn) {
+                          // Restore last saved layout, or fall back to defaults
+                          setPageLayout(artboardSel, savedLayoutRef.current[artboardSel] ?? { ...DEFAULT_LAYOUT });
+                        }
+                      }}
                     >⇌</button>
                   </div>
                 </div>
@@ -538,18 +551,32 @@ export default function PropertiesPanel() {
 
         {/* ── Position ──────────────────────────────────────── */}
         <Section title="Position" action={<ResetBtn show={isOv('x','y','constraints','positionType')} onReset={() => resetOv('x','y','constraints','positionType')} />}>
-          {/* Auto-layout position override toggle */}
+          {/* Auto-layout position override — full type selector incl. exceptions */}
           {inAutoLayout && (
             <div className="fb-prop-row" style={{ marginBottom: 6 }}>
               <span className="fb-prop-label">Position</span>
-              <IconGroup
-                value={resolved.absoluteInLayout ? 'absolute' : 'auto'}
-                onChange={v => { upd('absoluteInLayout', v === 'absolute'); commit(); }}
-                options={[
-                  { value: 'auto',     icon: '⇌', label: 'Auto (flow)' },
-                  { value: 'absolute', icon: '⊞', label: 'Absolute' },
-                ]}
-              />
+              <select
+                className="fb-prop-input"
+                value={(() => {
+                  if (!resolved.absoluteInLayout) return 'auto';
+                  return resolved.positionType ?? 'absolute';
+                })()}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === 'auto') {
+                    upd('absoluteInLayout', false);
+                  } else {
+                    // Mark as exception from auto-layout flow
+                    updateElementLayout(element.id, bpId, { absoluteInLayout: true, positionType: v });
+                  }
+                  commit();
+                }}
+              >
+                <option value="auto">Auto (flow)</option>
+                <option value="absolute">Absolute</option>
+                <option value="fixed">Fixed</option>
+                <option value="relative">Relative</option>
+              </select>
             </div>
           )}
           {!isFlowInLayout && ['absolute', 'fixed'].includes(resolved.positionType ?? 'absolute') && (
@@ -578,7 +605,7 @@ export default function PropertiesPanel() {
               </div>
             </div>
           )}
-          {/* Type dropdown — only shown outside auto-layout context */}
+          {/* Type dropdown — shown outside auto-layout context */}
           {!inAutoLayout && (
             <div className="fb-prop-row" style={{ marginTop: 6 }}>
               <span className="fb-prop-label">Type</span>
@@ -658,9 +685,9 @@ export default function PropertiesPanel() {
 
         {/* ── Fill ──────────────────────────────────────────── */}
         <Section title="Fill" action={<ResetBtn show={isSOv('backgroundColor','backgroundImage','backgroundSize','backgroundPosition')} onReset={() => resetSOv('backgroundColor','backgroundImage','backgroundSize','backgroundPosition')} />}>
-          {/* Solid color */}
+          {/* Color / gradient fill */}
           <div className="fb-prop-row--full">
-            <ColorInput
+            <FillPicker
               value={s.backgroundColor ?? '#ffffff'}
               onChange={v => updS('backgroundColor', v)}
             />

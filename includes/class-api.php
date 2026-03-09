@@ -32,6 +32,18 @@ class FrameBuilder_API {
 			'callback'            => [ __CLASS__, 'publish_layout' ],
 			'permission_callback' => [ __CLASS__, 'can_publish' ],
 		] );
+
+		register_rest_route( $ns, '/color-styles', [
+			'methods'             => 'GET',
+			'callback'            => [ __CLASS__, 'get_color_styles' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/color-styles', [
+			'methods'             => 'POST',
+			'callback'            => [ __CLASS__, 'save_color_styles' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
 	}
 
 	/**
@@ -122,5 +134,32 @@ class FrameBuilder_API {
 			'success'   => true,
 			'permalink' => get_permalink( $post_id ),
 		] );
+	}
+
+	// Site-wide colour styles stored as a WP option (not per-post).
+	public static function get_color_styles( WP_REST_Request $request ) {
+		$raw    = get_option( '_fb_color_styles', '[]' );
+		$styles = json_decode( $raw, true );
+		if ( ! is_array( $styles ) ) $styles = [];
+		return rest_ensure_response( [ 'success' => true, 'styles' => $styles ] );
+	}
+
+	public static function save_color_styles( WP_REST_Request $request ) {
+		$styles = $request->get_param( 'styles' );
+		if ( ! is_array( $styles ) ) {
+			return new WP_Error( 'invalid_styles', 'styles must be an array.', [ 'status' => 400 ] );
+		}
+		// Sanitize: each item must have id, name (text), value (text)
+		$clean = [];
+		foreach ( $styles as $item ) {
+			if ( ! isset( $item['id'], $item['name'], $item['value'] ) ) continue;
+			$clean[] = [
+				'id'    => sanitize_text_field( $item['id'] ),
+				'name'  => sanitize_text_field( $item['name'] ),
+				'value' => sanitize_text_field( $item['value'] ),
+			];
+		}
+		update_option( '_fb_color_styles', wp_json_encode( $clean ) );
+		return rest_ensure_response( [ 'success' => true ] );
 	}
 }

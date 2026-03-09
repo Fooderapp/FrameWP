@@ -29,10 +29,12 @@ function cloneSubtree(subtree, rootId) {
 /** Renders a bounding-box overlay in world-space, as a sibling of artboards.
  *  Not clipped by artboard's overflow:hidden, so it shows even for overflowing elements. */
 function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
-  const selection   = useEditorStore(s => s.selection);
-  const bpDefs      = useEditorStore(s => s.breakpointDefs);
-  const allElements = useEditorStore(s => s.getAllElements());
-  const page        = useEditorStore(s => s.pages?.find(p => p.id === s.currentPageId));
+  const selection              = useEditorStore(s => s.selection);
+  const bpDefs                 = useEditorStore(s => s.breakpointDefs);
+  const allElements            = useEditorStore(s => s.getAllElements());
+  const page                   = useEditorStore(s => s.pages?.find(p => p.id === s.currentPageId));
+  const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
+  const setSelection           = useEditorStore(s => s.setSelection);
 
   if (!selection) return null;
   const el = allElements.find(e => e.id === selection.elementId);
@@ -71,8 +73,14 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
     absX + w <= 0 || absX >= bp.width ||
     absY + h <= 0 || absY >= bp.height
   );
-  const worldX = bp.x + (isElOffCanvas ? 0 : (pad?.left ?? 0)) + absX;
-  const worldY = bp.y + (isElOffCanvas ? 0 : (pad?.top  ?? 0)) + absY;
+  // Auto-layout exception elements (absoluteInLayout) are positioned absolute within
+  // the artboard-content div which is not offset — so do NOT add page padding here.
+  const isAutoLayoutException = !el.parentId && pageLayout !== null && !!resolved.absoluteInLayout;
+  const worldX = bp.x + (isElOffCanvas || isAutoLayoutException ? 0 : (pad?.left ?? 0)) + absX;
+  const worldY = bp.y + (isElOffCanvas || isAutoLayoutException ? 0 : (pad?.top  ?? 0)) + absY;
+
+  const elChildren = allElements.filter(e => e.parentId === el.id);
+  const canDrill   = elChildren.length > 0;
 
   return (
     <div
@@ -88,6 +96,15 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
         e.stopPropagation();
         e.preventDefault();
         if (!el.locked) onStartMove(e, selection.bpId, el);
+      }}
+      onDoubleClick={(e) => {
+        if (e.target !== e.currentTarget) return;
+        e.stopPropagation();
+        // Drill into this element — its children become single-click accessible
+        if (canDrill) {
+          setDrilledContainerId(el.id);
+          setSelection(null);
+        }
       }}
     >
       {!el.locked && OVERLAY_HANDLES.map(handle => (
@@ -141,6 +158,7 @@ export default function InfiniteCanvas() {
   const setSelection  = useEditorStore(s => s.setSelection);
   const setArtboardSel = useEditorStore(s => s.setArtboardSel);
   const artboardSel    = useEditorStore(s => s.artboardSel);
+  const setDrilled     = useEditorStore(s => s.setDrilledContainerId);
   const addElement          = useEditorStore(s => s.addElement);
   const updateElementLayout  = useEditorStore(s => s.updateElementLayout);
   const reparentElement      = useEditorStore(s => s.reparentElement);
@@ -178,6 +196,19 @@ export default function InfiniteCanvas() {
         e.preventDefault();
         if (e.shiftKey) useEditorStore.getState().redo();
         else useEditorStore.getState().undo();
+      }
+      // Escape: exit one drill level, or deselect
+      if (e.key === 'Escape' && !e.target.matches('input,textarea')) {
+        const st = useEditorStore.getState();
+        const drilled = st.drilledContainerId;
+        if (drilled !== null) {
+          const drilledEl = st.getAllElements().find(el => el.id === drilled);
+          const parentId = drilledEl?.parentId ?? null;
+          st.setDrilledContainerId(parentId);
+          st.setSelection(null);
+        } else if (st.selection) {
+          st.setSelection(null);
+        }
       }
       // Arrow nudge (1px, or 10px with Shift)
       if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && !e.target.matches('input,textarea')) {
@@ -303,6 +334,7 @@ export default function InfiniteCanvas() {
     } else if (e.button === 0 && (e.target === worldRef.current || e.target === containerRef.current)) {
       setSelection(null);
       setArtboardSel(null);
+      setDrilled(null);
     }
   };
 
@@ -748,6 +780,7 @@ export default function InfiniteCanvas() {
       startMX: e.clientX, startMY: e.clientY,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
+      origPositionType: resolved.positionType ?? 'absolute',
     };
     setInteracting(true);
   }, [setInteracting]);
@@ -843,7 +876,8 @@ export default function InfiniteCanvas() {
   const onSelectArtboard = useCallback((bpId) => {
     setArtboardSel(bpId);
     setSelection(null);
-  }, [setArtboardSel, setSelection]);
+    setDrilled(null);
+  }, [setArtboardSel, setSelection, setDrilled]);
 
   // ── Start element drag (called from child) ─────────────────
   // When an element is selected, clear artboard selection

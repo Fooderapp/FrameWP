@@ -263,6 +263,11 @@ class FrameBuilder_Exporter {
 		foreach ( $visual_props as $camel => $kebab ) {
 			if ( ! isset( $styles[ $camel ] ) || $styles[ $camel ] === '' ) continue;
 			$val = $styles[ $camel ];
+			// CSS gradient strings go to background-image, not background-color
+			if ( $camel === 'backgroundColor' && preg_match( '/gradient\(/', $val ) ) {
+				$inline .= 'background-image:' . $this->sanitize_css_value( $val ) . ';';
+				continue;
+			}
 			if ( is_numeric( $val ) && $kebab === 'border-radius' ) $val .= 'px';
 			$inline .= $kebab . ':' . $this->sanitize_css_value( $val ) . ';';
 		}
@@ -276,18 +281,6 @@ class FrameBuilder_Exporter {
 			$inline .= "border-radius:{$tl}px {$tr}px {$brc}px {$bl}px;";
 		}
 
-		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '">';
-
-		// Image element: render <img> tag filling the div
-		if ( ( $el['type'] ?? '' ) === 'image' ) {
-			$src       = esc_url( $resolved['src'] ?? '' );
-			$obj_fit   = $this->sanitize_css_value( $styles['objectFit'] ?? 'cover' );
-			if ( $src ) {
-				$img_style = "position:absolute;inset:0;width:100%;height:100%;object-fit:{$obj_fit};border-radius:inherit;";
-				$html .= '<img src="' . $src . '" alt="" style="' . esc_attr( $img_style ) . '" loading="lazy">';
-			}
-		}
-
 		// Background image fill on frames / divs
 		$bg_img = $styles['backgroundImage'] ?? '';
 		if ( $bg_img !== '' ) {
@@ -298,8 +291,18 @@ class FrameBuilder_Exporter {
 			} else {
 				$inline .= 'background-image:url(' . esc_attr( $bg_img ) . ');background-size:' . esc_attr( $this->sanitize_css_value( $bg_size ) ) . ';background-repeat:no-repeat;background-position:' . $bg_pos . ';';
 			}
-			// Re-emit the div with updated inline (background was computed after first assignment)
-			$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '">';
+		}
+		// Emit the div with all accumulated inline styles
+		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '">';
+
+		// Image element: render <img> tag filling the div (added after div opening)
+		if ( ( $el['type'] ?? '' ) === 'image' ) {
+			$src     = esc_url( $resolved['src'] ?? '' );
+			$obj_fit = $this->sanitize_css_value( $styles['objectFit'] ?? 'cover' );
+			if ( $src ) {
+				$img_style = "position:absolute;inset:0;width:100%;height:100%;object-fit:{$obj_fit};border-radius:inherit;";
+				$html .= '<img src="' . $src . '" alt="" style="' . esc_attr( $img_style ) . '" loading="lazy">';
+			}
 		}
 
 		foreach ( $el['children'] ?? [] as $child_id ) {

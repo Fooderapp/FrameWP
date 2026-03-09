@@ -4,14 +4,16 @@ import { useEditorStore, resolveElement } from '../store/editorStore';
 export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn }) {
   const [dropOver, setDropOver] = useState(false);
 
-  const el             = useEditorStore(s => s.getAllElements().find(e => e.id === elementId));
-  const children       = useEditorStore(s => s.getChildElements(elementId));
-  const setSelection   = useEditorStore(s => s.setSelection);
-  const setHoveredId   = useEditorStore(s => s.setHoveredId);
-  const deleteElement  = useEditorStore(s => s.deleteElement);
-  const selection      = useEditorStore(s => s.selection);
-  const isHovered      = useEditorStore(s => s.hoveredId === elementId);
-  const bpDef          = useEditorStore(s => s.breakpointDefs[bpId]);
+  const el                     = useEditorStore(s => s.getAllElements().find(e => e.id === elementId));
+  const children               = useEditorStore(s => s.getChildElements(elementId));
+  const setSelection           = useEditorStore(s => s.setSelection);
+  const setHoveredId           = useEditorStore(s => s.setHoveredId);
+  const deleteElement          = useEditorStore(s => s.deleteElement);
+  const selection              = useEditorStore(s => s.selection);
+  const isHovered              = useEditorStore(s => s.hoveredId === elementId);
+  const bpDef                  = useEditorStore(s => s.breakpointDefs[bpId]);
+  const drilledContainerId     = useEditorStore(s => s.drilledContainerId);
+  const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
 
   if (!el) return null;
 
@@ -37,12 +39,38 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   const handleMouseDown = (e) => {
     if (e.button !== 0) return;
+    // Figma-style drill model:
+    // Root-level elements are always accessible (exit drill mode if needed).
+    // Nested elements are only accessible when their direct parent is the drilled container.
+    const isRootLevel = !el.parentId;
+    const isAtDrilledLevel = (el.parentId ?? null) === (drilledContainerId ?? null);
+    const isAccessible = isRootLevel || isAtDrilledLevel;
+    if (!isAccessible) {
+      // Let event bubble so a shallower ancestor can handle it
+      return;
+    }
     e.stopPropagation();
+    // Clicking a root-level element while drilled into a nested frame exits drill mode
+    if (isRootLevel && drilledContainerId !== null) {
+      setDrilledContainerId(null);
+    }
     if (locked) {
       setSelection({ elementId: id, bpId });
       return;
     }
     onStartElementDrag && onStartElementDrag(e, bpId, { id });
+  };
+
+  const handleDoubleClick = (e) => {
+    const isRootLevel2 = !el.parentId;
+    const isAtDrilledLevel2 = (el.parentId ?? null) === (drilledContainerId ?? null);
+    if (!isRootLevel2 && !isAtDrilledLevel2) return; // not accessible — let bubble
+    e.stopPropagation();
+    // Drill into this element — its direct children become single-click accessible
+    if (children.length > 0) {
+      setDrilledContainerId(id);
+      setSelection(null);
+    }
   };
 
   const handleKeyDown = (e) => {
@@ -76,7 +104,16 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       : { left: x, top: y, width: csW, height: csH }
     ),
     transform: rotation ? `rotate(${rotation}deg)` : undefined,
-    backgroundColor:  styles?.backgroundColor,
+    // backgroundColor can hold a CSS gradient string — route accordingly
+    backgroundColor: styles?.backgroundColor && !styles.backgroundColor.includes('gradient(')
+      ? styles.backgroundColor
+      : undefined,
+    backgroundImage: (() => {
+      const bg = styles?.backgroundColor;
+      if (bg && bg.includes('gradient(')) return bg;
+      if (styles?.backgroundImage) return `url(${styles.backgroundImage})`;
+      return undefined;
+    })(),
     borderRadius: (() => {
       if (styles?.borderRadiusMode === 'independent') {
         const tl = typeof styles.borderRadiusTL === 'number' ? styles.borderRadiusTL : (styles.borderRadius ?? 0);
@@ -103,9 +140,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     alignItems:       styles?.alignItems,
     justifyContent:   styles?.justifyContent,
     boxShadow:        styles?.boxShadow || undefined,
-    // Background image (frame fill)
-    backgroundImage:    styles?.backgroundImage ? `url(${styles.backgroundImage})` : undefined,
-    backgroundSize:     styles?.backgroundImage ? (styles?.backgroundSize ?? 'cover') : undefined,
+    // Background size/position/repeat for image fills
+    backgroundSize:     (styles?.backgroundImage || styles?.backgroundColor?.includes('gradient('))
+      ? (styles?.backgroundSize ?? (styles?.backgroundImage ? 'cover' : undefined))
+      : undefined,
     backgroundPosition: styles?.backgroundImage ? (styles?.backgroundPosition ?? 'center center') : undefined,
     backgroundRepeat:   styles?.backgroundImage && styles?.backgroundSize === 'repeat' ? 'repeat' : (styles?.backgroundImage ? 'no-repeat' : undefined),
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
@@ -116,9 +154,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   return (
     <div
-      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}`}
+      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}`}
       style={inlineStyle}
       onMouseDown={handleMouseDown}
+      onDoubleClick={handleDoubleClick}
       onMouseEnter={(e) => { e.stopPropagation(); setHoveredId(id); }}
       onMouseLeave={() => setHoveredId(null)}
       onKeyDown={handleKeyDown}

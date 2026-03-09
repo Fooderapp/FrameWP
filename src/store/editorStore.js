@@ -157,6 +157,52 @@ export const useEditorStore = create((set, get) => {
     currentPageId: 'page-1',
     breakpointDefs: BREAKPOINTS,
 
+    // ── Color styles (site-wide) ───────────────────────────
+    colorStyles: [],
+    setColorStyles: (styles) => set({ colorStyles: styles }),
+
+    async loadColorStyles() {
+      try {
+        if (window.fbData?.restUrl) {
+          const nonce = window.fbData.nonce;
+          const url = window.fbData.restUrl + 'color-styles?_wpnonce=' + encodeURIComponent(nonce);
+          const res = await fetch(url, {
+            credentials: 'same-origin',
+            headers: { 'X-WP-Nonce': nonce },
+          });
+          const data = await res.json();
+          if (data.success && Array.isArray(data.styles)) {
+            set({ colorStyles: data.styles });
+          }
+        } else {
+          const stored = localStorage.getItem('fb_color_styles');
+          if (stored) set({ colorStyles: JSON.parse(stored) });
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] loadColorStyles failed', e);
+      }
+    },
+
+    async saveColorStyles(styles) {
+      set({ colorStyles: styles });
+      try {
+        if (window.fbData?.restUrl) {
+          const nonce = window.fbData.nonce;
+          const url = window.fbData.restUrl + 'color-styles?_wpnonce=' + encodeURIComponent(nonce);
+          await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce },
+            body: JSON.stringify({ styles }),
+          });
+        } else {
+          localStorage.setItem('fb_color_styles', JSON.stringify(styles));
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] saveColorStyles failed', e);
+      }
+    },
+
     // ── UI state ───────────────────────────────────────────
     leftTab: 'layers',
     setLeftTab: (tab) => set({ leftTab: tab }),
@@ -164,6 +210,8 @@ export const useEditorStore = create((set, get) => {
     setSelection: (sel) => set({ selection: sel }),
     hoveredId: null,   // elementId hovered in layers panel
     setHoveredId: (id) => set({ hoveredId: id }),
+    drilledContainerId: null, // element whose direct children are single-click selectable (null = artboard root)
+    setDrilledContainerId: (id) => set({ drilledContainerId: id }),
     artboardSel: null, // bpId of the currently selected artboard
     setArtboardSel: (bpId) => set({ artboardSel: bpId }),
     interacting: false,

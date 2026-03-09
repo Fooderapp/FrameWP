@@ -83,9 +83,11 @@ export default function Artboard({
     return (r.x + r.width <= 0 || r.x >= bp.width || r.y + r.height <= 0 || r.y >= bp.height);
   };
   const eligibleEls  = rootEls.filter(el => !isDesktopOffCanvas(el));
-  // When layout is on all root elements flow in the artboard — skip off-canvas splitting
-  const onCanvasEls  = layoutOn ? eligibleEls : eligibleEls.filter(el => !isOffCanvas(el));
-  const offCanvasEls = layoutOn ? []           : eligibleEls.filter(el => isOffCanvas(el));
+  // Off-canvas elements are those geometrically outside the artboard bounds.
+  // This applies even when layoutOn — absoluteInLayout exceptions can be dragged outside.
+  // Flow elements (no explicit x/y) will never satisfy the bounds check so they stay in onCanvasEls.
+  const offCanvasEls = eligibleEls.filter(el => isOffCanvas(el));
+  const onCanvasEls  = eligibleEls.filter(el => !isOffCanvas(el));
 
   const handleBoardClick = (e) => {
     if (e.target === e.currentTarget) {
