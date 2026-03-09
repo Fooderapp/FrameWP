@@ -612,6 +612,20 @@ html, body, #framebuilder-root {
 .fb-el--offcanvas { opacity: 0.45 !important; outline: 1.5px dashed rgba(255,180,0,0.6) !important; outline-offset: 0; }
 .fb-el--fixed { outline: 1.5px dashed rgba(120,80,255,0.55); outline-offset: -1px; }
 
+/* Override reset button in properties panel */
+.fb-reset-btn {
+  all: unset;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--accent-light);
+  opacity: 0.75;
+  padding: 1px 3px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.fb-reset-btn:hover { opacity: 1; background: rgba(99,102,241,0.12); }
+
 /* Resize handles */
 .fb-el__handle {
   position: absolute;

@@ -30,6 +30,9 @@ class FrameBuilder_Exporter {
 	/** @var array<string,array> Cascaded page padding per breakpoint */
 	private array  $page_padding = [];
 
+	/** @var array<string,array|null> Cascaded page layout (flex) per breakpoint; null = off */
+	private array  $page_layout = [];
+
 	public function __construct( array $layout ) {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
@@ -64,6 +67,17 @@ class FrameBuilder_Exporter {
 			'desktop' => $pad_desk,
 			'tablet'  => $pad_tablet ?? $pad_desk,
 			'mobile'  => $pad_mobile ?? $pad_tablet ?? $pad_desk,
+		];
+
+		// Cascade page layout: null = inherit / disabled
+		$raw_layout  = $layout['layout'] ?? [];
+		$lay_desk    = is_array( $raw_layout['desktop'] ?? null ) ? $raw_layout['desktop'] : null;
+		$lay_tablet  = is_array( $raw_layout['tablet']  ?? null ) ? $raw_layout['tablet']  : null;
+		$lay_mobile  = is_array( $raw_layout['mobile']  ?? null ) ? $raw_layout['mobile']  : null;
+		$this->page_layout = [
+			'desktop' => $lay_desk,
+			'tablet'  => $lay_tablet ?? $lay_desk,
+			'mobile'  => $lay_mobile ?? $lay_tablet ?? $lay_desk,
 		];
 	}
 
@@ -105,8 +119,9 @@ class FrameBuilder_Exporter {
 			$ch       = max( 1.0, $ah - $pad['top']  - $pad['bottom'] );
 			$html    .= '<div class="fb-bp fb-bp-' . esc_attr( $bpId ) . '" style="background:' . $bg_color . ';">';
 			$html    .= '<div class="fb-bp-inner">';
+			$artboard_layout_on = is_array( $this->page_layout[ $bpId ] ?? null );
 			foreach ( $root_els as $el ) {
-				$html .= $this->render_element( $el, $bpId, $cw, $ch );
+				$html .= $this->render_element( $el, $bpId, $cw, $ch, $artboard_layout_on );
 			}
 			$html .= '</div>';
 			$html .= '</div>';
@@ -151,13 +166,27 @@ class FrameBuilder_Exporter {
 				. "}";
 			$cw_css = max( 1.0, $aw - $pad['left'] - $pad['right'] );
 			$ch_css = max( 1.0, $ah - $pad['top']  - $pad['bottom'] );
-			$this->css[] = ".{$bid} .fb-bp-{$bpId} .fb-bp-inner { "
-				. "position: absolute; "
-				. "top: {$pad['top']}px; left: {$pad['left']}px; "
-				. "right: {$pad['right']}px; bottom: {$pad['bottom']}px; "
-				. "}";
+			$layout = $this->page_layout[ $bpId ] ?? null;
+			if ( $layout ) {
+				$fd  = esc_attr( $layout['flexDirection']  ?? 'column' );
+				$ai  = esc_attr( $layout['alignItems']     ?? 'flex-start' );
+				$jc  = esc_attr( $layout['justifyContent'] ?? 'flex-start' );
+				$fw  = esc_attr( $layout['flexWrap']       ?? 'nowrap' );
+				$gap = (float) ( $layout['gap']            ?? 0 );
+				$this->css[] = ".{$bid} .fb-bp-{$bpId} .fb-bp-inner { "
+					. "position: relative; display: flex; "
+					. "flex-direction: {$fd}; align-items: {$ai}; justify-content: {$jc}; flex-wrap: {$fw}; gap: {$gap}px; "
+					. "padding: {$pad['top']}px {$pad['right']}px {$pad['bottom']}px {$pad['left']}px; "
+					. "}";
+			} else {
+				$this->css[] = ".{$bid} .fb-bp-{$bpId} .fb-bp-inner { "
+					. "position: absolute; "
+					. "top: {$pad['top']}px; left: {$pad['left']}px; "
+					. "right: {$pad['right']}px; bottom: {$pad['bottom']}px; "
+					. "}";
+			}
 			foreach ( $root_els as $el ) {
-				$this->collect_element_css( $el, $bpId, $cw_css, $ch_css );
+				$this->collect_element_css( $el, $bpId, $cw_css, $ch_css, $layout !== null );
 			}
 		}
 
@@ -175,7 +204,7 @@ class FrameBuilder_Exporter {
 	 * @param float $cw  Design width  of the containing context in px.
 	 * @param float $ch  Design height of the containing context in px.
 	 */
-	private function render_element( array $el, string $bpId, float $cw, float $ch ): string {
+	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false ): string {
 		$resolved = $this->resolve( $el, $bpId );
 		if ( ! empty( $resolved['hidden'] ) ) return '';
 
@@ -188,10 +217,13 @@ class FrameBuilder_Exporter {
 		$w = floatval( $resolved['width']  ?? 100 );
 		$h = floatval( $resolved['height'] ?? 100 );
 
-		// Off-canvas: element completely outside artboard bounds — don't render on live site
 		$cx       = $resolved['constraints'] ?? [];
 		$pos_type = $resolved['positionType'] ?? 'absolute';
-		if ( $pos_type !== 'relative' && ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) ) {
+		// Auto-layout: root elements flow unless explicitly pinned
+		if ( $artboard_layout_on && empty( $resolved['absoluteInLayout'] ) ) {
+			$pos_type = 'relative';
+		}
+		if ( $pos_type !== 'relative' && $pos_type !== 'fixed' && ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) ) {
 			return '';
 		}
 		$width_mode  = $resolved['widthMode']  ?? 'fixed';
@@ -265,7 +297,7 @@ class FrameBuilder_Exporter {
 	 * @param float $cw  Design width  of containing context (artboard or parent) in px.
 	 * @param float $ch  Design height of containing context in px.
 	 */
-	private function collect_element_css( array $el, string $bpId, float $cw, float $ch ): void {
+	private function collect_element_css( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false ): void {
 		$resolved = $this->resolve( $el, $bpId );
 		if ( ! empty( $resolved['hidden'] ) ) return;
 
@@ -278,12 +310,12 @@ class FrameBuilder_Exporter {
 		$w = floatval( $resolved['width']  ?? 100 );
 		$h = floatval( $resolved['height'] ?? 100 );
 
-		// Off-canvas: element completely outside artboard bounds — skip CSS for this bp
-		if ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) {
-			return;
-		}
-		$cx = $resolved['constraints'] ?? [];
+		$cx          = $resolved['constraints'] ?? [];
 		$pos_type    = $resolved['positionType'] ?? 'absolute';
+		// Auto-layout: root elements flow unless explicitly pinned
+		if ( $artboard_layout_on && empty( $resolved['absoluteInLayout'] ) ) {
+			$pos_type = 'relative';
+		}
 		$width_mode  = $resolved['widthMode']    ?? 'fixed';
 		$height_mode = $resolved['heightMode']   ?? 'fixed';
 		$pin_top    = !empty( $cx['top'] );
@@ -294,8 +326,8 @@ class FrameBuilder_Exporter {
 		$right_val  = $cw - $x - $w;
 		$bottom_val = $ch - $y - $h;
 
-		// Off-canvas: skip absolute elements outside artboard; relative flows in DOM
-		if ( $pos_type !== 'relative' && ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) ) {
+		// Off-canvas: skip absolute elements outside artboard; relative/fixed are exempt
+		if ( $pos_type !== 'relative' && $pos_type !== 'fixed' && ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) ) {
 			return;
 		}
 

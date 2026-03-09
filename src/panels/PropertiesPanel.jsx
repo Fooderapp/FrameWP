@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useEditorStore, resolveElement, resolveBackground, resolvePagePadding } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveBackground, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -182,6 +182,18 @@ function rgbaToHex(color) {
   return '#' + [m[1], m[2], m[3]].map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
 }
 
+// ── Reset override button ───────────────────────────────────────
+function ResetBtn({ show, onReset }) {
+  if (!show) return null;
+  return (
+    <button
+      className="fb-reset-btn"
+      title="Reset to desktop value"
+      onClick={e => { e.stopPropagation(); e.preventDefault(); onReset(); }}
+    >↩</button>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────
 
 export default function PropertiesPanel() {
@@ -196,10 +208,13 @@ export default function PropertiesPanel() {
   // Artboard selection
   const artboardSel         = useEditorStore(s => s.artboardSel);
   const bpDefs              = useEditorStore(s => s.breakpointDefs);
-  const updateBreakpointDef = useEditorStore(s => s.updateBreakpointDef);
-  const setPageBackground   = useEditorStore(s => s.setPageBackground);
-  const setPagePadding      = useEditorStore(s => s.setPagePadding);
-  const page                = useEditorStore(s => s.getCurrentPage());
+  const updateBreakpointDef    = useEditorStore(s => s.updateBreakpointDef);
+  const setPageBackground       = useEditorStore(s => s.setPageBackground);
+  const setPagePadding          = useEditorStore(s => s.setPagePadding);
+  const setPageLayout           = useEditorStore(s => s.setPageLayout);
+  const page                    = useEditorStore(s => s.getCurrentPage());
+  const removeOverrideFn        = useEditorStore(s => s.removeOverride);
+  const removeStyleOverrideFn   = useEditorStore(s => s.removeStyleOverride);
 
   // Show artboard panel when artboard is selected and no element is selected
   if (!element && artboardSel && bpDefs[artboardSel]) {
@@ -279,6 +294,106 @@ export default function PropertiesPanel() {
               </div>
             )}
           </Section>
+          {(() => {
+            const rawLayout      = page?.layout?.[artboardSel] ?? null;
+            const effectiveLayout = resolvePageLayout(page?.layout, artboardSel);
+            const isLayoutInherited = artboardSel !== 'desktop' && rawLayout == null;
+            const layoutOn       = effectiveLayout !== null;
+            const DEFAULT_LAYOUT = { flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'flex-start', flexWrap: 'nowrap', gap: 0 };
+            const activeLayout   = effectiveLayout ?? DEFAULT_LAYOUT;
+            const updLayout      = (key, val) => {
+              const cur = rawLayout ?? { ...activeLayout };
+              setPageLayout(artboardSel, { ...cur, [key]: val });
+            };
+            return (
+              <Section title="Layout">
+                {/* On/Off toggle row */}
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Auto layout</span>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <button
+                      className={`fb-icon-btn${!layoutOn ? ' fb-icon-btn--active' : ''}`}
+                      title="Off"
+                      onClick={() => setPageLayout(artboardSel, null)}
+                    >✕</button>
+                    <button
+                      className={`fb-icon-btn${layoutOn ? ' fb-icon-btn--active' : ''}`}
+                      title="On"
+                      onClick={() => !layoutOn && setPageLayout(artboardSel, { ...DEFAULT_LAYOUT })}
+                    >⇌</button>
+                  </div>
+                </div>
+                {layoutOn && (
+                  <>
+                    <div className="fb-prop-row">
+                      <span className="fb-prop-label">Direction</span>
+                      <IconGroup
+                        value={activeLayout.flexDirection}
+                        onChange={v => updLayout('flexDirection', v)}
+                        options={[
+                          { value: 'row',    icon: '→', label: 'Row' },
+                          { value: 'column', icon: '↓', label: 'Column' },
+                        ]}
+                      />
+                    </div>
+                    <div className="fb-prop-row">
+                      <span className="fb-prop-label">Wrap</span>
+                      <IconGroup
+                        value={activeLayout.flexWrap}
+                        onChange={v => updLayout('flexWrap', v)}
+                        options={[
+                          { value: 'nowrap', icon: '⇥', label: 'No wrap' },
+                          { value: 'wrap',   icon: '↵', label: 'Wrap' },
+                        ]}
+                      />
+                    </div>
+                    <div className="fb-prop-row">
+                      <span className="fb-prop-label">Align</span>
+                      <IconGroup
+                        value={activeLayout.alignItems}
+                        onChange={v => updLayout('alignItems', v)}
+                        options={[
+                          { value: 'flex-start', icon: '⤒', label: 'Start' },
+                          { value: 'center',     icon: '⊡', label: 'Center' },
+                          { value: 'flex-end',   icon: '⤓', label: 'End' },
+                          { value: 'stretch',    icon: '↕', label: 'Stretch' },
+                        ]}
+                      />
+                    </div>
+                    <div className="fb-prop-row">
+                      <span className="fb-prop-label">Justify</span>
+                      <IconGroup
+                        value={activeLayout.justifyContent}
+                        onChange={v => updLayout('justifyContent', v)}
+                        options={[
+                          { value: 'flex-start',    icon: '⤒', label: 'Start' },
+                          { value: 'center',        icon: '⊡', label: 'Center' },
+                          { value: 'flex-end',      icon: '⤓', label: 'End' },
+                          { value: 'space-between', icon: '⤛⤜', label: 'Between' },
+                          { value: 'space-around',  icon: '⇔', label: 'Around' },
+                        ]}
+                      />
+                    </div>
+                    <div className="fb-prop-row">
+                      <span className="fb-prop-label">Gap</span>
+                      <NumberInput value={activeLayout.gap ?? 0} min={0} onChange={v => updLayout('gap', v)} />
+                    </div>
+                  </>
+                )}
+                {artboardSel !== 'desktop' && (
+                  <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {isLayoutInherited
+                      ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
+                      : <button
+                          style={{ all: 'unset', cursor: 'pointer', color: 'var(--accent-light)', fontSize: 11 }}
+                          onClick={() => setPageLayout(artboardSel, null)}
+                        >↩ Inherit from parent</button>
+                    }
+                  </div>
+                )}
+              </Section>
+            );
+          })()}
         </div>
       </aside>
     );
@@ -321,6 +436,19 @@ export default function PropertiesPanel() {
   };
   const commit = () => pushHistory();
 
+  // Auto-layout context: element is a root element inside an artboard with layout on
+  const artboardLayout = resolvePageLayout(page?.layout, bpId);
+  const inAutoLayout   = !element.parentId && artboardLayout !== null;
+  const isFlowInLayout = inAutoLayout && !resolved.absoluteInLayout;
+
+  // Override helpers — only meaningful on tablet/mobile breakpoints
+  const bpOv  = bpId !== 'desktop' ? (element.overrides?.[bpId] ?? {}) : {};
+  const bpSOv = bpOv.styles ?? {};
+  const isOv  = (...keys) => bpId !== 'desktop' && keys.some(k => k in bpOv);
+  const isSOv = (...keys) => bpId !== 'desktop' && keys.some(k => k in bpSOv);
+  const resetOv  = (...keys) => { keys.forEach(k => removeOverrideFn(element.id, bpId, k)); commit(); };
+  const resetSOv = (...keys) => { keys.forEach(k => removeStyleOverrideFn(element.id, bpId, k)); commit(); };
+
   return (
     <aside className="fb-right">
       <div className="fb-right__header">
@@ -342,8 +470,22 @@ export default function PropertiesPanel() {
       <div className="fb-panel-body">
 
         {/* ── Position ──────────────────────────────────────── */}
-        <Section title="Position">
-          {['absolute', 'fixed'].includes(resolved.positionType ?? 'absolute') && (
+        <Section title="Position" action={<ResetBtn show={isOv('x','y','constraints','positionType')} onReset={() => resetOv('x','y','constraints','positionType')} />}>
+          {/* Auto-layout position override toggle */}
+          {inAutoLayout && (
+            <div className="fb-prop-row" style={{ marginBottom: 6 }}>
+              <span className="fb-prop-label">Position</span>
+              <IconGroup
+                value={resolved.absoluteInLayout ? 'absolute' : 'auto'}
+                onChange={v => { upd('absoluteInLayout', v === 'absolute'); commit(); }}
+                options={[
+                  { value: 'auto',     icon: '⇌', label: 'Auto (flow)' },
+                  { value: 'absolute', icon: '⊞', label: 'Absolute' },
+                ]}
+              />
+            </div>
+          )}
+          {!isFlowInLayout && ['absolute', 'fixed'].includes(resolved.positionType ?? 'absolute') && (
             <div className="fb-pos-widget">
               <div className="fb-pos-widget__row">
                 <PosInput value={resolved.y ?? 0} label="T" onChange={v => { upd('y', v); commit(); }} />
@@ -369,22 +511,25 @@ export default function PropertiesPanel() {
               </div>
             </div>
           )}
-          <div className="fb-prop-row" style={{ marginTop: 6 }}>
-            <span className="fb-prop-label">Type</span>
-            <select
-              className="fb-prop-input"
-              value={resolved.positionType ?? 'absolute'}
-              onChange={e => { upd('positionType', e.target.value); commit(); }}
-            >
-              <option value="absolute">Absolute</option>
-              <option value="fixed">Fixed</option>
-              <option value="relative">Relative</option>
-            </select>
-          </div>
+          {/* Type dropdown — only shown outside auto-layout context */}
+          {!inAutoLayout && (
+            <div className="fb-prop-row" style={{ marginTop: 6 }}>
+              <span className="fb-prop-label">Type</span>
+              <select
+                className="fb-prop-input"
+                value={resolved.positionType ?? 'absolute'}
+                onChange={e => { upd('positionType', e.target.value); commit(); }}
+              >
+                <option value="absolute">Absolute</option>
+                <option value="fixed">Fixed</option>
+                <option value="relative">Relative</option>
+              </select>
+            </div>
+          )}
         </Section>
 
         {/* ── Size ──────────────────────────────────────────── */}
-        <Section title="Size">
+        <Section title="Size" action={<ResetBtn show={isOv('width','widthMode','height','heightMode','minW','maxW','minH','maxH')} onReset={() => resetOv('width','widthMode','height','heightMode','minW','maxW','minH','maxH')} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Width</span>
             <div className="fb-size-row">
@@ -419,7 +564,7 @@ export default function PropertiesPanel() {
         </Section>
 
         {/* ── Transform (rotation, name, lock) ──────────────── */}
-        <Section title="Transform" defaultOpen={false}>
+        <Section title="Transform" defaultOpen={false} action={<ResetBtn show={isOv('rotation') || isSOv('opacity')} onReset={() => { resetOv('rotation'); resetSOv('opacity'); }} />}>
           <div className="fb-quad" style={{ marginBottom: 6 }}>
             <NumberInput value={resolved.rotation ?? 0} min={-360} max={360} onChange={v => { upd('rotation', v); commit(); }} label="°" />
             <NumberInput value={(s.opacity ?? 1) * 100} min={0} max={100} onChange={v => { updS('opacity', v / 100); commit(); }} label="%" />
@@ -445,7 +590,7 @@ export default function PropertiesPanel() {
         </Section>
 
         {/* ── Fill ──────────────────────────────────────────── */}
-        <Section title="Fill">
+        <Section title="Fill" action={<ResetBtn show={isSOv('backgroundColor')} onReset={() => resetSOv('backgroundColor')} />}>
           <div className="fb-prop-row--full">
             <ColorInput
               value={s.backgroundColor ?? '#ffffff'}
@@ -455,7 +600,7 @@ export default function PropertiesPanel() {
         </Section>
 
         {/* ── Border ────────────────────────────────────────── */}
-        <Section title="Border" defaultOpen={false}>
+        <Section title="Border" defaultOpen={false} action={<ResetBtn show={isSOv('borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode')} onReset={() => resetSOv('borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode')} />}>
           {/* Radius */}
           <div className="fb-prop-row">
             <span className="fb-prop-label">Radius</span>
@@ -520,13 +665,13 @@ export default function PropertiesPanel() {
         </Section>
 
         {/* ── Shadow ────────────────────────────────────────── */}
-        <Section title="Shadow" defaultOpen={false}>
+        <Section title="Shadow" defaultOpen={false} action={<ResetBtn show={isSOv('boxShadow')} onReset={() => resetSOv('boxShadow')} />}>
           <ShadowEditor value={s.boxShadow ?? ''} onChange={v => { updS('boxShadow', v); commit(); }} />
         </Section>
 
         {/* ── Layout (frame-specific) ────────────────────────── */}
         {element.type === 'frame' && (
-          <Section title="Layout">
+          <Section title="Layout" action={<ResetBtn show={isSOv('flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} onReset={() => resetSOv('flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} />}>
             {/* Direction */}
             <div className="fb-prop-row">
               <span className="fb-prop-label">Direction</span>

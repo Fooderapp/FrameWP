@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
 
-export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget }) {
+export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn }) {
   const [dropOver, setDropOver] = useState(false);
 
   const el             = useEditorStore(s => s.getAllElements().find(e => e.id === elementId));
@@ -23,11 +23,15 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   const isRelative = positionType === 'relative';
   const isFixed    = positionType === 'fixed';
+  // Auto-layout: treat as flow (relative) unless manually pinned with absoluteInLayout
+  const isFlowInLayout = !!artboardLayoutOn && !resolved.absoluteInLayout;
+  const effectiveRelative = isRelative || isFlowInLayout;
   const csW = widthMode === 'fill' ? '100%' : widthMode === 'hug' ? 'fit-content' : width;
   const csH = heightMode === 'fill' ? '100%' : heightMode === 'hug' ? 'fit-content' : height;
 
-  // Off-canvas: element is completely outside this artboard's bounds (root elements only)
-  const isOffCanvas = !el.parentId && bpDef && !isRelative
+  // Off-canvas: only meaningful on desktop — tablet/mobile inherit desktop positions
+  // which may overflow their narrower artboard, but that's expected behaviour not an error.
+  const isOffCanvas = bpId === 'desktop' && !el.parentId && bpDef && !isRelative
     ? (x + width <= 0 || x >= bpDef.width || y + height <= 0 || y >= bpDef.height)
     : false;
 
@@ -66,8 +70,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   };
 
   const inlineStyle = {
-    position: isRelative ? 'relative' : 'absolute',
-    ...(isRelative
+    position: effectiveRelative ? 'relative' : 'absolute',
+    ...(effectiveRelative
       ? { width: csW, height: csH }
       : { left: x, top: y, width: csW, height: csH }
     ),
@@ -107,7 +111,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   return (
     <div
-      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}`}
+      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}`}
       style={inlineStyle}
       onMouseDown={handleMouseDown}
       onMouseEnter={(e) => { e.stopPropagation(); setHoveredId(id); }}
@@ -141,7 +145,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         );
       })()}
       {/* Inline resize handles for relative-positioned selected elements */}
-      {isRelative && isSelected && !locked && (
+      {(effectiveRelative) && isSelected && !locked && (
         <div className="fb-el-handles-wrap">
           {['nw','n','ne','e','se','s','sw','w'].map(h => (
             <div

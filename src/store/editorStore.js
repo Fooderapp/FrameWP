@@ -18,6 +18,8 @@ const makeDefaultPage = () => ({
   background: { desktop: '#ffffff', tablet: null, mobile: null },
   // padding: null per bp = inherit from parent breakpoint
   padding: { desktop: { top: 0, right: 0, bottom: 0, left: 0 }, tablet: null, mobile: null },
+  // layout: null per bp = inherit; object = { flexDirection, alignItems, justifyContent, flexWrap, gap }
+  layout: { desktop: null, tablet: null, mobile: null },
   elements: [],
 });
 
@@ -80,6 +82,14 @@ export function resolvePagePadding(padding, bpId) {
   if (bpId === 'mobile') return p.mobile ?? p.tablet ?? p.desktop ?? ZERO_PAD;
   if (bpId === 'tablet') return p.tablet ?? p.desktop ?? ZERO_PAD;
   return p.desktop ?? ZERO_PAD;
+}
+
+// Cascade page layout: null = inherit / disabled
+export function resolvePageLayout(layout, bpId) {
+  const l = layout ?? {};
+  if (bpId === 'mobile') return l.mobile ?? l.tablet ?? l.desktop ?? null;
+  if (bpId === 'tablet') return l.tablet ?? l.desktop ?? null;
+  return l.desktop ?? null;
 }
 export function getChildEls(elements, parentId) {
   const parent = elements.find(e => e.id === parentId);
@@ -229,6 +239,18 @@ export const useEditorStore = create((set, get) => {
       }));
     },
 
+    /** Remove a per-breakpoint style key, reverting to desktop value */
+    removeStyleOverride(elementId, bpId, styleKey) {
+      if (bpId === 'desktop') return;
+      withPage(els => els.map(el => {
+        if (el.id !== elementId) return el;
+        const ov     = { ...(el.overrides?.[bpId] ?? {}) };
+        const styles = { ...(ov.styles ?? {}) };
+        delete styles[styleKey];
+        return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, styles } } };
+      }));
+    },
+
     /** Delete element and all its descendants */
     deleteElement(elementId) {
       const els = getEls();
@@ -275,6 +297,17 @@ export const useEditorStore = create((set, get) => {
         pages: state.pages.map(p =>
           p.id === state.currentPageId
             ? { ...p, padding: { ...(p.padding ?? {}), [bpId]: padObj } }
+            : p
+        ),
+      }));
+    },
+
+    /** Update page layout for a specific breakpoint (null = inherit / disabled) */
+    setPageLayout(bpId, layoutObj) {
+      set(state => ({
+        pages: state.pages.map(p =>
+          p.id === state.currentPageId
+            ? { ...p, layout: { ...(p.layout ?? {}), [bpId]: layoutObj } }
             : p
         ),
       }));

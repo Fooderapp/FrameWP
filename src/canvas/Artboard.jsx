@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useEditorStore, resolveBackground, resolveElement, resolvePagePadding } from '../store/editorStore';
+import { useEditorStore, resolveBackground, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 import CanvasElement from './CanvasElement';
 
 const HEADER_H = 36;
@@ -58,6 +58,8 @@ export default function Artboard({
   const page             = useEditorStore(s => s.getCurrentPage());
   const background       = resolveBackground(page?.background, bp.id);
   const resolvedPad      = resolvePagePadding(page?.padding, bp.id);
+  const resolvedLayout   = resolvePageLayout(page?.layout, bp.id);
+  const layoutOn         = resolvedLayout !== null;
   const scale            = useEditorStore(s => s.viewport.scale);
 
   // Root-level elements only (parentId === null)
@@ -80,8 +82,9 @@ export default function Artboard({
     return (r.x + r.width <= 0 || r.x >= bp.width || r.y + r.height <= 0 || r.y >= bp.height);
   };
   const eligibleEls  = rootEls.filter(el => !isDesktopOffCanvas(el));
-  const onCanvasEls  = eligibleEls.filter(el => !isOffCanvas(el));
-  const offCanvasEls = eligibleEls.filter(el => isOffCanvas(el));
+  // When layout is on all root elements flow in the artboard — skip off-canvas splitting
+  const onCanvasEls  = layoutOn ? eligibleEls : eligibleEls.filter(el => !isOffCanvas(el));
+  const offCanvasEls = layoutOn ? []           : eligibleEls.filter(el => isOffCanvas(el));
 
   const handleBoardClick = (e) => {
     if (e.target === e.currentTarget) {
@@ -134,11 +137,19 @@ export default function Artboard({
         <div
           className="fb-artboard-content"
           style={{
-            position: 'absolute',
+            position: layoutOn ? 'relative' : 'absolute',
             top: resolvedPad.top,
             left: resolvedPad.left,
             right: resolvedPad.right,
             bottom: resolvedPad.bottom,
+            ...(layoutOn ? {
+              display: 'flex',
+              flexDirection: resolvedLayout.flexDirection ?? 'column',
+              alignItems: resolvedLayout.alignItems ?? 'flex-start',
+              justifyContent: resolvedLayout.justifyContent ?? 'flex-start',
+              flexWrap: resolvedLayout.flexWrap ?? 'nowrap',
+              gap: resolvedLayout.gap ?? 0,
+            } : {}),
           }}
           onClick={handleContentClick}
         >
@@ -155,6 +166,7 @@ export default function Artboard({
                   isSelected={selection?.elementId === el.id}
                   isDropTarget={dropTargetId === el.id}
                   dropTargetId={dropTargetId}
+                  artboardLayoutOn={layoutOn}
                   onStartElementDrag={onStartElementDrag}
                   onStartElementResize={onStartResize}
                   onDropOntoElement={onDropOntoElement}

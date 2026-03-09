@@ -332,6 +332,8 @@ export default function InfiniteCanvas() {
         const els = st.getAllElements();
         const mvEl = els.find(ee => ee.id === elementId);
         if (!mvEl?.parentId || drag.current.wasEjected) return;
+        // Only eject from parent container on desktop; on tablet/mobile keep inside parent
+        if (bpId !== 'desktop') return;
         const artboardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
         const parentDom   = artboardDom?.querySelector(`[data-id="${mvEl.parentId}"]`);
         const parentRect  = parentDom?.getBoundingClientRect();
@@ -363,10 +365,25 @@ export default function InfiniteCanvas() {
           y: sY2 + (e.clientY - sMY2) / sc2,
         });
       } else {
-        useEditorStore.getState().updateElementLayout(elementId, bpId, {
-          x: startX + dxWorld,
-          y: startY + dyWorld,
-        });
+        const { scale: sc2 } = useEditorStore.getState().viewport;
+        let nx = startX + dxWorld;
+        let ny = startY + dyWorld;
+        // On tablet/mobile clamp root elements to artboard bounds so they can't go off-canvas
+        if (bpId !== 'desktop') {
+          const st2   = useEditorStore.getState();
+          const mvEl2 = st2.getAllElements().find(ee => ee.id === elementId);
+          if (mvEl2 && !mvEl2.parentId) {
+            const bp2 = st2.breakpointDefs[bpId];
+            const res2 = resolveElement(mvEl2, bpId);
+            const elW2 = res2.width  ?? 100;
+            const elH2 = res2.height ?? 40;
+            if (bp2) {
+              nx = Math.max(0, Math.min(bp2.width  - elW2, nx));
+              ny = Math.max(0, Math.min(bp2.height - elH2, ny));
+            }
+          }
+        }
+        useEditorStore.getState().updateElementLayout(elementId, bpId, { x: nx, y: ny });
       }
       // Live hit-test: find deepest .fb-el container under cursor that isn't the dragged element or its descendants
       (() => {
@@ -457,9 +474,9 @@ export default function InfiniteCanvas() {
         }
       }
 
-      // Check if cursor is outside artboard bounds → off-canvas eject mode
+      // Check if cursor is outside artboard bounds → off-canvas eject mode (desktop only)
       const bp = useEditorStore.getState().breakpointDefs[bpId];
-      const isOutside = artboardRect
+      const isOutside = bpId === 'desktop' && artboardRect
         ? (e.clientX < artboardRect.left || e.clientX > artboardRect.right ||
            e.clientY < artboardRect.top  || e.clientY > artboardRect.bottom)
         : false;
