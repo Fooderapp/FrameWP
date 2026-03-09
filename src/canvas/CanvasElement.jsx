@@ -22,6 +22,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   if (hidden) return null;
 
   const isRelative = positionType === 'relative';
+  const isFixed    = positionType === 'fixed';
   const csW = widthMode === 'fill' ? '100%' : widthMode === 'hug' ? 'fit-content' : width;
   const csH = heightMode === 'fill' ? '100%' : heightMode === 'hug' ? 'fit-content' : height;
 
@@ -106,7 +107,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   return (
     <div
-      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}`}
+      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}`}
       style={inlineStyle}
       onMouseDown={handleMouseDown}
       onMouseEnter={(e) => { e.stopPropagation(); setHoveredId(id); }}

@@ -347,10 +347,13 @@ export default function InfiniteCanvas() {
         const nx = Math.round((e.clientX - cRect.left - pX) / sc - bp2.x - (pad2?.left ?? 0) - (startW ?? 100) / 2);
         const ny = Math.round((e.clientY - cRect.top  - pY) / sc - bp2.y - (pad2?.top  ?? 0) - (startH ?? 40)  / 2);
         st.reparentElement(elementId, null);
-        st.updateElementLayout(elementId, bpId, { positionType: 'absolute', x: nx, y: ny });
-        drag.current = { type: 'move', bpId, elementId, startMX: e.clientX, startMY: e.clientY, startX: nx, startY: ny, wasEjected: true };
+        st.updateElementLayout(elementId, bpId, { positionType: drag.current.origPositionType ?? 'absolute', x: nx, y: ny });
+        drag.current = { type: 'move', bpId, elementId, startMX: e.clientX, startMY: e.clientY, startX: nx, startY: ny, wasEjected: true, origPositionType: drag.current.origPositionType ?? 'absolute' };
         setDropTargetId(null);
       })();
+      const hasMoved = Math.abs(e.clientX - drag.current.startMX) > 4 ||
+                        Math.abs(e.clientY - drag.current.startMY) > 4;
+      if (hasMoved) drag.current.hasMoved = true;
       if (drag.current.wasEjected && drag.current.startMX !== undefined) {
         // recalc after possible mutation above
         const { startMX: sMX2, startMY: sMY2, startX: sX2, startY: sY2 } = drag.current;
@@ -446,8 +449,8 @@ export default function InfiniteCanvas() {
           const nx2  = Math.round(wx2 - (res2.width  ?? 100) / 2);
           const ny2  = Math.round(wy2 - (res2.height ?? 40)  / 2);
           state2.reparentElement(elementId, null);
-          state2.updateElementLayout(elementId, bpId, { positionType: 'absolute', x: nx2, y: ny2 });
-          drag.current = { type: 'move', bpId, elementId, startMX: e.clientX, startMY: e.clientY, startX: nx2, startY: ny2, wasEjected: true };
+          state2.updateElementLayout(elementId, bpId, { positionType: drag.current.origPositionType ?? 'absolute', x: nx2, y: ny2 });
+          drag.current = { type: 'move', bpId, elementId, startMX: e.clientX, startMY: e.clientY, startX: nx2, startY: ny2, wasEjected: true, origPositionType: drag.current.origPositionType ?? 'absolute' };
           setReorderTarget(null);
           setDropTargetId(null);
           return;
@@ -477,12 +480,13 @@ export default function InfiniteCanvas() {
           const nx2  = Math.round(wx2 - (res2.width  ?? 100) / 2);
           const ny2  = Math.round(wy2 - (res2.height ?? 40)  / 2);
           state2.reparentElement(elementId, null);
-          state2.updateElementLayout(elementId, bpId, { positionType: 'absolute', x: nx2, y: ny2 });
+          state2.updateElementLayout(elementId, bpId, { positionType: drag.current.origPositionType ?? 'absolute', x: nx2, y: ny2 });
           drag.current = {
             type: 'move', bpId, elementId,
             startMX: e.clientX, startMY: e.clientY,
             startX: nx2, startY: ny2,
             wasEjected: true,
+            origPositionType: drag.current.origPositionType ?? 'absolute',
           };
         }
         return;
@@ -563,13 +567,55 @@ export default function InfiniteCanvas() {
                 y: Math.round(worldY - (resolved.height ?? 40) / 2),
               });
             } else {
-              const parentId = rEl.parentId;
-              const siblings = parentId
-                ? (allEls.find(p => p.id === parentId)?.children ?? []).filter(id => id !== elementId)
-                : allEls.filter(e => !e.parentId && e.id !== elementId).map(e => e.id);
-              let newIndex = insertBeforeId != null ? siblings.indexOf(insertBeforeId) : siblings.length;
-              if (newIndex < 0) newIndex = siblings.length;
-              state.reorderElementInParent(elementId, newIndex);
+              // Cross-container hit-test: check if cursor is over a different container
+              const lastMXr  = drag.current.lastMX ?? drag.current.startMX;
+              const lastMYr  = drag.current.lastMY ?? drag.current.startMY;
+              const descR    = new Set([elementId]);
+              const collectR = (id) => { const e = allEls.find(x => x.id === id); (e?.children ?? []).forEach(cid => { descR.add(cid); collectR(cid); }); };
+              collectR(elementId);
+              const hitsR = document.elementsFromPoint(lastMXr, lastMYr);
+              let crossTarget = null;
+              for (const node of hitsR) {
+                const did = node.dataset?.id;
+                if (!did || descR.has(did)) continue;
+                const candidate = allEls.find(x => x.id === did);
+                if (candidate && candidate.id !== rEl.parentId) { crossTarget = candidate; break; }
+              }
+              if (crossTarget) {
+                // Drop into a different container
+                const tRes = resolveElement(crossTarget, rBpId);
+                const isAutoLayout = tRes.styles?.display === 'flex';
+                if (isAutoLayout) {
+                  state.updateElementLayout(elementId, rBpId, { positionType: 'relative' });
+                  state.reparentElement(elementId, crossTarget.id);
+                } else {
+                  const artboardDomR = document.querySelector(`.fb-artboard[data-bp="${rBpId}"]`);
+                  const parentDomR   = artboardDomR?.querySelector(`[data-id="${crossTarget.id}"]`);
+                  const elDomR       = artboardDomR?.querySelector(`[data-id="${elementId}"]`);
+                  const parentRectR  = parentDomR?.getBoundingClientRect();
+                  const elRectR      = elDomR?.getBoundingClientRect();
+                  const { scale: scR } = state.viewport;
+                  const relXr = parentRectR && elRectR ? Math.round((elRectR.left - parentRectR.left) / scR) : 0;
+                  const relYr = parentRectR && elRectR ? Math.round((elRectR.top  - parentRectR.top)  / scR) : 0;
+                  const resR = resolveElement(rEl, rBpId);
+                  state.updateElementLayout(elementId, rBpId, {
+                    positionType: 'absolute',
+                    widthMode: 'fixed', heightMode: 'fixed',
+                    width: resR.width ?? 100, height: resR.height ?? 40,
+                    x: relXr, y: relYr,
+                  });
+                  state.reparentElement(elementId, crossTarget.id);
+                }
+              } else {
+                // Same parent reorder
+                const parentId = rEl.parentId;
+                const siblings = parentId
+                  ? (allEls.find(p => p.id === parentId)?.children ?? []).filter(id => id !== elementId)
+                  : allEls.filter(e => !e.parentId && e.id !== elementId).map(e => e.id);
+                let newIndex = insertBeforeId != null ? siblings.indexOf(insertBeforeId) : siblings.length;
+                if (newIndex < 0) newIndex = siblings.length;
+                state.reorderElementInParent(elementId, newIndex);
+              }
             }
           }
         }
@@ -582,7 +628,9 @@ export default function InfiniteCanvas() {
         const mvAllEls = mvState.getAllElements();
         const mvEl = mvAllEls.find(e => e.id === mvId);
         // DOM-based hit-test: find deepest .fb-el under last cursor position that isn't the dragged element
-        if (mvEl) {
+        // Only run nesting/positioning logic if the element was actually dragged, not just clicked
+        // Fixed elements never reparent into containers — they always stay root-level
+        if (mvEl && drag.current.hasMoved && drag.current.origPositionType !== 'fixed') {
           const resolved = resolveElement(mvEl, mvBpId);
           const bp = mvState.breakpointDefs[mvBpId];
           if (bp) {
@@ -626,12 +674,12 @@ export default function InfiniteCanvas() {
                 mvState.reparentElement(mvId, targetContainer.id);
               }
             } else {
-              // Dropped on artboard / empty canvas → ensure absolute + fixed
+              // Dropped on artboard / empty canvas → preserve position type (fixed stays fixed)
               if (mvEl.parentId) {
                 mvState.reparentElement(mvId, null);
               }
               mvState.updateElementLayout(mvId, mvBpId, {
-                positionType: 'absolute',
+                positionType: drag.current.origPositionType ?? 'absolute',
                 widthMode: 'fixed', heightMode: 'fixed',
                 width: elW, height: elH,
               });
@@ -767,6 +815,7 @@ export default function InfiniteCanvas() {
       startMX: e.clientX, startMY: e.clientY,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
+      origPositionType: resolved.positionType ?? 'absolute',
     };
     setInteracting(true);
   }, [setSelection, setArtboardSel, setInteracting]);

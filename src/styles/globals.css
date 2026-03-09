@@ -610,6 +610,7 @@ html, body, #framebuilder-root {
 .fb-el--locked { cursor: not-allowed; }
 /* Off-canvas: element is outside artboard bounds, dimmed + dashed outline */
 .fb-el--offcanvas { opacity: 0.45 !important; outline: 1.5px dashed rgba(255,180,0,0.6) !important; outline-offset: 0; }
+.fb-el--fixed { outline: 1.5px dashed rgba(120,80,255,0.55); outline-offset: -1px; }
 
 /* Resize handles */
 .fb-el__handle {

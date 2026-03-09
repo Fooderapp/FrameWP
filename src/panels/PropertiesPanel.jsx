@@ -343,7 +343,7 @@ export default function PropertiesPanel() {
 
         {/* ── Position ──────────────────────────────────────── */}
         <Section title="Position">
-          {(resolved.positionType ?? 'absolute') === 'absolute' && (
+          {['absolute', 'fixed'].includes(resolved.positionType ?? 'absolute') && (
             <div className="fb-pos-widget">
               <div className="fb-pos-widget__row">
                 <PosInput value={resolved.y ?? 0} label="T" onChange={v => { upd('y', v); commit(); }} />
@@ -377,6 +377,7 @@ export default function PropertiesPanel() {
               onChange={e => { upd('positionType', e.target.value); commit(); }}
             >
               <option value="absolute">Absolute</option>
+              <option value="fixed">Fixed</option>
               <option value="relative">Relative</option>
             </select>
           </div>

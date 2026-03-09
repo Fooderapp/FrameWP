@@ -205,6 +205,11 @@ class FrameBuilder_Exporter {
 
 		if ( $pos_type === 'relative' ) {
 			$inline = "position:relative;box-sizing:border-box;width:{$w_str};height:{$h_str};";
+		} elseif ( $pos_type === 'fixed' ) {
+			$pos_l = $pin_right && empty( $cx['left'] ) ? "right:{$right_val}px" : "left:{$x}px";
+			$pos_t = $pin_bottom && empty( $cx['top'] ) ? "bottom:{$bottom_val}px" : "top:{$y}px";
+			$inline = "position:fixed;box-sizing:border-box;"
+				. "{$pos_l};{$pos_t};width:{$w_str};height:{$h_str};";
 		} else {
 			$pos_l = $pin_right && empty( $cx['left'] ) ? "right:{$right_val}px" : "left:{$x}px";
 			$pos_t = $pin_bottom && empty( $cx['top'] ) ? "bottom:{$bottom_val}px" : "top:{$y}px";
@@ -303,9 +308,9 @@ class FrameBuilder_Exporter {
 				$w_rule,
 				$h_rule,
 			];
-		} else {
+		} elseif ( $pos_type === 'fixed' || $pos_type === 'absolute' ) {
 			$rules = [
-				'position: absolute',
+				'position: ' . $pos_type,
 				'box-sizing: border-box',
 			];
 			// Horizontal: fill/hug override pinning
