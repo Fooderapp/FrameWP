@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { useEditorStore, createFrame, resolveElement, resolvePagePadding } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 import Artboard from './Artboard';
 
 const MIN_SCALE = 0.08;
@@ -41,6 +41,11 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
   const resolved = resolveElement(el, selection.bpId);
   if (resolved.hidden) return null;
   if (resolved.positionType === 'relative') return null; // handled by inline handles inside CanvasElement
+
+  // Elements that flow inside an auto-layout artboard also render inline handles.
+  const pageLayout = resolvePageLayout(page?.layout, selection.bpId);
+  const isFlowInLayout = pageLayout !== null && !resolved.absoluteInLayout && !el.parentId;
+  if (isFlowInLayout) return null;
 
   const bp = bpDefs[selection.bpId];
   if (!bp) return null;
@@ -152,6 +157,7 @@ export default function InfiniteCanvas() {
   const [dropTargetId,     setDropTargetId]     = useState(null); // elementId hovered during a 'move' drag
   const [radiusDragInfo,   setRadiusDragInfo]   = useState(null); // { value, clientX, clientY }
   const [paddingDragInfo,  setPaddingDragInfo]  = useState(null); // { value, side, clientX, clientY }
+  const [gapDragInfo,      setGapDragInfo]      = useState(null); // { value, clientX, clientY }
   const clipboard = useRef(null);
 
   // ── Drag state ─────────────────────────────────────────────
@@ -422,6 +428,11 @@ export default function InfiniteCanvas() {
       if (side === 'right')  newPad.right  = Math.max(0, startPad.right  - dxWorld);
       useEditorStore.getState().setPagePadding(bpId, newPad);
       setPaddingDragInfo({ side, value: Math.round(newPad[side]), clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'artboard-gap') {
+      const { isRow, startGap, layout } = drag.current;
+      const newGap = Math.max(0, Math.round(startGap + (isRow ? dxWorld : dyWorld)));
+      useEditorStore.getState().setPageLayout(bpId, { ...layout, gap: newGap });
+      setGapDragInfo({ value: newGap, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'resize') {
       let newX = startX, newY = startY, newW = startW, newH = startH;
       switch (handle) {
@@ -710,6 +721,9 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'element-padding' || drag.current.type === 'artboard-padding') {
         setPaddingDragInfo(null);
       }
+      if (drag.current.type === 'artboard-gap') {
+        setGapDragInfo(null);
+      }
       pushHistory();
       drag.current = null;
       setInteracting(false);
@@ -772,7 +786,22 @@ export default function InfiniteCanvas() {
     };
     setInteracting(true);
   }, [setInteracting]);
-
+  // ── Start artboard gap drag ───────────────────────────
+  const startArtboardGapDrag = useCallback((e, bpId) => {
+    e.stopPropagation();
+    const page   = useEditorStore.getState().getCurrentPage();
+    const layout = resolvePageLayout(page?.layout, bpId);
+    if (!layout) return;
+    drag.current = {
+      type: 'artboard-gap', bpId,
+      startMX: e.clientX, startMY: e.clientY,
+      startGap: layout.gap ?? 0,
+      isRow: layout.flexDirection === 'row',
+      layout: { ...layout },
+    };
+    setGapDragInfo({ value: layout.gap ?? 0, clientX: e.clientX, clientY: e.clientY });
+    setInteracting(true);
+  }, [setInteracting]);
   // ── Start element padding drag ─────────────────────────────
   const startElementPaddingDrag = useCallback((e, bpId, elementId, side) => {
     e.stopPropagation();
@@ -893,6 +922,10 @@ export default function InfiniteCanvas() {
       const el = createFrame(elX, elY);
       addElement(el, null, targetBpId);
       pushHistory();
+    } else if (type === 'image') {
+      const el = createImage(elX, elY);
+      addElement(el, null, targetBpId);
+      pushHistory();
     }
   }, [bpDefs, addElement, pushHistory]);
 
@@ -902,6 +935,10 @@ export default function InfiniteCanvas() {
     const draggedId = e.dataTransfer.getData('fb-element-id');
     if (type === 'frame') {
       const el = createFrame(20, 20);
+      addElement(el, targetElementId);
+      pushHistory();
+    } else if (type === 'image') {
+      const el = createImage(20, 20);
       addElement(el, targetElementId);
       pushHistory();
     } else if (draggedId && draggedId !== targetElementId) {
@@ -949,6 +986,7 @@ export default function InfiniteCanvas() {
             onStartArtboardDrag={startArtboardDrag}
             onStartArtboardResize={startArtboardResize}
             onStartArtboardPaddingDrag={startArtboardPaddingDrag}
+            onStartArtboardGapDrag={startArtboardGapDrag}
             onSelectArtboard={onSelectArtboard}
             isArtboardSelected={artboardSel === bp.id}
             onStartRadiusDrag={startRadiusDrag}
@@ -967,6 +1005,11 @@ export default function InfiniteCanvas() {
       {paddingDragInfo && (
         <div className="fb-radius-tooltip" style={{ position: 'fixed', left: paddingDragInfo.clientX + 14, top: paddingDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
           {paddingDragInfo.side}: {paddingDragInfo.value}px
+        </div>
+      )}
+      {gapDragInfo && (
+        <div className="fb-radius-tooltip" style={{ position: 'fixed', left: gapDragInfo.clientX + 14, top: gapDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
+          gap: {gapDragInfo.value}px
         </div>
       )}
     </div>

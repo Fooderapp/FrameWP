@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useLayoutEffect } from 'react';
 import { useEditorStore, resolveBackground, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 import CanvasElement from './CanvasElement';
 
@@ -43,6 +43,7 @@ export default function Artboard({
   onStartArtboardDrag,
   onStartArtboardResize,
   onStartArtboardPaddingDrag,
+  onStartArtboardGapDrag,
   onSelectArtboard,
   isArtboardSelected,
   onStartRadiusDrag,
@@ -94,6 +95,39 @@ export default function Artboard({
   };
   const handleContentClick = handleBoardClick;
 
+  // ── Gap handle measurement ─────────────────────────────────
+  const contentRef = useRef(null);
+  const [gapHandles, setGapHandles] = useState([]);
+  useLayoutEffect(() => {
+    if (!layoutOn || !isArtboardSelected || !contentRef.current) {
+      setGapHandles(prev => prev.length === 0 ? prev : []);
+      return;
+    }
+    const artDom = contentRef.current.closest('.fb-artboard');
+    if (!artDom) return;
+    const artRect  = artDom.getBoundingClientRect();
+    const children = Array.from(contentRef.current.children)
+      .filter(c => !c.classList.contains('fb-reorder-indicator'));
+    const isRow   = resolvedLayout?.flexDirection === 'row';
+    const handles = [];
+    for (let i = 0; i < children.length - 1; i++) {
+      const cur  = children[i].getBoundingClientRect();
+      const next = children[i + 1].getBoundingClientRect();
+      if (isRow) {
+        handles.push({ x: Math.round(((cur.right + next.left) / 2 - artRect.left) / scale) });
+      } else {
+        handles.push({ y: Math.round(((cur.bottom + next.top) / 2 - artRect.top) / scale) });
+      }
+    }
+    setGapHandles(prev => {
+      if (prev.length !== handles.length) return handles;
+      for (let i = 0; i < prev.length; i++) {
+        if (prev[i].x !== handles[i].x || prev[i].y !== handles[i].y) return handles;
+      }
+      return prev;
+    });
+  });
+
   return (
     /* Group: positioned so content starts at (bp.x, bp.y), header is above */
     <div
@@ -133,23 +167,29 @@ export default function Artboard({
         style={{ width: bp.width, height: bp.height, background }}
         onClick={handleBoardClick}
       >
-        {/* Content area — elements are positioned relative to this padded inner origin */}
+        {/* Content area */}
         <div
+          ref={contentRef}
           className="fb-artboard-content"
           style={{
             position: layoutOn ? 'relative' : 'absolute',
-            top: resolvedPad.top,
-            left: resolvedPad.left,
-            right: resolvedPad.right,
-            bottom: resolvedPad.bottom,
             ...(layoutOn ? {
+              width: '100%',
+              minHeight: '100%',
+              boxSizing: 'border-box',
+              padding: `${resolvedPad.top}px ${resolvedPad.right}px ${resolvedPad.bottom}px ${resolvedPad.left}px`,
               display: 'flex',
               flexDirection: resolvedLayout.flexDirection ?? 'column',
               alignItems: resolvedLayout.alignItems ?? 'flex-start',
               justifyContent: resolvedLayout.justifyContent ?? 'flex-start',
               flexWrap: resolvedLayout.flexWrap ?? 'nowrap',
               gap: resolvedLayout.gap ?? 0,
-            } : {}),
+            } : {
+              top: resolvedPad.top,
+              left: resolvedPad.left,
+              right: resolvedPad.right,
+              bottom: resolvedPad.bottom,
+            }),
           }}
           onClick={handleContentClick}
         >
@@ -196,6 +236,48 @@ export default function Artboard({
             <div className="fb-pad-line fb-pad-line--right"  style={{ right:  resolvedPad.right  }} onMouseDown={e => { e.stopPropagation(); onStartArtboardPaddingDrag(e, bp.id, 'right');  }} />
           </>
         )}
+        {/* Gap handles — shown when auto-layout is on and artboard is selected */}
+        {isArtboardSelected && layoutOn && onStartArtboardGapDrag && gapHandles.map((h, idx) => {
+          const isRow = resolvedLayout?.flexDirection === 'row';
+          const gap   = resolvedLayout?.gap ?? 0;
+          return (
+            <div
+              key={idx}
+              style={{
+                position: 'absolute',
+                zIndex: 56,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                ...(isRow
+                  ? { left: h.x - 5, top: 0, bottom: 0, width: 10, cursor: 'ew-resize' }
+                  : { top: h.y - 5, left: 0, right: 0, height: 10, cursor: 'ns-resize' }),
+              }}
+              onMouseDown={e => { e.stopPropagation(); onStartArtboardGapDrag(e, bp.id); }}
+            >
+              {/* Line */}
+              <div style={{
+                position: 'absolute',
+                background: 'rgba(124,58,237,0.65)',
+                ...(isRow
+                  ? { left: '50%', top: 0, bottom: 0, width: 1, transform: 'translateX(-50%)' }
+                  : { top: '50%', left: 0, right: 0, height: 1, transform: 'translateY(-50%)' }),
+              }} />
+              {/* Pill badge */}
+              <div style={{
+                position: 'relative',
+                background: 'var(--accent)',
+                color: '#fff',
+                fontSize: 9,
+                lineHeight: 1,
+                padding: '2px 4px',
+                borderRadius: 3,
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+              }}>{gap}px</div>
+            </div>
+          );
+        })}
       </div>
 
       {/* Off-canvas layer — zero-size div at artboard origin, overflow visible.

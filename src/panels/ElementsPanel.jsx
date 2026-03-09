@@ -1,5 +1,5 @@
 import React from 'react';
-import { useEditorStore, createFrame } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage } from '../store/editorStore';
 
 const ELEMENT_TYPES = [
   {
@@ -10,6 +10,17 @@ const ELEMENT_TYPES = [
       </svg>
     ),
     label: 'Frame',
+  },
+  {
+    type: 'image',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="1" y="2" width="14" height="12" rx="1.5"/>
+        <circle cx="5.5" cy="6.5" r="1.2" fill="currentColor" stroke="none"/>
+        <path d="M1 12l4-3.5 3 2.5 2.5-2 4.5 4"/>
+      </svg>
+    ),
+    label: 'Image',
   },
 ];
 
@@ -24,6 +35,8 @@ export default function ElementsPanel() {
     let el;
     if (type === 'frame') {
       el = createFrame(bp.width / 2 - 120, bp.height / 2 - 80);
+    } else if (type === 'image') {
+      el = createImage(bp.width / 2 - 120, bp.height / 2 - 80);
     }
     if (el) {
       addElement(el, null);

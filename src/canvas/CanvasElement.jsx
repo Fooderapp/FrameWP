@@ -103,6 +103,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     alignItems:       styles?.alignItems,
     justifyContent:   styles?.justifyContent,
     boxShadow:        styles?.boxShadow || undefined,
+    // Background image (frame fill)
+    backgroundImage:    styles?.backgroundImage ? `url(${styles.backgroundImage})` : undefined,
+    backgroundSize:     styles?.backgroundImage ? (styles?.backgroundSize ?? 'cover') : undefined,
+    backgroundPosition: styles?.backgroundImage ? (styles?.backgroundPosition ?? 'center center') : undefined,
+    backgroundRepeat:   styles?.backgroundImage && styles?.backgroundSize === 'repeat' ? 'repeat' : (styles?.backgroundImage ? 'no-repeat' : undefined),
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
     cursor:  locked ? 'not-allowed' : 'move',
     zIndex:  isSelected ? 9999 : undefined,
@@ -123,6 +128,38 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       tabIndex={isSelected ? 0 : -1}
       data-id={id}
     >
+      {/* Image element content */}
+      {el.type === 'image' && (() => {
+        const src = resolved.src ?? '';
+        return src
+          ? <img
+              src={src}
+              alt={el.name || ''}
+              style={{
+                position: 'absolute', inset: 0,
+                width: '100%', height: '100%',
+                objectFit: styles?.objectFit ?? 'cover',
+                borderRadius: 'inherit',
+                pointerEvents: 'none',
+                userSelect: 'none',
+              }}
+              draggable={false}
+            />
+          : <div style={{
+              position: 'absolute', inset: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'rgba(120,120,140,0.6)', fontSize: 11, pointerEvents: 'none',
+              border: '1.5px dashed rgba(120,120,160,0.35)', borderRadius: 'inherit',
+              gap: 4, flexDirection: 'column',
+            }}>
+              <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <rect x="1" y="2" width="14" height="12" rx="1.5"/>
+                <circle cx="5.5" cy="6.5" r="1.2" fill="currentColor" stroke="none"/>
+                <path d="M1 12l4-3.5 3 2.5 2.5-2 4.5 4"/>
+              </svg>
+              <span>Image</span>
+            </div>;
+      })()}
       {/* Padding handles — shaded zones + drag lines (when selected and padding > 0) */}
       {isSelected && !locked && onStartPaddingDrag && (() => {
         const toNum = v => typeof v === 'number' ? v : parseFloat(v) || 0;

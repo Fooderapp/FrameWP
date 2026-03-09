@@ -278,6 +278,30 @@ class FrameBuilder_Exporter {
 
 		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '">';
 
+		// Image element: render <img> tag filling the div
+		if ( ( $el['type'] ?? '' ) === 'image' ) {
+			$src       = esc_url( $resolved['src'] ?? '' );
+			$obj_fit   = $this->sanitize_css_value( $styles['objectFit'] ?? 'cover' );
+			if ( $src ) {
+				$img_style = "position:absolute;inset:0;width:100%;height:100%;object-fit:{$obj_fit};border-radius:inherit;";
+				$html .= '<img src="' . $src . '" alt="" style="' . esc_attr( $img_style ) . '" loading="lazy">';
+			}
+		}
+
+		// Background image fill on frames / divs
+		$bg_img = $styles['backgroundImage'] ?? '';
+		if ( $bg_img !== '' ) {
+			$bg_size = $styles['backgroundSize'] ?? 'cover';
+			$bg_pos  = esc_attr( $this->sanitize_css_value( $styles['backgroundPosition'] ?? 'center center' ) );
+			if ( $bg_size === 'repeat' ) {
+				$inline .= 'background-image:url(' . esc_attr( $bg_img ) . ');background-size:auto;background-repeat:repeat;background-position:' . $bg_pos . ';';
+			} else {
+				$inline .= 'background-image:url(' . esc_attr( $bg_img ) . ');background-size:' . esc_attr( $this->sanitize_css_value( $bg_size ) ) . ';background-repeat:no-repeat;background-position:' . $bg_pos . ';';
+			}
+			// Re-emit the div with updated inline (background was computed after first assignment)
+			$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '">';
+		}
+
 		foreach ( $el['children'] ?? [] as $child_id ) {
 			$child = $this->el_index[ $child_id ] ?? null;
 			if ( $child ) {
@@ -406,6 +430,21 @@ class FrameBuilder_Exporter {
 				$val .= 'px';
 			}
 			$rules[] = $css_key . ': ' . $this->sanitize_css_value( $val );
+		}
+		// Background image fill
+		$bg_img = $styles['backgroundImage'] ?? '';
+		if ( $bg_img !== '' ) {
+			$bg_size = $styles['backgroundSize'] ?? 'cover';
+			$bg_pos  = $styles['backgroundPosition'] ?? 'center center';
+			$rules[] = 'background-image: url(' . $this->sanitize_css_value( $bg_img ) . ')';
+			if ( $bg_size === 'repeat' ) {
+				$rules[] = 'background-size: auto';
+				$rules[] = 'background-repeat: repeat';
+			} else {
+				$rules[] = 'background-size: ' . $this->sanitize_css_value( $bg_size );
+				$rules[] = 'background-repeat: no-repeat';
+			}
+			$rules[] = 'background-position: ' . $this->sanitize_css_value( $bg_pos );
 		}
 		// Independent corner radius
 		if ( ( $styles['borderRadiusMode'] ?? '' ) === 'independent' ) {

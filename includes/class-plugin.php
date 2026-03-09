@@ -23,6 +23,8 @@ class FrameBuilder_Plugin {
 
 	// ── Admin menu ────────────────────────────────────────────
 
+	// ── Admin menu ────────────────────────────────────────────
+
 	public static function add_menu() {
 		add_menu_page(
 			__( 'FrameBuilder', 'framebuilder' ),
@@ -33,6 +35,16 @@ class FrameBuilder_Plugin {
 			'dashicons-screenoptions',
 			30
 		);
+		// Hidden submenu — no parent slug means it won't appear in any menu,
+		// but WP registers it so the capability check passes when loaded in iframe.
+		add_submenu_page(
+			null,
+			'FrameBuilder Media Picker',
+			'FrameBuilder Media Picker',
+			'upload_files',
+			'fb-media-picker',
+			[ __CLASS__, 'render_media_picker' ]
+		);
 	}
 
 	public static function render_page() {
@@ -40,11 +52,63 @@ class FrameBuilder_Plugin {
 		echo '<div id="framebuilder-root" data-post-id="' . esc_attr( $post_id ) . '" style="position:fixed;inset:0;z-index:99999;"></div>';
 	}
 
+	/**
+	 * Render the isolated media picker page (loaded in an iframe from the builder).
+	 * wp.media() runs here in its own WP admin context — no conflicts with builder scripts.
+	 * On selection it posts the image URL back to the builder via postMessage.
+	 */
+	public static function render_media_picker() {
+		?>
+		<style>
+		  html, body { margin: 0; padding: 0; height: 100vh; overflow: hidden; background: #f0f0f1; }
+		  #wpadminbar, #adminmenuwrap, #adminmenuback, #wpbody,
+		  #wpcontent, .notice, .update-nag { display: none !important; }
+		  /* Backdrop is our outer modal — hide WP's own */
+		  .media-modal-backdrop { display: none !important; }
+		  /* Modal fills the entire iframe */
+		  .media-modal {
+		    position: fixed !important;
+		    top: 0 !important; right: 0 !important;
+		    bottom: 0 !important; left: 0 !important;
+		    border-radius: 0 !important;
+		    box-shadow: none !important;
+		    z-index: 1 !important;
+		  }
+		  .media-frame { height: 100% !important; }
+		</style>
+		<script>
+		jQuery( function() {
+			var frame = wp.media( {
+				title:    <?php echo wp_json_encode( __( 'Select Image', 'framebuilder' ) ); ?>,
+				multiple: false,
+				library:  { type: 'image' },
+				button:   { text: <?php echo wp_json_encode( __( 'Insert', 'framebuilder' ) ); ?> }
+			} );
+			frame.on( 'select', function() {
+				var att = frame.state().get( 'selection' ).first().toJSON();
+				window.parent.postMessage( { fbMediaUrl: att.url }, '*' );
+			} );
+			frame.on( 'close escape', function() {
+				window.parent.postMessage( { fbMediaClosed: true }, '*' );
+			} );
+			frame.open();
+		} );
+		</script>
+		<?php
+	}
+
 	// ── Asset enqueueing ──────────────────────────────────────
 
 	public static function enqueue( $hook ) {
-		// Only load on our admin page
+		// Only load on our admin pages
 		$page = isset( $_GET['page'] ) ? sanitize_key( $_GET['page'] ) : '';
+
+		// Media picker iframe page — enqueue the full media stack here (before wp_head).
+		if ( $page === 'fb-media-picker' ) {
+			wp_enqueue_media( [ 'post' => 0 ] );
+			return;
+		}
+
 		if ( $page !== 'framebuilder' ) {
 			return;
 		}
@@ -72,10 +136,11 @@ class FrameBuilder_Plugin {
 		}
 
 		wp_localize_script( 'framebuilder', 'fbData', [
-			'nonce'   => wp_create_nonce( 'wp_rest' ),
-			'restUrl' => rest_url( 'framebuilder/v1/' ),
-			'siteUrl' => site_url(),
-			'postId'  => isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0,
+			'nonce'    => wp_create_nonce( 'wp_rest' ),
+			'restUrl'  => rest_url( 'framebuilder/v1/' ),
+			'siteUrl'  => site_url(),
+			'adminUrl' => admin_url(),
+			'postId'   => isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0,
 		] );
 	}
 

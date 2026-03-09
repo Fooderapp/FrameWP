@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useEditorStore, resolveElement, resolveBackground, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -108,6 +108,73 @@ function Toggle({ value, onChange, label }) {
       </div>
       {label && <span className="fb-toggle__label">{label}</span>}
     </div>
+  );
+}
+
+function MediaPickerModal({ onSelect, onClose }) {
+  const adminUrl = (window.fbData?.adminUrl ?? '').replace(/\/$/, '');
+  const src = `${adminUrl}/admin.php?page=fb-media-picker`;
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.data?.fbMediaUrl) {
+        onSelect(e.data.fbMediaUrl);
+        onClose();
+      } else if (e.data?.fbMediaClosed) {
+        onClose();
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [onSelect, onClose]);
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 9999999, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onMouseDown={e => e.target === e.currentTarget && onClose()}
+    >
+      <div style={{ width: 920, height: 680, borderRadius: 8, overflow: 'hidden', boxShadow: '0 32px 100px rgba(0,0,0,0.9)', display: 'flex', flexDirection: 'column', border: '1px solid #3c434a' }}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '9px 14px', background: '#1d2327', borderBottom: '1px solid #3c434a', flexShrink: 0 }}>
+          <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: '#f0f0f1', letterSpacing: '0.02em' }}>Media Library</span>
+          <button onMouseDown={onClose} style={{ all: 'unset', cursor: 'pointer', fontSize: 17, color: '#aaa', lineHeight: 1 }}>✕</button>
+        </div>
+        <iframe
+          src={src}
+          style={{ flex: 1, border: 'none', display: 'block', background: '#f0f0f1' }}
+          title="Media Library"
+          allow="same-origin"
+        />
+      </div>
+    </div>
+  );
+}
+
+function MediaPickerButton({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        {value ? (
+          <div style={{ width: 36, height: 36, borderRadius: 4, overflow: 'hidden', border: '1px solid var(--border)', flexShrink: 0 }}>
+            <img src={value} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </div>
+        ) : null}
+        <button
+          className="fb-icon-btn"
+          style={{ fontSize: 11, padding: '0 8px', flex: 1 }}
+          onClick={() => setOpen(true)}
+        >{value ? '⇄ Change' : '+ Select image'}</button>
+        {value ? (
+          <button
+            className="fb-icon-btn"
+            style={{ fontSize: 11, padding: '0 6px' }}
+            title="Remove image"
+            onClick={() => onChange('')}
+          >✕</button>
+        ) : null}
+      </div>
+      {open && <MediaPickerModal onSelect={onChange} onClose={() => setOpen(false)} />}
+    </>
   );
 }
 
@@ -590,14 +657,89 @@ export default function PropertiesPanel() {
         </Section>
 
         {/* ── Fill ──────────────────────────────────────────── */}
-        <Section title="Fill" action={<ResetBtn show={isSOv('backgroundColor')} onReset={() => resetSOv('backgroundColor')} />}>
+        <Section title="Fill" action={<ResetBtn show={isSOv('backgroundColor','backgroundImage','backgroundSize','backgroundPosition')} onReset={() => resetSOv('backgroundColor','backgroundImage','backgroundSize','backgroundPosition')} />}>
+          {/* Solid color */}
           <div className="fb-prop-row--full">
             <ColorInput
               value={s.backgroundColor ?? '#ffffff'}
               onChange={v => updS('backgroundColor', v)}
             />
           </div>
+          {/* Image fill — only on frames */}
+          {element.type === 'frame' && (
+            <>
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Image</span>
+              </div>
+              <div className="fb-prop-row--full" style={{ marginTop: 4 }}>
+                <MediaPickerButton
+                  value={s.backgroundImage ?? ''}
+                  onChange={v => updS('backgroundImage', v)}
+                />
+              </div>
+              {s.backgroundImage !== undefined && s.backgroundImage !== '' && (
+                <>
+                  <div className="fb-prop-row" style={{ marginTop: 6 }}>
+                    <span className="fb-prop-label">Fit</span>
+                    <IconGroup
+                      value={s.backgroundSize ?? 'cover'}
+                      onChange={v => updS('backgroundSize', v)}
+                      options={[
+                        { value: 'cover',   icon: '⛶', label: 'Fill' },
+                        { value: 'contain', icon: '⊡', label: 'Contain' },
+                        { value: '100% 100%', icon: '⊞', label: 'Stretch' },
+                        { value: 'repeat',  icon: '⊞⊞', label: 'Repeat' },
+                      ]}
+                    />
+                  </div>
+                  <div className="fb-prop-row" style={{ marginTop: 4 }}>
+                    <span className="fb-prop-label">Position</span>
+                    <select
+                      className="fb-prop-input"
+                      value={s.backgroundPosition ?? 'center center'}
+                      onChange={e => updS('backgroundPosition', e.target.value)}
+                    >
+                      <option value="center center">Center</option>
+                      <option value="top left">Top left</option>
+                      <option value="top center">Top center</option>
+                      <option value="top right">Top right</option>
+                      <option value="center left">Center left</option>
+                      <option value="center right">Center right</option>
+                      <option value="bottom left">Bottom left</option>
+                      <option value="bottom center">Bottom center</option>
+                      <option value="bottom right">Bottom right</option>
+                    </select>
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </Section>
+
+        {/* ── Image source (image element only) ─────────────── */}
+        {element.type === 'image' && (
+          <Section title="Image" action={<ResetBtn show={isOv('src')} onReset={() => resetOv('src')} />}>
+            <div className="fb-prop-row--full" style={{ marginBottom: 6 }}>
+              <MediaPickerButton
+                value={resolved.src ?? ''}
+                onChange={v => { upd('src', v); commit(); }}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Fit</span>
+              <IconGroup
+                value={s.objectFit ?? 'cover'}
+                onChange={v => { updS('objectFit', v); commit(); }}
+                options={[
+                  { value: 'cover',   icon: '⛶', label: 'Fill' },
+                  { value: 'contain', icon: '⊡', label: 'Contain' },
+                  { value: 'fill',    icon: '⊞', label: 'Stretch' },
+                  { value: 'none',    icon: '·', label: 'None' },
+                ]}
+              />
+            </div>
+          </Section>
+        )}
 
         {/* ── Border ────────────────────────────────────────── */}
         <Section title="Border" defaultOpen={false} action={<ResetBtn show={isSOv('borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode')} onReset={() => resetSOv('borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode')} />}>

@@ -49,6 +49,29 @@ export function createFrame(x = 80, y = 80, name) {
   };
 }
 
+export function createImage(x = 80, y = 80, name) {
+  return {
+    id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'image',
+    name: name || 'Image',
+    parentId: null,
+    children: [],
+    base: {
+      x, y, width: 240, height: 160, rotation: 0, locked: false, hidden: false,
+      widthMode: 'fixed', heightMode: 'fixed',
+      minW: null, maxW: null, minH: null, maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      src: '',
+      styles: {
+        backgroundColor: 'transparent',
+        borderRadius: 0, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
+        opacity: 1, objectFit: 'cover', boxShadow: '',
+      },
+    },
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
 // Merge base + breakpoint overrides into rendered props.
 // Cascade: desktop (base)  →  tablet  →  mobile
 export function resolveElement(el, bpId) {
