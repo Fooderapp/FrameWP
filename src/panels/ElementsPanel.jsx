@@ -1,5 +1,5 @@
 import React from 'react';
-import { useEditorStore, createFrame, createImage } from '../store/editorStore';
+import { useEditorStore } from '../store/editorStore';
 
 const ELEMENT_TYPES = [
   {
@@ -21,6 +21,17 @@ const ELEMENT_TYPES = [
       </svg>
     ),
     label: 'Image',
+  },
+  {
+    type: 'text',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 3h10" />
+        <path d="M8 3v10" />
+        <path d="M5.5 13h5" />
+      </svg>
+    ),
+    label: 'Text',
   },
 ];
 

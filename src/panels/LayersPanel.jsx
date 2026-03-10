@@ -7,6 +7,18 @@ const Icons = {
       <rect x="2" y="2" width="12" height="12" rx="1.5"/>
     </svg>
   ),
+  frameAutoHorizontal: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="2.5" width="10" height="4" rx="1"/>
+      <rect x="3" y="9.5" width="10" height="4" rx="1"/>
+    </svg>
+  ),
+  frameAutoVertical: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="3" width="4" height="10" rx="1"/>
+      <rect x="9.5" y="3" width="4" height="10" rx="1"/>
+    </svg>
+  ),
   text: (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
       <path d="M3 4h10M8 4v8M6 12h4"/>
@@ -52,8 +64,15 @@ const Icons = {
   ),
 };
 
-function getIconForType(type) {
-  return Icons[type] ?? Icons.frame;
+function getIconForElement(el, bpId) {
+  if (el.type !== 'frame') return Icons[el.type] ?? Icons.frame;
+  const resolved = resolveElement(el, bpId || 'desktop');
+  if (resolved.styles?.display === 'flex') {
+    return resolved.styles?.flexDirection === 'row'
+      ? Icons.frameAutoHorizontal
+      : Icons.frameAutoVertical;
+  }
+  return Icons.frame;
 }
 
 // Is a root element off-canvas for a given bp?
@@ -79,6 +98,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
 
   const isSel = selection?.elementId === el.id;
   const isHov = hoveredId === el.id;
+  const resolved = resolveElement(el, bpId || 'desktop');
 
   useEffect(() => {
     if (isSel && itemRef.current) {
@@ -155,7 +175,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
         ) : (
           <span style={{ display: 'inline-block', width: 13 }} />
         )}
-        <span className="fb-layer-icon">{getIconForType(el.type)}</span>
+        <span className="fb-layer-icon">{getIconForElement(el, bpId)}</span>
         {renaming ? (
           <input
             className="fb-layer-rename"
@@ -173,20 +193,20 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
         ) : (
           <span
             className="fb-layer-name"
-            style={{ opacity: el.base?.hidden ? 0.4 : 1 }}
+            style={{ opacity: resolved.hidden ? 0.4 : 1 }}
             onDoubleClick={startRename}
           >
             {el.base?.name || el.type}
           </span>
         )}
-        <span className="fb-layer-vis"
-          title={el.base?.hidden ? 'Show' : 'Hide'}
+        <span className={`fb-layer-vis${resolved.hidden ? ' fb-layer-vis--visible' : ''}`}
+          title={resolved.hidden ? 'Show' : 'Hide'}
           onClick={(e) => {
             e.stopPropagation();
             toggleVisibility(el.id, bpId || 'desktop');
           }}
         >
-          {el.base?.hidden ? Icons.eyeOff : Icons.eye}
+          {resolved.hidden ? Icons.eyeOff : Icons.eye}
         </span>
       </div>
       {expanded && children.map(child => (
@@ -215,7 +235,7 @@ export default function LayersPanel() {
   const setArtboardSel  = useEditorStore(s => s.setArtboardSel);
   const setSelection    = useEditorStore(s => s.setSelection);
 
-  const activeBpId = selection?.bpId || 'desktop';
+  const activeBpId = selection?.bpId ?? artboardSel ?? null;
   const rootEls = allElements.filter(e => !e.parentId);
 
   const handleReparent = (draggedId, newParentId) => {
@@ -278,11 +298,9 @@ export default function LayersPanel() {
       {BP_ORDER.map(bpId => {
         const bp = bpDefs[bpId];
         if (!bp) return null;
-        const isActive = activeBpId === bpId || artboardSel === bpId;
-        // Show elements that are visible for this bp AND on-canvas for this bp
-        const visibleEls = rootEls.filter(el =>
-          !resolveElement(el, bpId).hidden && !checkOffCanvas(el, bpId, bp)
-        );
+        const isActive = activeBpId === bpId;
+        // Show all on-canvas elements for this bp, including hidden ones.
+        const visibleEls = rootEls.filter(el => !checkOffCanvas(el, bpId, bp));
         return (
           <div key={bpId} className={`fb-layer-artboard${isActive ? ' fb-layer-artboard--active' : ''}`}>
             <div

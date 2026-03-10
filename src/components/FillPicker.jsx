@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useEditorStore } from '../store/editorStore';
+import { IconButton, UIIcons } from './UIIcons';
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
 
@@ -235,11 +236,14 @@ function GradientEditor({ type, angle, stops, onTypeChange, onAngleChange, onSto
       {/* Type + angle row */}
       <div style={{ display: 'flex', gap: 5, marginBottom: 10, alignItems: 'center' }}>
         {['linear', 'radial', 'conic'].map(t => (
-          <button key={t} onClick={() => onTypeChange(t)} style={{
-            flex: 1, padding: '5px 0', fontSize: 11, borderRadius: 5, border: 'none', cursor: 'pointer',
-            background: type === t ? 'var(--accent)' : 'var(--bg-input)',
-            color: type === t ? '#fff' : 'var(--text-secondary)',
-          }}>{t}</button>
+          <IconButton
+            key={t}
+            icon={t === 'linear' ? FILL_TYPES[1].icon : t === 'radial' ? FILL_TYPES[2].icon : FILL_TYPES[3].icon}
+            title={`${t} gradient`}
+            active={type === t}
+            onClick={() => onTypeChange(t)}
+            style={{ flex: 1 }}
+          />
         ))}
         {(type === 'linear' || type === 'conic') && (
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -310,24 +314,27 @@ function GradientEditor({ type, angle, stops, onTypeChange, onAngleChange, onSto
             />
             <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>%</span>
             {stops.length > 2 && (
-              <button
+              <IconButton
+                icon={UIIcons.close}
+                title="Remove stop"
                 onClick={e => {
                   e.stopPropagation();
                   onStopsChange(stops.filter((_, j) => j !== i));
                   onActiveStopChange(Math.max(0, i - 1));
                 }}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 12, padding: '0 2px', lineHeight: 1 }}
-              >×</button>
+              />
             )}
           </div>
         ))}
-        <button
+        <IconButton
+          icon={UIIcons.plus}
+          title="Add gradient stop"
+          className="fb-fill-icon-wide"
           onClick={() => {
             const s2 = [...stops, { id: Date.now(), color: '#cccccc', pos: 50 }].sort((a, b) => a.pos - b.pos);
             onStopsChange(s2);
           }}
-          style={{ background: 'none', border: '1px dashed var(--border)', borderRadius: 6, color: 'var(--text-secondary)', fontSize: 11, padding: '4px', cursor: 'pointer', marginTop: 2 }}
-        >+ Add stop</button>
+        />
       </div>
       <div style={{ height: 1, background: 'var(--border)', marginBottom: 8 }} />
       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
@@ -580,7 +587,7 @@ export default function FillPicker({ value, onChange }) {
           {/* Header */}
           <div className="fb-fill-popover__header">
             <span>Fill</span>
-            <button className="fb-fill-close" onClick={() => setOpen(false)}>✕</button>
+            <IconButton icon={UIIcons.close} title="Close fill picker" onClick={() => setOpen(false)} className="fb-fill-close" />
           </div>
 
           {/* Fill type icons */}
@@ -704,11 +711,12 @@ export default function FillPicker({ value, onChange }) {
               >
                 <div className="fb-fill-style-swatch" style={{ background: cs.value }} />
                 <span style={{ flex: 1 }}>{cs.name}</span>
-                <button
+                <IconButton
+                  icon={UIIcons.close}
                   className="fb-fill-style-del"
-                  onClick={e => { e.stopPropagation(); saveColorStyles(colorStyles.filter(c => c.id !== cs.id)); }}
                   title="Remove style"
-                >×</button>
+                  onClick={e => { e.stopPropagation(); saveColorStyles(colorStyles.filter(c => c.id !== cs.id)); }}
+                />
               </div>
             ))}
           </div>
@@ -726,13 +734,11 @@ export default function FillPicker({ value, onChange }) {
                   onKeyDown={e => { if (e.key === 'Enter') saveNewStyle(); if (e.key === 'Escape') setAddingStyle(false); }}
                   style={{ flex: 1 }}
                 />
-                <button className="fb-fill-btn-save" onClick={saveNewStyle}>Save</button>
-                <button className="fb-fill-btn-cancel" onClick={() => setAddingStyle(false)}>✕</button>
+                <IconButton icon={UIIcons.check} title="Save style" onClick={saveNewStyle} className="fb-fill-btn-save" />
+                <IconButton icon={UIIcons.close} title="Cancel" onClick={() => setAddingStyle(false)} className="fb-fill-btn-cancel" />
               </div>
             ) : (
-              <button className="fb-fill-new-style" onClick={() => setAddingStyle(true)}>
-                New Style
-              </button>
+              <IconButton icon={UIIcons.plus} title="New color style" onClick={() => setAddingStyle(true)} className="fb-fill-new-style" />
             )}
           </div>
         </div>,

@@ -39,6 +39,7 @@ export default function Artboard({
   bp,
   onStartElementDrag,
   onStartResize,
+  onStartRotate,
   onDropOntoElement,
   onStartArtboardDrag,
   onStartArtboardResize,
@@ -220,6 +221,7 @@ export default function Artboard({
                   artboardFlexDir={resolvedLayout?.flexDirection ?? 'column'}
                   onStartElementDrag={onStartElementDrag}
                   onStartElementResize={onStartResize}
+                  onStartElementRotate={onStartRotate}
                   onDropOntoElement={onDropOntoElement}
                   onStartRadiusDrag={(e, elementId, startRadius, corner) => onStartRadiusDrag && onStartRadiusDrag(e, bp.id, elementId, startRadius, corner)}
                   onStartPaddingDrag={(e, elementId, side) => onStartPaddingDrag && onStartPaddingDrag(e, bp.id, elementId, side)}
@@ -312,6 +314,7 @@ export default function Artboard({
                 isSelected={selection?.elementId === el.id && selection?.bpId === bp.id}
                 onStartElementDrag={onStartElementDrag}
                 onStartElementResize={onStartResize}
+                onStartElementRotate={onStartRotate}
                 onDropOntoElement={onDropOntoElement}
               />
             ))}

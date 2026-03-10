@@ -2,6 +2,7 @@ import React from 'react';
 import { useEditorStore } from '../store/editorStore';
 import LayersPanel from './LayersPanel';
 import ElementsPanel from './ElementsPanel';
+import { IconTab, UIIcons } from '../components/UIIcons';
 
 export default function LeftPanel() {
   const tab    = useEditorStore(s => s.leftTab);
@@ -10,18 +11,8 @@ export default function LeftPanel() {
   return (
     <aside className="fb-left">
       <div className="fb-tabs">
-        <div
-          className={`fb-tab${tab === 'layers' ? ' fb-tab--active' : ''}`}
-          onClick={() => setTab('layers')}
-        >
-          Layers
-        </div>
-        <div
-          className={`fb-tab${tab === 'elements' ? ' fb-tab--active' : ''}`}
-          onClick={() => setTab('elements')}
-        >
-          Elements
-        </div>
+        <IconTab active={tab === 'layers'} title="Layers" icon={UIIcons.layers} onClick={() => setTab('layers')} />
+        <IconTab active={tab === 'elements'} title="Elements" icon={UIIcons.elements} onClick={() => setTab('elements')} />
       </div>
 
       <div className="fb-panel-body">

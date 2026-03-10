@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { useEditorStore, createFrame, createImage, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage, createText, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 import Artboard from './Artboard';
 
 const MIN_SCALE = 0.08;
@@ -7,6 +7,14 @@ const MAX_SCALE = 8;
 const SNAP_THRESHOLD_PX = 6;
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
+
+function isFontResizeTextElement(el, resolved) {
+  if ((el?.type ?? '') !== 'text') return false;
+  const widthMode = resolved?.widthMode ?? 'fixed';
+  const heightMode = resolved?.heightMode ?? 'fixed';
+  return (widthMode === 'hug' && heightMode === 'hug')
+    || (widthMode === 'fixed' && heightMode === 'hug');
+}
 
 // ── Copy/paste helpers ─────────────────────────────────────────
 let _cpSeq = 0;
@@ -151,6 +159,8 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const rotation = resolved.rotation;
   const constraints = { top: true, left: true, right: false, bottom: false, ...(resolved.constraints ?? {}) };
   const isDragging = dragOverlay?.elementId === el.id;
+  const overlayHandles = isFontResizeTextElement(el, resolved) ? ['se'] : OVERLAY_HANDLES;
+  const rotateHandles = ['nw', 'ne', 'se', 'sw'];
 
   let worldX, worldY;
   let containerWorldLeft = bp.x;
@@ -267,7 +277,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
         }
       }}
     >
-      {!el.locked && !isDragging && OVERLAY_HANDLES.map(handle => (
+      {!el.locked && !isDragging && overlayHandles.map(handle => (
         <div
           key={handle}
           className={`fb-sel-overlay__handle fb-sel-overlay__handle--${handle}`}
@@ -275,6 +285,17 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
             e.stopPropagation();
             e.preventDefault();
             onStartResize(e, selection.bpId, el, handle);
+          }}
+        />
+      ))}
+      {!el.locked && !isDragging && rotateHandles.map(handle => (
+        <div
+          key={`rotate-${handle}`}
+          className={`fb-sel-overlay__rotate-handle fb-sel-overlay__rotate-handle--${handle}`}
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onStartResize(e, selection.bpId, el, `rotate-${handle}`);
           }}
         />
       ))}
@@ -342,6 +363,7 @@ export default function InfiniteCanvas() {
   const [paddingDragInfo,  setPaddingDragInfo]  = useState(null); // { value, side, clientX, clientY }
   const [gapDragInfo,      setGapDragInfo]      = useState(null); // { value, clientX, clientY }
   const [foldDragInfo,     setFoldDragInfo]     = useState(null); // { value, clientX, clientY }
+  const [textSizeDragInfo, setTextSizeDragInfo] = useState(null); // { value, clientX, clientY }
   const [dragHint,         setDragHint]         = useState(null); // { label, clientX, clientY }
   const [reorderGhost,     setReorderGhost]     = useState(null); // { worldX, worldY, width, height, bgColor? }
   const [dragOverlay,      setDragOverlay]      = useState(null); // { elementId, worldX, worldY, width, height }
@@ -802,6 +824,13 @@ export default function InfiniteCanvas() {
       const newGap = Math.max(0, Math.round(startGap + (isRow ? dxWorld : dyWorld)));
       useEditorStore.getState().setPageLayout(bpId, { ...layout, gap: newGap });
       setGapDragInfo({ value: newGap, clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'rotate') {
+      const { elementId: rotId, startRotation = 0, startAngle = 0, centerX = 0, centerY = 0 } = drag.current;
+      const currentAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX) * 180 / Math.PI;
+      let nextRotation = Math.round((startRotation + currentAngle - startAngle) * 10) / 10;
+      if (e.shiftKey) nextRotation = Math.round(nextRotation / 15) * 15;
+      useEditorStore.getState().updateElementLayout(rotId, bpId, { rotation: nextRotation });
+      setDragHint({ label: `${Math.round(nextRotation)}deg`, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'resize') {
       let newX = startX, newY = startY, newW = startW, newH = startH;
       switch (handle) {
@@ -816,6 +845,13 @@ export default function InfiniteCanvas() {
         default: break;
       }
       useEditorStore.getState().updateElementLayout(elementId, bpId, { x: newX, y: newY, width: newW, height: newH });
+    } else if (type === 'text-font-size') {
+      const { elementId: textId, bpId: textBpId, startFontSize } = drag.current;
+      const delta = Math.max(dxWorld, dyWorld);
+      let nextFontSize = Math.max(4, Math.round((startFontSize + delta) * 10) / 10);
+      if (e.shiftKey) nextFontSize = Math.max(4, Math.round(nextFontSize / 4) * 4);
+      useEditorStore.getState().updateElementStyles(textId, textBpId, { fontSize: nextFontSize, fontSizeUnit: 'px' });
+      setTextSizeDragInfo({ value: nextFontSize, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'radius') {
       const { elementId: radId, bpId: radBp, startRadius, corner } = drag.current;
       const allEls = useEditorStore.getState().getAllElements();
@@ -918,7 +954,11 @@ export default function InfiniteCanvas() {
           break;
         }
       }
-      const newEl = drawType === 'image' ? createImage(localX, localY) : createFrame(localX, localY);
+      const newEl = drawType === 'image'
+        ? createImage(localX, localY)
+        : drawType === 'text'
+          ? createText(localX, localY)
+          : createFrame(localX, localY);
       newEl.base.width  = elW;
       newEl.base.height = elH;
       addElement(newEl, parentId, targetBpId);
@@ -1027,11 +1067,17 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'artboard-gap') {
         setGapDragInfo(null);
       }
+      if (drag.current.type === 'text-font-size') {
+        setTextSizeDragInfo(null);
+      }
       if (drag.current.type === 'element-drag') {
         setDragHint(null);
         setReorderGhost(null);
         setDragOverlay(null);
         setAlignmentGuides([]);
+      }
+      if (drag.current.type === 'rotate') {
+        setDragHint(null);
       }
       setDraggingElementId(null);
       if (shouldPushHistory) pushHistory();
@@ -1319,6 +1365,44 @@ export default function InfiniteCanvas() {
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
     setSelection({ elementId: el.id, bpId });
+    if (String(handle).startsWith('rotate-')) {
+      const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+      const domEl = boardDom?.querySelector(`[data-id="${el.id}"]`);
+      const rect = domEl?.getBoundingClientRect();
+      const centerX = rect ? rect.left + rect.width / 2 : e.clientX;
+      const centerY = rect ? rect.top + rect.height / 2 : e.clientY;
+      const startRotation = typeof resolved.rotation === 'number' ? resolved.rotation : parseFloat(resolved.rotation) || 0;
+      const startAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX) * 180 / Math.PI;
+      drag.current = {
+        type: 'rotate', bpId, elementId: el.id, handle,
+        startMX: e.clientX, startMY: e.clientY,
+        startRotation,
+        startAngle,
+        centerX,
+        centerY,
+      };
+      setDragHint({ label: `${Math.round(startRotation)}deg`, clientX: e.clientX, clientY: e.clientY });
+      setInteracting(true);
+      return;
+    }
+    if (handle === 'se' && isFontResizeTextElement(el, resolved)) {
+      drag.current = {
+        type: 'text-font-size', bpId, elementId: el.id, handle,
+        startMX: e.clientX, startMY: e.clientY,
+        startFontSize: typeof resolved.styles?.fontSize === 'number'
+          ? resolved.styles.fontSize
+          : parseFloat(resolved.styles?.fontSize) || 42,
+      };
+      setTextSizeDragInfo({
+        value: typeof resolved.styles?.fontSize === 'number'
+          ? resolved.styles.fontSize
+          : parseFloat(resolved.styles?.fontSize) || 42,
+        clientX: e.clientX,
+        clientY: e.clientY,
+      });
+      setInteracting(true);
+      return;
+    }
     drag.current = {
       type: 'resize', bpId, elementId: el.id, handle,
       startMX: e.clientX, startMY: e.clientY,
@@ -1371,6 +1455,10 @@ export default function InfiniteCanvas() {
       const el = createImage(elX, elY);
       addElement(el, null, targetBpId);
       pushHistory();
+    } else if (type === 'text') {
+      const el = createText(elX, elY);
+      addElement(el, null, targetBpId);
+      pushHistory();
     }
   }, [bpDefs, addElement, pushHistory]);
 
@@ -1384,6 +1472,10 @@ export default function InfiniteCanvas() {
       pushHistory();
     } else if (type === 'image') {
       const el = createImage(20, 20);
+      addElement(el, targetElementId);
+      pushHistory();
+    } else if (type === 'text') {
+      const el = createText(20, 20);
       addElement(el, targetElementId);
       pushHistory();
     } else if (draggedId && draggedId !== targetElementId) {
@@ -1427,6 +1519,7 @@ export default function InfiniteCanvas() {
             bp={bp}
             onStartElementDrag={startElementDrag}
             onStartResize={startResize}
+            onStartRotate={startResize}
             onDropOntoElement={onDropOntoElement}
             onStartArtboardDrag={startArtboardDrag}
             onStartArtboardResize={startArtboardResize}
@@ -1488,6 +1581,11 @@ export default function InfiniteCanvas() {
       {foldDragInfo && (
         <div className="fb-radius-tooltip" style={{ position: 'fixed', left: foldDragInfo.clientX + 14, top: foldDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
           viewport fold: {foldDragInfo.value}px
+        </div>
+      )}
+      {textSizeDragInfo && (
+        <div className="fb-radius-tooltip" style={{ position: 'fixed', left: textSizeDragInfo.clientX + 14, top: textSizeDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
+          font size: {textSizeDragInfo.value}px
         </div>
       )}
       {dragHint && (

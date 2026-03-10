@@ -305,6 +305,7 @@ class FrameBuilder_Exporter {
 			'opacity'         => 'opacity',
 			'overflow'        => 'overflow',
 			'boxShadow'       => 'box-shadow',
+			'zIndex'          => 'z-index',
 		];
 		foreach ( $visual_props as $camel => $kebab ) {
 			if ( ! isset( $styles[ $camel ] ) || $styles[ $camel ] === '' ) continue;
@@ -349,6 +350,34 @@ class FrameBuilder_Exporter {
 				$img_style = "position:absolute;inset:0;width:100%;height:100%;object-fit:{$obj_fit};border-radius:inherit;";
 				$html .= '<img src="' . $src . '" alt="" style="' . esc_attr( $img_style ) . '" loading="lazy">';
 			}
+		}
+
+		if ( ( $el['type'] ?? '' ) === 'text' ) {
+			$font_family = trim( (string) ( $styles['fontFamily'] ?? 'Inter' ) );
+			$font_stack  = $font_family !== '' ? "'{$font_family}', sans-serif" : 'Inter, sans-serif';
+			$font_style  = $this->sanitize_css_value( $styles['fontStyle'] ?? 'normal' );
+			$font_weight = intval( $styles['fontWeight'] ?? 400 );
+			$font_size   = floatval( $styles['fontSize'] ?? 42 ) . ( $styles['fontSizeUnit'] ?? 'px' );
+			$line_height = floatval( $styles['lineHeight'] ?? 1.2 ) . ( $styles['lineHeightUnit'] ?? 'em' );
+			$letter_space = floatval( $styles['letterSpacing'] ?? 0 ) . ( $styles['letterSpacingUnit'] ?? 'em' );
+			$text_align  = $this->sanitize_css_value( $styles['textAlign'] ?? 'left' );
+			$text_decoration = $this->sanitize_css_value( $styles['textDecoration'] ?? 'none' );
+			$text_color  = $this->sanitize_css_value( $styles['color'] ?? '#000000' );
+			$white_space = ( $width_mode === 'hug' && $height_mode === 'hug' ) ? 'pre' : 'pre-wrap';
+			$text_style  = 'width:100%;display:block;overflow:visible;';
+			$text_style .= 'font-family:' . $this->sanitize_css_value( $font_stack ) . ';';
+			$text_style .= 'font-style:' . $font_style . ';';
+			$text_style .= 'font-weight:' . $font_weight . ';';
+			$text_style .= 'font-size:' . $this->sanitize_css_value( $font_size ) . ';';
+			$text_style .= 'line-height:' . $this->sanitize_css_value( $line_height ) . ';';
+			$text_style .= 'letter-spacing:' . $this->sanitize_css_value( $letter_space ) . ';';
+			$text_style .= 'text-align:' . $text_align . ';';
+			$text_style .= 'text-decoration:' . $text_decoration . ';';
+			$text_style .= 'color:' . $text_color . ';';
+			$text_style .= 'white-space:' . $white_space . ';';
+			$text_style .= 'word-break:break-word;';
+			$text_value = nl2br( esc_html( (string) ( $resolved['text'] ?? 'Text' ) ) );
+			$html .= '<div class="fb-text-content" style="' . esc_attr( $text_style ) . '">' . $text_value . '</div>';
 		}
 
 		// Compute flex direction this element provides to its own children
@@ -535,7 +564,7 @@ class FrameBuilder_Exporter {
 			'backgroundColor', 'borderRadius', 'borderWidth', 'borderColor', 'borderStyle',
 			'opacity', 'overflow', 'display', 'flexDirection', 'flexWrap', 'gap',
 			'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-			'alignItems', 'justifyContent', 'boxShadow',
+			'alignItems', 'justifyContent', 'boxShadow', 'zIndex',
 		];
 		$px_props = [
 			'border-radius', 'border-width', 'gap',

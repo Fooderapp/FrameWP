@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useEditorStore, resolveElement, resolveBackground, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
+import GoogleFontPicker from '../components/GoogleFontPicker';
+import { IconButton, UIIcons } from '../components/UIIcons';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -11,7 +13,7 @@ function Section({ title, children, defaultOpen = true, action }) {
       <div className="fb-prop-section__head" onClick={() => setOpen(o => !o)}>
         <span className="fb-prop-section__title">{title}</span>
         {action && <span className="fb-prop-section__action" onClick={e => e.stopPropagation()}>{action}</span>}
-        <span className="fb-prop-section__toggle">{open ? '▾' : '▸'}</span>
+        <span className="fb-prop-section__toggle">{open ? '−' : '+'}</span>
       </div>
       {open && <div className="fb-prop-section__body">{children}</div>}
     </div>
@@ -45,13 +47,12 @@ function NumberInput({ value, onChange, label, unit = 'px', min, max, step = 1 }
           setFocused(false);
           const num = parseFloat(draft);
           if (!isNaN(num)) onChange(num);
-          else setDraft(fmt(ext)); // revert if left empty/invalid
+          else setDraft(fmt(ext));
         }}
         onChange={e => {
           const raw = e.target.value;
           setDraft(raw);
           const num = parseFloat(raw);
-          // Fire immediately if valid (keeps canvas in sync while typing)
           if (!isNaN(num) && raw !== '' && raw !== '-') onChange(num);
         }}
         style={{ textAlign: 'center' }}
@@ -70,6 +71,7 @@ function NullableNumberInput({ value, onChange, label, placeholder = '', min, st
     if (!focused) setDraft(value != null && value !== 0 ? String(Math.round(value * 10) / 10) : '');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, focused]);
+
   return (
     <div className="fb-prop-mini">
       <input
@@ -229,6 +231,20 @@ const ALIGN_SVG = {
   vbottom: <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M7 1v12" strokeDasharray="2 1.5"/><rect x="4.5" y="8" width="5" height="5" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="4.5" y="8" width="5" height="5" rx="0.5"/></svg>,
 };
 
+const TEXT_ALIGN_OPTIONS = [
+  { value: 'left', label: 'Left', icon: UIIcons.alignLeft },
+  { value: 'center', label: 'Center', icon: UIIcons.alignCenter },
+  { value: 'right', label: 'Right', icon: UIIcons.alignRight },
+  { value: 'justify', label: 'Justify', icon: UIIcons.alignJustify },
+];
+
+const FONT_WEIGHT_OPTIONS = [200, 300, 400, 500, 600, 700, 800, 900];
+const TEXT_GROW_OPTIONS = [
+  { value: 'auto-width', label: 'Auto width', icon: UIIcons.autoWidth },
+  { value: 'auto-height', label: 'Auto height', icon: UIIcons.autoHeight },
+  { value: 'fixed', label: 'Fixed size', icon: UIIcons.fixedSize },
+];
+
 function AlignStrip({ resolved, containerW, containerH, upd, commit, disabled }) {
   const w = resolved.width ?? 100;
   const h = resolved.height ?? 100;
@@ -253,6 +269,23 @@ function Toggle({ value, onChange, label }) {
         <div className="fb-toggle__thumb" />
       </div>
       {label && <span className="fb-toggle__label">{label}</span>}
+    </div>
+  );
+}
+
+function ChoiceGroup({ value, onChange, options }) {
+  return (
+    <div className="fb-choice-group">
+      {options.map(option => (
+        <button
+          key={option.value}
+          type="button"
+          className={`fb-choice-group__btn${value === option.value ? ' fb-choice-group__btn--active' : ''}`}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -282,7 +315,7 @@ function MediaPickerModal({ onSelect, onClose }) {
       <div style={{ width: 920, height: 680, borderRadius: 8, overflow: 'hidden', boxShadow: '0 32px 100px rgba(0,0,0,0.9)', display: 'flex', flexDirection: 'column', border: '1px solid #3c434a' }}>
         <div style={{ display: 'flex', alignItems: 'center', padding: '9px 14px', background: '#1d2327', borderBottom: '1px solid #3c434a', flexShrink: 0 }}>
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: '#f0f0f1', letterSpacing: '0.02em' }}>Media Library</span>
-          <button onMouseDown={onClose} style={{ all: 'unset', cursor: 'pointer', fontSize: 17, color: '#aaa', lineHeight: 1 }}>✕</button>
+          <IconButton icon={UIIcons.close} title="Close media picker" onMouseDown={onClose} className="fb-media-modal__close" />
         </div>
         <iframe
           src={src}
@@ -305,18 +338,14 @@ function MediaPickerButton({ value, onChange }) {
             <img src={value} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           </div>
         ) : null}
-        <button
-          className="fb-icon-btn"
-          style={{ fontSize: 11, padding: '0 8px', flex: 1 }}
+        <IconButton
+          icon={value ? UIIcons.swap : UIIcons.image}
+          title={value ? 'Change image' : 'Select image'}
+          style={{ flex: 1 }}
           onClick={() => setOpen(true)}
-        >{value ? '⇄ Change' : '+ Select image'}</button>
+        />
         {value ? (
-          <button
-            className="fb-icon-btn"
-            style={{ fontSize: 11, padding: '0 6px' }}
-            title="Remove image"
-            onClick={() => onChange('')}
-          >✕</button>
+          <IconButton icon={UIIcons.trash} title="Remove image" onClick={() => onChange('')} />
         ) : null}
       </div>
       {open && <MediaPickerModal onSelect={onChange} onClose={() => setOpen(false)} />}
@@ -404,7 +433,7 @@ function ResetBtn({ show, onReset }) {
       className="fb-reset-btn"
       title="Reset to desktop value"
       onClick={e => { e.stopPropagation(); e.preventDefault(); onReset(); }}
-    >↩</button>
+    >{UIIcons.inherit}</button>
   );
 }
 
@@ -484,10 +513,7 @@ export default function PropertiesPanel() {
               <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {isBgInherited
                   ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
-                  : <button
-                      style={{ all: 'unset', cursor: 'pointer', color: 'var(--accent-light)', fontSize: 11 }}
-                      onClick={() => setPageBackground(artboardSel, null)}
-                    >↩ Inherit from parent</button>
+                  : <IconButton icon={UIIcons.inherit} title="Inherit background from parent" onClick={() => setPageBackground(artboardSel, null)} />
                 }
               </div>
             )}
@@ -503,10 +529,7 @@ export default function PropertiesPanel() {
               <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {isPadInherited
                   ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
-                  : <button
-                      style={{ all: 'unset', cursor: 'pointer', color: 'var(--accent-light)', fontSize: 11 }}
-                      onClick={() => setPagePadding(artboardSel, null)}
-                    >↩ Inherit from parent</button>
+                  : <IconButton icon={UIIcons.inherit} title="Inherit padding from parent" onClick={() => setPagePadding(artboardSel, null)} />
                 }
               </div>
             )}
@@ -528,25 +551,27 @@ export default function PropertiesPanel() {
                 <div className="fb-prop-row">
                   <span className="fb-prop-label">Auto layout</span>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                    <button
-                      className={`fb-icon-btn${!layoutOn ? ' fb-icon-btn--active' : ''}`}
-                      title="Off"
+                    <IconButton
+                      icon={UIIcons.layoutOff}
+                      active={!layoutOn}
+                      title="Auto layout off"
                       onClick={() => {
                         // Save the current layout before clearing, so re-enabling restores it
                         if (layoutOn) savedLayoutRef.current[artboardSel] = { ...activeLayout };
                         setPageLayout(artboardSel, null);
                       }}
-                    >✕</button>
-                    <button
-                      className={`fb-icon-btn${layoutOn ? ' fb-icon-btn--active' : ''}`}
-                      title="On"
+                    />
+                    <IconButton
+                      icon={UIIcons.layoutOn}
+                      active={layoutOn}
+                      title="Auto layout on"
                       onClick={() => {
                         if (!layoutOn) {
                           // Restore last saved layout, or fall back to defaults
                           setPageLayout(artboardSel, savedLayoutRef.current[artboardSel] ?? { ...DEFAULT_LAYOUT });
                         }
                       }}
-                    >⇌</button>
+                    />
                   </div>
                 </div>
                 {layoutOn && (
@@ -565,10 +590,7 @@ export default function PropertiesPanel() {
                   <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                     {isLayoutInherited
                       ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
-                      : <button
-                          style={{ all: 'unset', cursor: 'pointer', color: 'var(--accent-light)', fontSize: 11 }}
-                          onClick={() => setPageLayout(artboardSel, null)}
-                        >↩ Inherit from parent</button>
+                      : <IconButton icon={UIIcons.inherit} title="Inherit layout from parent" onClick={() => setPageLayout(artboardSel, null)} />
                     }
                   </div>
                 )}
@@ -585,7 +607,6 @@ export default function PropertiesPanel() {
       <aside className="fb-right">
         <div className="fb-right__header">Properties</div>
         <div className="fb-empty-state">
-          <div className="fb-empty-state__icon">🎨</div>
           <div className="fb-empty-state__text">Select an element<br />to edit its properties</div>
         </div>
       </aside>
@@ -595,6 +616,11 @@ export default function PropertiesPanel() {
   const bpId = selection.bpId || 'desktop';
   const resolved = resolveElement(element, bpId);
   const s = resolved.styles || {};
+  const textGrow = (resolved.widthMode === 'hug' && resolved.heightMode === 'hug')
+    ? 'auto-width'
+    : resolved.heightMode === 'hug'
+      ? 'auto-height'
+      : 'fixed';
 
   // Container dimensions for T/L/R/B position inputs and AlignStrip
   // AlignStrip must NOT involve page padding — use raw artboard/parent dimensions.
@@ -645,16 +671,12 @@ export default function PropertiesPanel() {
         <span style={{ color: 'var(--text-primary)' }}>
           {element.name || element.type}
         </span>
-        <button
-          className="fb-btn fb-btn--icon fb-btn--sm"
-          style={{ float: 'right', color: 'var(--red, #ef4444)', border: 'none', background: 'none', cursor: 'pointer' }}
+        <IconButton
+          icon={UIIcons.trash}
           title="Delete element"
+          className="fb-btn--sm"
           onClick={() => { deleteElement(element.id); pushHistory(); }}
-        >
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2 4h12M5 4V2.5h6V4M4 4l.7 9.5h6.6L12 4M6.5 7v4M9.5 7v4"/>
-          </svg>
-        </button>
+        />
       </div>
 
       <div className="fb-panel-body">
@@ -797,209 +819,113 @@ export default function PropertiesPanel() {
           <MinMaxRow resolved={resolved} upd={upd} commit={commit} />
         </Section>
 
-        {/* ── Transform (rotation, name, lock) ──────────────── */}
-        <Section title="Transform" defaultOpen={false} action={<ResetBtn show={isOv('rotation') || isSOv('opacity')} onReset={() => { resetOv('rotation'); resetSOv('opacity'); }} />}>
-          <div className="fb-quad" style={{ marginBottom: 6 }}>
-            <NumberInput value={resolved.rotation ?? 0} min={-360} max={360} onChange={v => { upd('rotation', v); commit(); }} label="°" />
-            <NumberInput value={(s.opacity ?? 1) * 100} min={0} max={100} onChange={v => { updS('opacity', v / 100); commit(); }} label="%" />
-          </div>
-          <div className="fb-prop-row" style={{ marginTop: 8 }}>
-            <span className="fb-prop-label">Name</span>
-            <input
-              className="fb-prop-input"
-              type="text"
-              value={element.base?.name || element.type || ''}
-              onChange={e => updateElementLayout(element.id, 'desktop', { name: e.target.value })}
-              onBlur={commit}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
-            <Toggle value={element.base?.locked} onChange={v => { updateElementLayout(element.id, 'desktop', { locked: v }); commit(); }} label="Lock" />
-            <Toggle
-              value={s.overflow === 'hidden'}
-              onChange={v => { updS('overflow', v ? 'hidden' : 'visible'); commit(); }}
-              label="Clip"
-            />
-          </div>
-        </Section>
-
-        {/* ── Fill ──────────────────────────────────────────── */}
-        <Section title="Fill" action={<ResetBtn show={isSOv('backgroundColor','backgroundImage','backgroundSize','backgroundPosition')} onReset={() => resetSOv('backgroundColor','backgroundImage','backgroundSize','backgroundPosition')} />}>
-          {/* Color / gradient fill */}
-          <div className="fb-prop-row--full">
-            <FillPicker
-              value={s.backgroundColor ?? '#ffffff'}
-              onChange={v => updS('backgroundColor', v)}
-            />
-          </div>
-          {/* Image fill — only on frames */}
-          {element.type === 'frame' && (
-            <>
-              <div className="fb-prop-row" style={{ marginTop: 8 }}>
-                <span className="fb-prop-label">Image</span>
-              </div>
-              <div className="fb-prop-row--full" style={{ marginTop: 4 }}>
-                <MediaPickerButton
-                  value={s.backgroundImage ?? ''}
-                  onChange={v => updS('backgroundImage', v)}
-                />
-              </div>
-              {s.backgroundImage !== undefined && s.backgroundImage !== '' && (
-                <>
-                  <div className="fb-prop-row" style={{ marginTop: 6 }}>
-                    <span className="fb-prop-label">Fit</span>
-                    <IconGroup
-                      value={s.backgroundSize ?? 'cover'}
-                      onChange={v => updS('backgroundSize', v)}
-                      options={[
-                        { value: 'cover',   icon: '⛶', label: 'Fill' },
-                        { value: 'contain', icon: '⊡', label: 'Contain' },
-                        { value: '100% 100%', icon: '⊞', label: 'Stretch' },
-                        { value: 'repeat',  icon: '⊞⊞', label: 'Repeat' },
-                      ]}
-                    />
-                  </div>
-                  <div className="fb-prop-row" style={{ marginTop: 4 }}>
-                    <span className="fb-prop-label">Position</span>
-                    <select
-                      className="fb-prop-input"
-                      value={s.backgroundPosition ?? 'center center'}
-                      onChange={e => updS('backgroundPosition', e.target.value)}
-                    >
-                      <option value="center center">Center</option>
-                      <option value="top left">Top left</option>
-                      <option value="top center">Top center</option>
-                      <option value="top right">Top right</option>
-                      <option value="center left">Center left</option>
-                      <option value="center right">Center right</option>
-                      <option value="bottom left">Bottom left</option>
-                      <option value="bottom center">Bottom center</option>
-                      <option value="bottom right">Bottom right</option>
-                    </select>
-                  </div>
-                </>
-              )}
-            </>
-          )}
-        </Section>
-
-        {/* ── Image source (image element only) ─────────────── */}
-        {element.type === 'image' && (
-          <Section title="Image" action={<ResetBtn show={isOv('src')} onReset={() => resetOv('src')} />}>
-            <div className="fb-prop-row--full" style={{ marginBottom: 6 }}>
-              <MediaPickerButton
-                value={resolved.src ?? ''}
-                onChange={v => { upd('src', v); commit(); }}
+        {element.type === 'text' && (
+          <Section title="Text" action={<ResetBtn show={isOv('text') || isSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text'); resetSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
+            <div className="fb-prop-row--full" style={{ marginBottom: 8 }}>
+              <textarea
+                className="fb-prop-input"
+                value={resolved.text ?? 'Text'}
+                onChange={e => upd('text', e.target.value)}
+                onBlur={commit}
+                rows={4}
+                style={{ width: '100%', resize: 'vertical', minHeight: 92, lineHeight: 1.4 }}
               />
             </div>
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Fit</span>
+
+            <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+              <span className="fb-prop-label">Font</span>
+              <div style={{ flex: 1 }}>
+                <GoogleFontPicker
+                  value={s.fontFamily ?? 'Inter'}
+                  onChange={value => { updS('fontFamily', value); commit(); }}
+                />
+              </div>
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Weight</span>
+              <select
+                className="fb-prop-input"
+                value={String(s.fontWeight ?? 400)}
+                onChange={e => { updS('fontWeight', Number(e.target.value)); commit(); }}
+              >
+                {FONT_WEIGHT_OPTIONS.map(weight => (
+                  <option key={weight} value={weight}>{weight}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 6 }}>
+              <span className="fb-prop-label">Style</span>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <IconButton icon={UIIcons.regular} title="Regular" active={(s.fontStyle ?? 'normal') === 'normal'} onClick={() => { updS('fontStyle', 'normal'); commit(); }} />
+                <IconButton icon={UIIcons.italic} title="Italic" active={s.fontStyle === 'italic'} onClick={() => { updS('fontStyle', s.fontStyle === 'italic' ? 'normal' : 'italic'); commit(); }} />
+                <IconButton icon={UIIcons.underline} title="Underline" active={(s.textDecoration ?? 'none') === 'underline'} onClick={() => { updS('textDecoration', (s.textDecoration ?? 'none') === 'underline' ? 'none' : 'underline'); commit(); }} />
+              </div>
+            </div>
+
+            <div className="fb-quad" style={{ marginTop: 8 }}>
+              <NumberInput value={s.fontSize ?? 42} min={1} label="Size" onChange={v => { updS('fontSize', v); commit(); }} />
+              <NumberInput value={s.lineHeight ?? 1.2} min={0.5} step={0.05} label="Line" onChange={v => { updS('lineHeight', v); commit(); }} />
+            </div>
+
+            <div className="fb-quad" style={{ marginTop: 6 }}>
+              <NumberInput value={s.letterSpacing ?? 0} step={0.01} label="Track" onChange={v => { updS('letterSpacing', v); commit(); }} />
+              <ColorInput value={s.color ?? '#000000'} onChange={v => { updS('color', v); commit(); }} />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Align</span>
               <IconGroup
-                value={s.objectFit ?? 'cover'}
-                onChange={v => { updS('objectFit', v); commit(); }}
-                options={[
-                  { value: 'cover',   icon: '⛶', label: 'Fill' },
-                  { value: 'contain', icon: '⊡', label: 'Contain' },
-                  { value: 'fill',    icon: '⊞', label: 'Stretch' },
-                  { value: 'none',    icon: '·', label: 'None' },
-                ]}
+                value={s.textAlign ?? 'left'}
+                onChange={v => { updS('textAlign', v); commit(); }}
+                options={TEXT_ALIGN_OPTIONS}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Grow</span>
+              <IconGroup
+                value={textGrow}
+                onChange={value => {
+                  if (value === 'auto-width') {
+                    updateElementLayout(element.id, bpId, { widthMode: 'hug', heightMode: 'hug' });
+                  } else if (value === 'auto-height') {
+                    updateElementLayout(element.id, bpId, { widthMode: 'fixed', heightMode: 'hug', width: resolved.width ?? 240 });
+                  } else {
+                    updateElementLayout(element.id, bpId, { widthMode: 'fixed', heightMode: 'fixed', width: resolved.width ?? 240, height: resolved.height ?? 60 });
+                  }
+                  commit();
+                }}
+                options={TEXT_GROW_OPTIONS}
               />
             </div>
           </Section>
         )}
 
-        {/* ── Border ────────────────────────────────────────── */}
-        <Section title="Border" defaultOpen={false} action={<ResetBtn show={isSOv('borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode')} onReset={() => resetSOv('borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode')} />}>
-          {/* Radius */}
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Radius</span>
-            <div style={{ display: 'flex', gap: 4 }}>
-              <div
-                className={`fb-icon-btn${(s.borderRadiusMode ?? 'linked') === 'linked' ? ' fb-icon-btn--active' : ''}`}
-                title="All corners equal" style={{ fontSize: 11, padding: '0 6px' }}
-                onClick={() => { updS('borderRadiusMode', 'linked'); commit(); }}
-              >⊔ All</div>
-              <div
-                className={`fb-icon-btn${s.borderRadiusMode === 'independent' ? ' fb-icon-btn--active' : ''}`}
-                title="Individual corners" style={{ fontSize: 11, padding: '0 6px' }}
-                onClick={() => { updS('borderRadiusMode', 'independent'); commit(); }}
-              >⊓ ×4</div>
-            </div>
-          </div>
-          {(s.borderRadiusMode ?? 'linked') === 'linked' ? (
-            <div className="fb-prop-row">
-              <span className="fb-prop-label" />
-              <NumberInput value={s.borderRadius ?? 0} min={0} onChange={v => { updS('borderRadius', v); commit(); }} />
-            </div>
-          ) : (
-            <>
-              <div className="fb-quad" style={{ marginTop: 4 }}>
-                <NumberInput value={s.borderRadiusTL ?? s.borderRadius ?? 0} min={0} label="TL" onChange={v => { updS('borderRadiusTL', v); commit(); }} />
-                <NumberInput value={s.borderRadiusTR ?? s.borderRadius ?? 0} min={0} label="TR" onChange={v => { updS('borderRadiusTR', v); commit(); }} />
-              </div>
-              <div className="fb-quad" style={{ marginTop: 4 }}>
-                <NumberInput value={s.borderRadiusBL ?? s.borderRadius ?? 0} min={0} label="BL" onChange={v => { updS('borderRadiusBL', v); commit(); }} />
-                <NumberInput value={s.borderRadiusBR ?? s.borderRadius ?? 0} min={0} label="BR" onChange={v => { updS('borderRadiusBR', v); commit(); }} />
-              </div>
-            </>
-          )}
-          {/* Width */}
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Width</span>
-            <NumberInput
-              value={s.borderWidth ?? 0}
-              min={0}
-              onChange={v => updS('borderWidth', v)}
-            />
-          </div>
-          {/* Style */}
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Style</span>
-            <select
-              className="fb-prop-input"
-              value={s.borderStyle ?? 'solid'}
-              onChange={e => updS('borderStyle', e.target.value)}
-            >
-              <option>solid</option>
-              <option>dashed</option>
-              <option>dotted</option>
-              <option>none</option>
-            </select>
-          </div>
-          {/* Color */}
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Color</span>
-            <ColorInput value={s.borderColor ?? '#000000'} onChange={v => updS('borderColor', v)} />
-          </div>
-        </Section>
-
-        {/* ── Shadow ────────────────────────────────────────── */}
-        <Section title="Shadow" defaultOpen={false} action={<ResetBtn show={isSOv('boxShadow')} onReset={() => resetSOv('boxShadow')} />}>
-          <ShadowEditor value={s.boxShadow ?? ''} onChange={v => { updS('boxShadow', v); commit(); }} />
-        </Section>
-
         {/* ── Layout (frame-specific) ────────────────────────── */}
-        {element.type === 'frame' && (() => {
+        {element.type === 'frame' ? (() => {
           const frameLayoutOn = s.display === 'flex';
           return (
             <Section title="Layout" action={<ResetBtn show={isSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} onReset={() => resetSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} />}>
-              {/* Auto layout toggle */}
-              <div className="fb-prop-row" style={{ marginBottom: 6 }}>
-                <span className="fb-prop-label">Auto layout</span>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  <button
-                    className={`fb-icon-btn${!frameLayoutOn ? ' fb-icon-btn--active' : ''}`}
-                    title="Off – Group (free positioning)"
-                    onClick={() => { updS('display', null); commit(); }}
-                  >✕</button>
-                  <button
-                    className={`fb-icon-btn${frameLayoutOn ? ' fb-icon-btn--active' : ''}`}
-                    title="On – Auto layout (flex stack)"
-                    onClick={() => { updS('display', 'flex'); if (!s.flexDirection) updS('flexDirection', 'column'); commit(); }}
-                  >⇌</button>
-                </div>
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Space</span>
+                <ChoiceGroup
+                  value={frameLayoutOn ? 'auto' : 'free'}
+                  onChange={v => {
+                    if (v === 'free') updS('display', null);
+                    else {
+                      updS('display', 'flex');
+                      if (!s.flexDirection) updS('flexDirection', 'column');
+                    }
+                    commit();
+                  }}
+                  options={[
+                    { value: 'free', label: 'Free' },
+                    { value: 'auto', label: 'Auto' },
+                  ]}
+                />
               </div>
-              {/* Direction, Wrap, Align, Justify, Gap — only when layout is on */}
               {frameLayoutOn && (
                 <>
                   <div className="fb-prop-row">
@@ -1008,7 +934,7 @@ export default function PropertiesPanel() {
                       value={s.flexDirection}
                       onChange={v => { updS('flexDirection', v); commit(); }}
                       options={[
-                        { value: 'row',    icon: LAYOUT_ICONS.row,    label: 'Row' },
+                        { value: 'row', icon: LAYOUT_ICONS.row, label: 'Row' },
                         { value: 'column', icon: LAYOUT_ICONS.column, label: 'Column' },
                       ]}
                     />
@@ -1020,7 +946,7 @@ export default function PropertiesPanel() {
                       onChange={v => { updS('flexWrap', v); commit(); }}
                       options={[
                         { value: 'nowrap', icon: LAYOUT_ICONS.nowrap, label: 'No wrap' },
-                        { value: 'wrap',   icon: LAYOUT_ICONS.wrap,   label: 'Wrap' },
+                        { value: 'wrap', icon: LAYOUT_ICONS.wrap, label: 'Wrap' },
                       ]}
                     />
                   </div>
@@ -1030,10 +956,10 @@ export default function PropertiesPanel() {
                       value={s.alignItems}
                       onChange={v => { updS('alignItems', v); commit(); }}
                       options={[
-                        { value: 'flex-start', icon: LAYOUT_ICONS['align-start'],   label: 'Start' },
-                        { value: 'center',     icon: LAYOUT_ICONS['align-center'],  label: 'Center' },
-                        { value: 'flex-end',   icon: LAYOUT_ICONS['align-end'],     label: 'End' },
-                        { value: 'stretch',    icon: LAYOUT_ICONS['align-stretch'], label: 'Stretch' },
+                        { value: 'flex-start', icon: LAYOUT_ICONS['align-start'], label: 'Start' },
+                        { value: 'center', icon: LAYOUT_ICONS['align-center'], label: 'Center' },
+                        { value: 'flex-end', icon: LAYOUT_ICONS['align-end'], label: 'End' },
+                        { value: 'stretch', icon: LAYOUT_ICONS['align-stretch'], label: 'Stretch' },
                       ]}
                     />
                   </div>
@@ -1043,11 +969,11 @@ export default function PropertiesPanel() {
                       value={s.justifyContent}
                       onChange={v => { updS('justifyContent', v); commit(); }}
                       options={[
-                        { value: 'flex-start',    icon: LAYOUT_ICONS['just-start'],   label: 'Start' },
-                        { value: 'center',        icon: LAYOUT_ICONS['just-center'],  label: 'Center' },
-                        { value: 'flex-end',      icon: LAYOUT_ICONS['just-end'],     label: 'End' },
+                        { value: 'flex-start', icon: LAYOUT_ICONS['just-start'], label: 'Start' },
+                        { value: 'center', icon: LAYOUT_ICONS['just-center'], label: 'Center' },
+                        { value: 'flex-end', icon: LAYOUT_ICONS['just-end'], label: 'End' },
                         { value: 'space-between', icon: LAYOUT_ICONS['just-between'], label: 'Between' },
-                        { value: 'space-around',  icon: LAYOUT_ICONS['just-around'],  label: 'Around' },
+                        { value: 'space-around', icon: LAYOUT_ICONS['just-around'], label: 'Around' },
                       ]}
                     />
                   </div>
@@ -1057,19 +983,212 @@ export default function PropertiesPanel() {
                   </div>
                 </>
               )}
-              {/* Padding — always visible */}
-              <div className="fb-prop-row" style={{ marginTop: 4 }}>
+              <div className="fb-prop-row">
                 <span className="fb-prop-label">Padding</span>
-              </div>
-              <div className="fb-quad-wide" style={{ marginTop: 2 }}>
-                <NumberInput value={s.paddingTop    ?? 0} min={0} onChange={v => updS('paddingTop',    v)} label="T" />
-                <NumberInput value={s.paddingRight  ?? 0} min={0} onChange={v => updS('paddingRight',  v)} label="R" />
-                <NumberInput value={s.paddingBottom ?? 0} min={0} onChange={v => updS('paddingBottom', v)} label="B" />
-                <NumberInput value={s.paddingLeft   ?? 0} min={0} onChange={v => updS('paddingLeft',   v)} label="L" />
+                <div className="fb-quad-wide fb-quad-wide--compact">
+                  <NumberInput value={s.paddingTop ?? 0} min={0} onChange={v => updS('paddingTop', v)} label="T" />
+                  <NumberInput value={s.paddingRight ?? 0} min={0} onChange={v => updS('paddingRight', v)} label="R" />
+                  <NumberInput value={s.paddingBottom ?? 0} min={0} onChange={v => updS('paddingBottom', v)} label="B" />
+                  <NumberInput value={s.paddingLeft ?? 0} min={0} onChange={v => updS('paddingLeft', v)} label="L" />
+                </div>
               </div>
             </Section>
           );
-        })()}
+        })() : (
+          <Section title="Layout" defaultOpen={false} />
+        )}
+
+        <Section title="Effects" defaultOpen={false} action={<ResetBtn show={isSOv('boxShadow')} onReset={() => resetSOv('boxShadow')} />}>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Appear</span>
+            <ShadowEditor value={s.boxShadow ?? ''} onChange={v => { updS('boxShadow', v); commit(); }} />
+          </div>
+        </Section>
+
+        <Section title="Overlays" defaultOpen={false} />
+
+        <Section title="Cursor" defaultOpen={false} />
+
+        <Section title="Styles" action={<ResetBtn show={isOv('hidden','rotation') || isSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','objectFit','zIndex')} onReset={() => { resetOv('hidden','rotation'); resetSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','objectFit','zIndex'); }} />}>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Opacity</span>
+            <div className="fb-slider-field">
+              <input
+                className="fb-prop-input fb-slider-field__value"
+                type="number"
+                min={0}
+                max={1}
+                step={0.01}
+                value={Math.round((s.opacity ?? 1) * 100) / 100}
+                onChange={e => { const next = Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)); updS('opacity', next); }}
+                onBlur={commit}
+              />
+              <input
+                className="fb-slider"
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={s.opacity ?? 1}
+                onChange={e => updS('opacity', parseFloat(e.target.value))}
+                onMouseUp={commit}
+              />
+            </div>
+          </div>
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Visible</span>
+            <ChoiceGroup
+              value={resolved.hidden ? 'no' : 'yes'}
+              onChange={v => { upd('hidden', v === 'no'); commit(); }}
+              options={[
+                { value: 'yes', label: 'Yes' },
+                { value: 'no', label: 'No' },
+              ]}
+            />
+          </div>
+
+          <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+            <span className="fb-prop-label">Fill</span>
+            <div style={{ width: '100%' }}>
+              {element.type === 'image' ? (
+                <MediaPickerButton value={resolved.src ?? ''} onChange={v => { upd('src', v); commit(); }} />
+              ) : (
+                <FillPicker value={s.backgroundColor ?? '#ffffff'} onChange={v => { updS('backgroundColor', v); commit(); }} />
+              )}
+            </div>
+          </div>
+
+          {element.type === 'frame' && (
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Image</span>
+              <MediaPickerButton value={s.backgroundImage ?? ''} onChange={v => { updS('backgroundImage', v); commit(); }} />
+            </div>
+          )}
+
+          {(element.type === 'image' || (element.type === 'frame' && s.backgroundImage)) && (
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Fit</span>
+              <IconGroup
+                value={element.type === 'image' ? (s.objectFit ?? 'cover') : (s.backgroundSize ?? 'cover')}
+                onChange={v => {
+                  if (element.type === 'image') updS('objectFit', v);
+                  else updS('backgroundSize', v);
+                  commit();
+                }}
+                options={[
+                  { value: 'cover', icon: '⛶', label: 'Fill' },
+                  { value: 'contain', icon: '⊡', label: 'Contain' },
+                  { value: element.type === 'image' ? 'fill' : '100% 100%', icon: '⊞', label: 'Stretch' },
+                  { value: element.type === 'image' ? 'none' : 'repeat', icon: '·', label: element.type === 'image' ? 'None' : 'Repeat' },
+                ]}
+              />
+            </div>
+          )}
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Overflow</span>
+            <select
+              className="fb-prop-input"
+              value={s.overflow ?? 'visible'}
+              onChange={e => { updS('overflow', e.target.value); commit(); }}
+            >
+              <option value="visible">Visible</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Radius</span>
+            <div className="fb-style-inline-group">
+              <NumberInput value={s.borderRadius ?? 0} min={0} onChange={v => { updS('borderRadius', v); commit(); }} />
+              <IconButton icon={UIIcons.radiusLinked} title="All corners equal" active={(s.borderRadiusMode ?? 'linked') === 'linked'} onClick={() => { updS('borderRadiusMode', 'linked'); commit(); }} />
+              <IconButton icon={UIIcons.radiusIndependent} title="Individual corners" active={s.borderRadiusMode === 'independent'} onClick={() => { updS('borderRadiusMode', 'independent'); commit(); }} />
+            </div>
+          </div>
+
+          {s.borderRadiusMode === 'independent' && (
+            <div className="fb-prop-row">
+              <span className="fb-prop-label" />
+              <div className="fb-quad fb-quad--spaced">
+                <NumberInput value={s.borderRadiusTL ?? s.borderRadius ?? 0} min={0} label="TL" onChange={v => { updS('borderRadiusTL', v); commit(); }} />
+                <NumberInput value={s.borderRadiusTR ?? s.borderRadius ?? 0} min={0} label="TR" onChange={v => { updS('borderRadiusTR', v); commit(); }} />
+                <NumberInput value={s.borderRadiusBL ?? s.borderRadius ?? 0} min={0} label="BL" onChange={v => { updS('borderRadiusBL', v); commit(); }} />
+                <NumberInput value={s.borderRadiusBR ?? s.borderRadius ?? 0} min={0} label="BR" onChange={v => { updS('borderRadiusBR', v); commit(); }} />
+              </div>
+            </div>
+          )}
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Border</span>
+            {(s.borderWidth ?? 0) > 0 ? (
+              <div className="fb-style-inline-group fb-style-inline-group--stacked">
+                <NumberInput value={s.borderWidth ?? 0} min={0} onChange={v => { updS('borderWidth', v); commit(); }} />
+                <select className="fb-prop-input" value={s.borderStyle ?? 'solid'} onChange={e => { updS('borderStyle', e.target.value); commit(); }}>
+                  <option value="solid">Solid</option>
+                  <option value="dashed">Dashed</option>
+                  <option value="dotted">Dotted</option>
+                  <option value="none">None</option>
+                </select>
+                <ColorInput value={s.borderColor ?? '#000000'} onChange={v => { updS('borderColor', v); commit(); }} />
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="fb-add-field"
+                onClick={() => { updS('borderWidth', 1); commit(); }}
+              >
+                Add...
+              </button>
+            )}
+          </div>
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Z Index</span>
+            <div className="fb-stepper-field">
+              <input
+                className="fb-prop-input fb-stepper-field__value"
+                type="number"
+                step={1}
+                value={Math.round(s.zIndex ?? 1)}
+                onChange={e => updS('zIndex', Math.round(parseFloat(e.target.value) || 0))}
+                onBlur={commit}
+              />
+              <div className="fb-icon-group">
+                <IconButton icon={UIIcons.minus} title="Decrease z-index" onClick={() => { updS('zIndex', Math.round((s.zIndex ?? 1) - 1)); commit(); }} />
+                <IconButton icon={UIIcons.plus} title="Increase z-index" onClick={() => { updS('zIndex', Math.round((s.zIndex ?? 1) + 1)); commit(); }} />
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        <Section title="Advanced" defaultOpen={false} action={<ResetBtn show={isOv('rotation') || isOv('src')} onReset={() => { resetOv('rotation','src'); }} />}>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Name</span>
+            <input
+              className="fb-prop-input"
+              type="text"
+              value={element.base?.name || element.type || ''}
+              onChange={e => updateElementLayout(element.id, 'desktop', { name: e.target.value })}
+              onBlur={commit}
+            />
+          </div>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Rotate</span>
+            <NumberInput value={resolved.rotation ?? 0} min={-360} max={360} onChange={v => { upd('rotation', v); commit(); }} label="°" />
+          </div>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Lock</span>
+            <ChoiceGroup
+              value={element.base?.locked ? 'yes' : 'no'}
+              onChange={v => { updateElementLayout(element.id, 'desktop', { locked: v === 'yes' }); commit(); }}
+              options={[
+                { value: 'no', label: 'No' },
+                { value: 'yes', label: 'Yes' },
+              ]}
+            />
+          </div>
+        </Section>
 
       </div>
     </aside>
@@ -1088,19 +1207,24 @@ function ShadowEditor({ value, onChange }) {
   };
 
   return (
-    <div>
-      <div style={{ marginBottom: 6 }}>
-        <Toggle value={enabled} onChange={toggle} label="Enable shadow" />
-      </div>
+    <div className="fb-shadow-field">
+      {!enabled && (
+        <button type="button" className="fb-add-field" onClick={() => toggle(true)}>
+          Add...
+        </button>
+      )}
       {enabled && (
-        <input
-          className="fb-prop-input"
-          type="text"
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          placeholder="0px 4px 16px rgba(0,0,0,0.2)"
-          style={{ width: '100%' }}
-        />
+        <div className="fb-shadow-field__active">
+          <input
+            className="fb-prop-input"
+            type="text"
+            value={value}
+            onChange={e => onChange(e.target.value)}
+            placeholder="0px 4px 16px rgba(0,0,0,0.2)"
+            style={{ width: '100%' }}
+          />
+          <IconButton icon={UIIcons.close} title="Remove shadow" onClick={() => toggle(false)} />
+        </div>
       )}
     </div>
   );

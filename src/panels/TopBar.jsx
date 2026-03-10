@@ -1,5 +1,6 @@
 import React from 'react';
 import { useEditorStore } from '../store/editorStore';
+import { IconButton, UIIcons } from '../components/UIIcons';
 
 export default function TopBar() {
   const viewport       = useEditorStore(s => s.viewport);
@@ -51,14 +52,14 @@ export default function TopBar() {
       <div className="fb-topbar__sep" />
 
       {/* Undo / Redo */}
-      <button className="fb-btn fb-btn--icon" title="Undo (⌘Z)" onClick={undo}>↩</button>
-      <button className="fb-btn fb-btn--icon" title="Redo (⌘⇧Z)" onClick={redo}>↪</button>
+      <IconButton icon={UIIcons.undo} title="Undo (⌘Z)" onClick={undo} />
+      <IconButton icon={UIIcons.redo} title="Redo (⌘⇧Z)" onClick={redo} />
 
       <div className="fb-topbar__sep" />
 
       {/* Zoom controls (center) */}
       <div className="fb-topbar__center">
-        <button className="fb-btn fb-btn--icon" onClick={zoomOut} title="Zoom out">−</button>
+        <IconButton icon={UIIcons.zoomOut} onClick={zoomOut} title="Zoom out" />
         <div
           className="fb-zoom-display"
           title="Click to reset zoom"
@@ -67,8 +68,8 @@ export default function TopBar() {
         >
           {pct}%
         </div>
-        <button className="fb-btn fb-btn--icon" onClick={zoomIn} title="Zoom in">+</button>
-        <button className="fb-btn fb-btn--sm" onClick={zoomFit} title="Fit all artboards">Fit</button>
+        <IconButton icon={UIIcons.zoomIn} onClick={zoomIn} title="Zoom in" />
+        <IconButton icon={UIIcons.fit} onClick={zoomFit} title="Fit all artboards" className="fb-btn--sm" />
       </div>
 
       {/* Status + actions (right) */}
@@ -76,16 +77,8 @@ export default function TopBar() {
         {statusLabel && (
           <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span>
         )}
-        <button className="fb-btn" onClick={saveLayout} disabled={saveStatus === 'saving'}>
-          💾 Save
-        </button>
-        <button
-          className="fb-btn fb-btn--accent"
-          onClick={publishLayout}
-          disabled={saveStatus === 'saving'}
-        >
-          🚀 Publish
-        </button>
+        <IconButton icon={UIIcons.save} title="Save layout" onClick={saveLayout} disabled={saveStatus === 'saving'} />
+        <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-btn--accent" onClick={publishLayout} disabled={saveStatus === 'saving'} />
       </div>
     </header>
   );

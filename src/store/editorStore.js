@@ -42,7 +42,7 @@ export function createFrame(x = 80, y = 80, name) {
         borderRadius: 0, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
         opacity: 1, overflow: 'visible', display: 'flex', flexDirection: 'row',
         flexWrap: 'nowrap', gap: 0, paddingTop: 0, paddingRight: 0, paddingBottom: 0,
-        paddingLeft: 0, alignItems: 'flex-start', justifyContent: 'flex-start', boxShadow: '',
+        paddingLeft: 0, alignItems: 'flex-start', justifyContent: 'flex-start', boxShadow: '', zIndex: 1,
       },
     },
     overrides: { tablet: {}, mobile: {} },
@@ -65,7 +65,43 @@ export function createImage(x = 80, y = 80, name) {
       styles: {
         backgroundColor: 'transparent',
         borderRadius: 0, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
-        opacity: 1, objectFit: 'cover', boxShadow: '',
+        opacity: 1, objectFit: 'cover', boxShadow: '', zIndex: 1,
+      },
+    },
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
+export function createText(x = 80, y = 80, name) {
+  return {
+    id: `txt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'text',
+    name: name || 'Text',
+    parentId: null,
+    children: [],
+    base: {
+      x, y, width: 240, height: 60, rotation: 0, locked: false, hidden: false,
+      widthMode: 'hug', heightMode: 'hug',
+      minW: null, maxW: null, minH: null, maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      text: 'Text',
+      styles: {
+        backgroundColor: 'transparent',
+        color: '#000000',
+        fontFamily: 'Inter',
+        fontWeight: 400,
+        fontStyle: 'normal',
+        fontSize: 42,
+        fontSizeUnit: 'px',
+        letterSpacing: 0,
+        letterSpacingUnit: 'em',
+        lineHeight: 1.2,
+        lineHeightUnit: 'em',
+        textAlign: 'left',
+        textDecoration: 'none',
+        boxShadow: '',
+        opacity: 1,
+        zIndex: 1,
       },
     },
     overrides: { tablet: {}, mobile: {} },
@@ -299,6 +335,16 @@ export const useEditorStore = create((set, get) => {
         const ov = el.overrides?.[bpId] ?? {};
         return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...updates } } };
       }));
+      if (updates?.hidden === true) {
+        const currentDrilled = get().drilledContainerId;
+        const nextUiState = {};
+        if (currentDrilled === elementId) {
+          nextUiState.drilledContainerId = null;
+        }
+        if (Object.keys(nextUiState).length) {
+          set(nextUiState);
+        }
+      }
     },
 
     /** Remove a per-breakpoint override key, reverting to desktop value */

@@ -1,14 +1,22 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
+import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 
-export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir }) {
+export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir }) {
   const [dropOver, setDropOver] = useState(false);
+  const elementRef = useRef(null);
+  const textEditorRef = useRef(null);
+  const [isEditingText, setIsEditingText] = useState(false);
+  const [draftText, setDraftText] = useState('');
 
-  const el                     = useEditorStore(s => s.getAllElements().find(e => e.id === elementId));
+  const allElements            = useEditorStore(s => s.getAllElements());
+  const el                     = allElements.find(e => e.id === elementId);
   const children               = useEditorStore(s => s.getChildElements(elementId));
   const setSelection           = useEditorStore(s => s.setSelection);
   const setHoveredId           = useEditorStore(s => s.setHoveredId);
   const deleteElement          = useEditorStore(s => s.deleteElement);
+  const updateElementLayout    = useEditorStore(s => s.updateElementLayout);
+  const pushHistory            = useEditorStore(s => s.pushHistory);
   const selection              = useEditorStore(s => s.selection);
   const isHovered              = useEditorStore(s => s.hoveredId === elementId);
   const bpDef                  = useEditorStore(s => s.breakpointDefs[bpId]);
@@ -16,42 +24,48 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const pendingDraw            = useEditorStore(s => s.pendingDraw);
 
-  if (!el) return null;
-
-  const resolved = resolveElement(el, bpId);
-  const { id, locked } = el;
-  const { x, y, width, height, hidden, rotation, styles, positionType, widthMode, heightMode } = resolved;
-
-  if (hidden) return null;
+  const parentEl               = el?.parentId ? allElements.find(e => e.id === el.parentId) : null;
+  const resolved               = el ? resolveElement(el, bpId) : null;
+  const id                     = el?.id ?? elementId;
+  const locked                 = el?.locked ?? false;
+  const x                      = resolved?.x ?? 0;
+  const y                      = resolved?.y ?? 0;
+  const width                  = resolved?.width ?? 0;
+  const height                 = resolved?.height ?? 0;
+  const hidden                 = resolved?.hidden ?? false;
+  const rotation               = resolved?.rotation;
+  const styles                 = resolved?.styles ?? {};
+  const positionType           = resolved?.positionType ?? 'absolute';
+  const widthMode              = resolved?.widthMode ?? 'fixed';
+  const heightMode             = resolved?.heightMode ?? 'fixed';
+  const elType                 = el?.type ?? null;
 
   const isRelative = positionType === 'relative';
   const isFixed    = positionType === 'fixed';
   // Root-level auto-layout items flow unless explicitly pinned out of layout.
   const isFlowInLayout = !!artboardLayoutOn
-    && !el.parentId
-    && !resolved.absoluteInLayout
+    && !el?.parentId
+    && !resolved?.absoluteInLayout
     && !isFixed;
   const effectiveRelative = isRelative || isFlowInLayout;
 
   // ── Parent flex direction (needed for fill mode) ───────────
-  const parentEl       = useEditorStore(s =>
-    el.parentId ? s.getAllElements().find(e => e.id === el.parentId) : null);
   const parentResolved = parentEl ? resolveElement(parentEl, bpId) : null;
   // 'row' | 'column' | 'block'  (block = not a flex parent)
   const parentDir = (() => {
     if (!effectiveRelative) return 'block';
-    if (!el.parentId && artboardLayoutOn) return artboardFlexDir ?? 'column';
-    if (el.parentId && parentResolved?.styles?.display === 'flex')
+    if (!el?.parentId && artboardLayoutOn) return artboardFlexDir ?? 'column';
+    if (el?.parentId && parentResolved?.styles?.display === 'flex')
       return parentResolved.styles.flexDirection ?? 'row';
     return 'block';
   })();
 
   // ── Width / Height CSS values ──────────────────────────────
   // Modes: fixed (px), fill (flex/stretch/100%), relative (%), hug (fit-content)
-  const wFr  = resolved.widthFr  ?? 1;
-  const hFr  = resolved.heightFr ?? 1;
-  const wPct = resolved.widthPct  ?? width;
-  const hPct = resolved.heightPct ?? height;
+  const wFr  = resolved?.widthFr  ?? 1;
+  const hFr  = resolved?.heightFr ?? 1;
+  const wPct = resolved?.widthPct  ?? width;
+  const hPct = resolved?.heightPct ?? height;
   const csW = widthMode  === 'fill'     ? '100%'
             : widthMode  === 'hug'      ? 'fit-content'
             : widthMode  === 'relative' ? `${wPct}%`
@@ -66,6 +80,69 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const maxW = (resolved.maxW != null && resolved.maxW !== 0) ? resolved.maxW : undefined;
   const minH = (resolved.minH != null && resolved.minH !== 0) ? resolved.minH : undefined;
   const maxH = (resolved.maxH != null && resolved.maxH !== 0) ? resolved.maxH : undefined;
+  const textGrowMode = widthMode === 'hug' && heightMode === 'hug'
+    ? 'auto-width'
+    : heightMode === 'hug'
+      ? 'auto-height'
+      : 'fixed';
+  const rotateHandles = elType === 'text' && (textGrowMode === 'auto-width' || textGrowMode === 'auto-height')
+    ? ['nw', 'ne', 'sw']
+    : ['nw', 'ne', 'se', 'sw'];
+  const inlineRotateHandles = ['nw', 'ne', 'se', 'sw'];
+  const resizeHandles = elType === 'text' && (textGrowMode === 'auto-width' || textGrowMode === 'auto-height')
+    ? ['se']
+    : ['nw','n','ne','e','se','s','sw','w'];
+  const inlineResizeHandles = resizeHandles;
+
+  useEffect(() => {
+    if (!el || el.type !== 'text') return;
+    ensureGoogleFontLoaded(styles?.fontFamily ?? 'Inter', {
+      text: resolved?.text || 'Text',
+      weight: styles?.fontWeight ?? 400,
+      style: styles?.fontStyle ?? 'normal',
+    });
+  }, [el?.type, resolved?.text, styles?.fontFamily, styles?.fontStyle, styles?.fontWeight]);
+
+  useEffect(() => {
+    if (!el || el.type !== 'text') return;
+    if (!isEditingText) setDraftText(resolved?.text || 'Text');
+  }, [el?.type, isEditingText, resolved?.text]);
+
+  useEffect(() => {
+    if (!el || !isEditingText || el.type !== 'text') return;
+    const node = textEditorRef.current;
+    if (!node) return;
+    node.textContent = resolved?.text || 'Text';
+    node.focus();
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, [el?.type, isEditingText, resolved?.text]);
+
+  useEffect(() => {
+    if (!el || el.type !== 'text') return undefined;
+    if (widthMode !== 'hug' && heightMode !== 'hug') return undefined;
+    const node = elementRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return undefined;
+
+    const syncSize = () => {
+      const next = {};
+      const measuredW = Math.ceil(node.scrollWidth);
+      const measuredH = Math.ceil(node.scrollHeight);
+      if (widthMode === 'hug' && Math.abs((resolved.width ?? 0) - measuredW) > 1) next.width = measuredW;
+      if (heightMode === 'hug' && Math.abs((resolved.height ?? 0) - measuredH) > 1) next.height = measuredH;
+      if (Object.keys(next).length) updateElementLayout(id, bpId, next);
+    };
+
+    syncSize();
+    const observer = new ResizeObserver(syncSize);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [bpId, el?.type, heightMode, id, resolved?.height, resolved?.width, resolved?.text, styles?.fontFamily, styles?.fontSize, styles?.fontWeight, styles?.letterSpacing, styles?.lineHeight, updateElementLayout, widthMode]);
+
+  if (!el || hidden) return null;
 
   // Off-canvas: only meaningful on desktop — tablet/mobile inherit desktop positions
   // which may overflow their narrower artboard, but that's expected behaviour not an error.
@@ -75,6 +152,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   const handleMouseDown = (e) => {
     if (e.button !== 0) return;
+    if (isEditingText) {
+      e.stopPropagation();
+      return;
+    }
     // Figma-style drill model:
     // Root-level elements are always accessible (exit drill mode if needed).
     // Nested elements are only accessible when their direct parent is the drilled container.
@@ -98,6 +179,12 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   };
 
   const handleDoubleClick = (e) => {
+    if (el.type === 'text') {
+      e.stopPropagation();
+      setSelection({ elementId: id, bpId });
+      setIsEditingText(true);
+      return;
+    }
     const isRootLevel2 = !el.parentId;
     const isAtDrilledLevel2 = (el.parentId ?? null) === (drilledContainerId ?? null);
     if (!isRootLevel2 && !isAtDrilledLevel2) return; // not accessible — let bubble
@@ -110,14 +197,68 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   };
 
   const handleKeyDown = (e) => {
+    if (el.type === 'text' && isEditingText) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setDraftText(resolved.text || 'Text');
+        if (textEditorRef.current) textEditorRef.current.textContent = resolved.text || 'Text';
+        setIsEditingText(false);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        const nextText = draftText === '' ? 'Text' : draftText;
+        updateElementLayout(id, bpId, { text: nextText });
+        pushHistory();
+        setIsEditingText(false);
+      }
+      return;
+    }
     if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.matches('input,textarea')) {
       if (isSelected) deleteElement(id);
     }
   };
 
+  const moveTextCursor = (key, extendSelection = false) => {
+    const node = textEditorRef.current;
+    const selection = window.getSelection();
+    if (!node || !selection || selection.rangeCount === 0) return false;
+    if (!node.contains(selection.anchorNode) || !node.contains(selection.focusNode)) return false;
+
+    const direction = key === 'ArrowLeft' || key === 'ArrowUp' ? 'backward' : 'forward';
+    const granularity = key === 'ArrowUp' || key === 'ArrowDown' ? 'line' : 'character';
+
+    if (!extendSelection && !selection.isCollapsed) {
+      const range = selection.getRangeAt(0).cloneRange();
+      range.collapse(direction === 'backward');
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    }
+
+    if (typeof selection.modify === 'function') {
+      selection.modify(extendSelection ? 'extend' : 'move', direction, granularity);
+      return true;
+    }
+
+    return false;
+  };
+
+  const commitTextEdit = () => {
+    if (el.type !== 'text') return;
+    const liveText = textEditorRef.current?.textContent ?? draftText;
+    const nextText = liveText === '' ? 'Text' : liveText;
+    if (nextText !== (resolved.text || 'Text')) {
+      updateElementLayout(id, bpId, { text: nextText });
+      pushHistory();
+    }
+    setIsEditingText(false);
+  };
+
   // ── Drop-onto for nesting ──────────────────────────────────
   const handleDragOver = (e) => {
-    if (onDropOntoElement) {
+    if (onDropOntoElement && el.type === 'frame') {
       e.preventDefault();
       e.stopPropagation();
       setDropOver(true);
@@ -126,7 +267,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const handleDragLeave = () => setDropOver(false);
   const handleDrop = (e) => {
     setDropOver(false);
-    if (onDropOntoElement) {
+    if (onDropOntoElement && el.type === 'frame') {
       e.preventDefault();
       e.stopPropagation();
       onDropOntoElement(e, id);
@@ -209,6 +350,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     alignItems:       styles?.alignItems,
     justifyContent:   styles?.justifyContent,
     boxShadow:        styles?.boxShadow || undefined,
+    zIndex:           isSelected ? 9999 : (styles?.zIndex ?? undefined),
     // Background size/position/repeat for image fills
     backgroundSize:     (styles?.backgroundImage || styles?.backgroundColor?.includes('gradient('))
       ? (styles?.backgroundSize ?? (styles?.backgroundImage ? 'cover' : undefined))
@@ -217,12 +359,34 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     backgroundRepeat:   styles?.backgroundImage && styles?.backgroundSize === 'repeat' ? 'repeat' : (styles?.backgroundImage ? 'no-repeat' : undefined),
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
     cursor:  pendingDraw ? 'crosshair' : locked ? 'not-allowed' : 'move',
-    zIndex:  isSelected ? 9999 : undefined,
     boxSizing: 'border-box',
   };
 
+  const textStyle = el.type === 'text' ? {
+    fontFamily: familyToFontStack(styles?.fontFamily ?? 'Inter'),
+    fontWeight: styles?.fontWeight ?? 400,
+    fontStyle: styles?.fontStyle ?? 'normal',
+    fontSize: `${styles?.fontSize ?? 42}${styles?.fontSizeUnit ?? 'px'}`,
+    lineHeight: `${styles?.lineHeight ?? 1.2}${styles?.lineHeightUnit ?? 'em'}`,
+    letterSpacing: `${styles?.letterSpacing ?? 0}${styles?.letterSpacingUnit ?? 'em'}`,
+    color: styles?.color ?? '#000000',
+    textAlign: styles?.textAlign ?? 'left',
+    textDecoration: styles?.textDecoration ?? 'none',
+    whiteSpace: textGrowMode === 'auto-width' ? 'pre' : 'pre-wrap',
+    wordBreak: 'break-word',
+    width: '100%',
+    height: textGrowMode === 'fixed' ? '100%' : 'auto',
+    overflow: 'visible',
+    display: 'block',
+    userSelect: isEditingText ? 'text' : 'none',
+    pointerEvents: isEditingText ? 'auto' : 'none',
+    cursor: isEditingText ? 'text' : 'inherit',
+    outline: 'none',
+  } : null;
+
   return (
     <div
+      ref={elementRef}
       className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}`}
       style={inlineStyle}
       onMouseDown={handleMouseDown}
@@ -268,6 +432,43 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               <span>Image</span>
             </div>;
       })()}
+      {el.type === 'text' && (
+        <div
+          ref={textEditorRef}
+          className="fb-text-content"
+          style={textStyle}
+          contentEditable={isEditingText}
+          suppressContentEditableWarning
+          onMouseDown={(e) => {
+            if (!isEditingText) return;
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            if (!isEditingText) return;
+            e.stopPropagation();
+          }}
+          onInput={(e) => setDraftText(e.currentTarget.textContent ?? '')}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              const handled = moveTextCursor(e.key, e.shiftKey);
+              if (handled) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+              return;
+            }
+            if (e.key === 'Enter' && !(e.metaKey || e.ctrlKey) && !(e.shiftKey)) {
+              e.preventDefault();
+              document.execCommand('insertLineBreak');
+              return;
+            }
+            e.stopPropagation();
+          }}
+          onBlur={() => commitTextEdit()}
+        >
+          {isEditingText ? undefined : (resolved.text || 'Text')}
+        </div>
+      )}
       {/* Padding handles — shaded zones + drag lines (when selected and padding > 0) */}
       {isSelected && !locked && onStartPaddingDrag && (() => {
         const toNum = v => typeof v === 'number' ? v : parseFloat(v) || 0;
@@ -292,7 +493,14 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       {/* Inline resize handles for relative-positioned selected elements */}
       {(effectiveRelative) && isSelected && !locked && (
         <div className="fb-el-handles-wrap">
-          {['nw','n','ne','e','se','s','sw','w'].map(h => (
+          {inlineRotateHandles.map(h => (
+            <div
+              key={`rotate-${h}`}
+              className={`fb-sel-overlay__rotate-handle fb-sel-overlay__rotate-handle--${h}`}
+              onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onStartElementRotate && onStartElementRotate(e, bpId, { id }, `rotate-${h}`); }}
+            />
+          ))}
+          {inlineResizeHandles.map(h => (
             <div
               key={h}
               className={`fb-sel-overlay__handle fb-sel-overlay__handle--${h}`}
@@ -344,6 +552,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               dropTargetId={dropTargetId}
               onStartElementDrag={onStartElementDrag}
               onStartElementResize={onStartElementResize}
+              onStartElementRotate={onStartElementRotate}
               onDropOntoElement={onDropOntoElement}
               onStartRadiusDrag={onStartRadiusDrag}
               onStartPaddingDrag={onStartPaddingDrag}
