@@ -4,6 +4,7 @@ import Artboard from './Artboard';
 
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
+const SNAP_THRESHOLD_PX = 6;
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
 
@@ -61,6 +62,26 @@ function getInsertBeforeIdFromDom(parentDom, siblingIds, clientX, clientY, axis 
   return null;
 }
 
+function getNodeWorldRect(node, boardDom, bp, scale) {
+  if (!node || !boardDom || !bp || !scale) return null;
+  const rect = node.getBoundingClientRect();
+  const boardRect = boardDom.getBoundingClientRect();
+  const left = bp.x + (rect.left - boardRect.left) / scale;
+  const top = bp.y + (rect.top - boardRect.top) / scale;
+  const width = rect.width / scale;
+  const height = rect.height / scale;
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    centerX: left + width / 2,
+    centerY: top + height / 2,
+  };
+}
+
 /** Draggable viewport-fold line, rendered at world-space for every breakpoint. */
 function ViewportFoldOverlay({ onStartFoldDrag }) {
   const bpDefs = useEditorStore(s => s.breakpointDefs);
@@ -89,7 +110,7 @@ function ViewportFoldOverlay({ onStartFoldDrag }) {
 
 /** Renders a bounding-box overlay in world-space, as a sibling of artboards.
  *  Not clipped by artboard's overflow:hidden, so it shows even for overflowing elements. */
-function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
+function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragOverlay }) {
   const selection              = useEditorStore(s => s.selection);
   const bpDefs                 = useEditorStore(s => s.breakpointDefs);
   const allElements            = useEditorStore(s => s.getAllElements());
@@ -128,8 +149,14 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
   const w        = resolved.width  ?? 100;
   const h        = resolved.height ?? 100;
   const rotation = resolved.rotation;
+  const constraints = { top: true, left: true, right: false, bottom: false, ...(resolved.constraints ?? {}) };
+  const isDragging = dragOverlay?.elementId === el.id;
 
   let worldX, worldY;
+  let containerWorldLeft = bp.x;
+  let containerWorldTop = bp.y;
+  let containerWorldWidth = bp.width;
+  let containerWorldHeight = isFixed ? viewportFoldH : bp.height;
   if (el.parentId) {
     // Nested element: the parent may be a flex container with no meaningful x/y in the
     // data model. Measure the parent's current screen position and add the element's own
@@ -145,6 +172,10 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
       const boardRect  = boardDom.getBoundingClientRect();
       const parentOffX = (parentRect.left - boardRect.left) / sc;
       const parentOffY = (parentRect.top  - boardRect.top)  / sc;
+      containerWorldLeft = bp.x + parentOffX;
+      containerWorldTop = bp.y + parentOffY;
+      containerWorldWidth = parentRect.width / sc;
+      containerWorldHeight = parentRect.height / sc;
       worldX = bp.x + parentOffX + (resolved.x ?? 0);
       worldY = bp.y + parentOffY + (resolved.y ?? 0);
     } else {
@@ -163,8 +194,41 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
     // absoluteInLayout elements are positioned absolute inside artboard-content
     // which carries no additional offset — do NOT add page padding.
     const isAutoLayoutException = pageLayout !== null && !!resolved.absoluteInLayout;
-    worldX = bp.x + (isElOffCanvas || isAutoLayoutException ? 0 : (pad?.left ?? 0)) + absX;
-    worldY = bp.y + (isElOffCanvas || isAutoLayoutException ? 0 : (pad?.top  ?? 0)) + absY;
+    const offsetLeft = isFixed || isElOffCanvas || isAutoLayoutException ? 0 : (pad?.left ?? 0);
+    const offsetTop = isFixed || isElOffCanvas || isAutoLayoutException ? 0 : (pad?.top ?? 0);
+    const offsetRight = isFixed || isElOffCanvas || isAutoLayoutException ? 0 : (pad?.right ?? 0);
+    const offsetBottom = isFixed || isElOffCanvas || isAutoLayoutException ? 0 : (pad?.bottom ?? 0);
+    containerWorldLeft = bp.x + offsetLeft;
+    containerWorldTop = bp.y + offsetTop;
+    containerWorldWidth = bp.width - offsetLeft - offsetRight;
+    containerWorldHeight = (isFixed ? viewportFoldH : bp.height) - offsetTop - offsetBottom;
+    worldX = containerWorldLeft + absX;
+    worldY = containerWorldTop + absY;
+  }
+
+  if (isDragging) {
+    worldX = dragOverlay.worldX;
+    worldY = dragOverlay.worldY;
+  }
+
+  const overlayW = isDragging ? (dragOverlay.width ?? w) : w;
+  const overlayH = isDragging ? (dragOverlay.height ?? h) : h;
+  const midX = worldX + overlayW / 2;
+  const midY = worldY + overlayH / 2;
+  const guides = [];
+  if (constraints.left) {
+    guides.push({ key: 'left', style: { left: containerWorldLeft, top: midY, width: Math.max(0, worldX - containerWorldLeft), height: 0 } });
+  }
+  if (constraints.right) {
+    const rightStart = worldX + overlayW;
+    guides.push({ key: 'right', style: { left: rightStart, top: midY, width: Math.max(0, containerWorldLeft + containerWorldWidth - rightStart), height: 0 } });
+  }
+  if (constraints.top) {
+    guides.push({ key: 'top', style: { left: midX, top: containerWorldTop, width: 0, height: Math.max(0, worldY - containerWorldTop) } });
+  }
+  if (constraints.bottom) {
+    const bottomStart = worldY + overlayH;
+    guides.push({ key: 'bottom', style: { left: midX, top: bottomStart, width: 0, height: Math.max(0, containerWorldTop + containerWorldHeight - bottomStart) } });
   }
 
   const elChildren = allElements.filter(e => e.parentId === el.id);
@@ -172,10 +236,17 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
 
   return (
     <>
+      {guides.map((guide) => (
+        <div
+          key={guide.key}
+          className={`fb-constraint-guide fb-constraint-guide--${guide.key}`}
+          style={guide.style}
+        />
+      ))}
       <div
         className="fb-sel-overlay"
         style={{
-          left: worldX, top: worldY, width: w, height: h,
+          left: worldX, top: worldY, width: overlayW, height: overlayH,
           transform: rotation ? `rotate(${rotation}deg)` : undefined,
           transformOrigin: '50% 50%',
         }}
@@ -196,7 +267,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
         }
       }}
     >
-      {!el.locked && OVERLAY_HANDLES.map(handle => (
+      {!el.locked && !isDragging && OVERLAY_HANDLES.map(handle => (
         <div
           key={handle}
           className={`fb-sel-overlay__handle fb-sel-overlay__handle--${handle}`}
@@ -207,7 +278,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
           }}
         />
       ))}
-        {!el.locked && onStartRadiusDrag && (() => {
+        {!el.locked && !isDragging && onStartRadiusDrag && (() => {
         const isIndep = resolved.styles?.borderRadiusMode === 'independent';
         const corners = isIndep
           ? [
@@ -273,6 +344,8 @@ export default function InfiniteCanvas() {
   const [foldDragInfo,     setFoldDragInfo]     = useState(null); // { value, clientX, clientY }
   const [dragHint,         setDragHint]         = useState(null); // { label, clientX, clientY }
   const [reorderGhost,     setReorderGhost]     = useState(null); // { worldX, worldY, width, height, bgColor? }
+  const [dragOverlay,      setDragOverlay]      = useState(null); // { elementId, worldX, worldY, width, height }
+  const [alignmentGuides,  setAlignmentGuides]  = useState([]); // [{ orientation, x?, y?, start, end }]
   const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
   const clipboard = useRef(null);
 
@@ -364,6 +437,9 @@ export default function InfiniteCanvas() {
 
     let reorderTarget = null;
     let insertBeforeId = null;
+    let snappedWorldX = worldX;
+    let snappedWorldY = worldY;
+    let alignmentGuideData = [];
     if (mode === 'root-flow' || mode === 'container-flow') {
       const reorderParentId = mode === 'container-flow' ? targetParentId : null;
       const siblingIds = getSiblingIds(allEls, reorderParentId, session.elementId);
@@ -378,6 +454,79 @@ export default function InfiniteCanvas() {
         parentId: reorderParentId,
         dragId: session.elementId,
       };
+    } else {
+      const snapParentId = mode === 'container-free' ? targetParentId : null;
+      const snapSiblingIds = getSiblingIds(allEls, snapParentId, session.elementId);
+      const snapParentDom = snapParentId ? artboardDom?.querySelector(`[data-id="${snapParentId}"]`) : artboardDom;
+      const draggedRect = {
+        left: worldX,
+        top: worldY,
+        width: session.ghostW ?? 100,
+        height: session.ghostH ?? 40,
+        right: worldX + (session.ghostW ?? 100),
+        bottom: worldY + (session.ghostH ?? 40),
+        centerX: worldX + (session.ghostW ?? 100) / 2,
+        centerY: worldY + (session.ghostH ?? 40) / 2,
+      };
+      let bestSnapX = null;
+      let bestSnapY = null;
+      for (const siblingId of snapSiblingIds) {
+        const node = snapParentDom?.querySelector(`[data-id="${siblingId}"]`);
+        const siblingRect = getNodeWorldRect(node, artboardDom, bp, scale);
+        if (!siblingRect) continue;
+        const xPairs = [
+          { target: siblingRect.left, source: draggedRect.left },
+          { target: siblingRect.centerX, source: draggedRect.centerX },
+          { target: siblingRect.right, source: draggedRect.right },
+        ];
+        const yPairs = [
+          { target: siblingRect.top, source: draggedRect.top },
+          { target: siblingRect.centerY, source: draggedRect.centerY },
+          { target: siblingRect.bottom, source: draggedRect.bottom },
+        ];
+        for (const pair of xPairs) {
+          const delta = pair.target - pair.source;
+          const distancePx = Math.abs(delta) * scale;
+          if (distancePx > SNAP_THRESHOLD_PX) continue;
+          if (!bestSnapX || distancePx < bestSnapX.distancePx) {
+            bestSnapX = {
+              delta,
+              distancePx,
+              guide: {
+                orientation: 'vertical',
+                x: pair.target,
+                start: Math.min(draggedRect.top, siblingRect.top),
+                end: Math.max(draggedRect.bottom, siblingRect.bottom),
+              },
+            };
+          }
+        }
+        for (const pair of yPairs) {
+          const delta = pair.target - pair.source;
+          const distancePx = Math.abs(delta) * scale;
+          if (distancePx > SNAP_THRESHOLD_PX) continue;
+          if (!bestSnapY || distancePx < bestSnapY.distancePx) {
+            bestSnapY = {
+              delta,
+              distancePx,
+              guide: {
+                orientation: 'horizontal',
+                y: pair.target,
+                start: Math.min(draggedRect.left, siblingRect.left),
+                end: Math.max(draggedRect.right, siblingRect.right),
+              },
+            };
+          }
+        }
+      }
+      if (bestSnapX) {
+        snappedWorldX += bestSnapX.delta;
+        alignmentGuideData.push(bestSnapX.guide);
+      }
+      if (bestSnapY) {
+        snappedWorldY += bestSnapY.delta;
+        alignmentGuideData.push(bestSnapY.guide);
+      }
     }
 
     return {
@@ -391,15 +540,16 @@ export default function InfiniteCanvas() {
       mode,
       insertBeforeId,
       reorderTarget,
+      alignmentGuides: alignmentGuideData,
       dropTargetId: dropContainer?.id ?? null,
       hint: mode === 'root-flow' || mode === 'container-flow' ? 'Auto' : 'Free',
       clientLeft,
       clientTop,
-      worldX,
-      worldY,
+      worldX: snappedWorldX,
+      worldY: snappedWorldY,
       ghost: {
-        worldX,
-        worldY,
+        worldX: snappedWorldX,
+        worldY: snappedWorldY,
         width: session.ghostW ?? 100,
         height: session.ghostH ?? 40,
         bgColor: session.ghostBgColor,
@@ -617,13 +767,17 @@ export default function InfiniteCanvas() {
         setReorderTarget(null);
         setDropTargetId(null);
         setReorderGhost(null);
+        setDragOverlay(null);
+        setAlignmentGuides([]);
         setDragHint(null);
         return;
       }
       drag.current.preview = preview;
       setReorderTarget(preview.reorderTarget);
       setDropTargetId(preview.dropTargetId);
-      setReorderGhost(preview.ghost);
+      setDragOverlay({ elementId, ...preview.ghost });
+      setReorderGhost(preview.hint === 'Auto' ? preview.ghost : null);
+      setAlignmentGuides(preview.alignmentGuides ?? []);
       setDragHint({ label: preview.hint, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'artboard-move') {
       useEditorStore.getState().updateBreakpointDef(bpId, {
@@ -876,6 +1030,8 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'element-drag') {
         setDragHint(null);
         setReorderGhost(null);
+        setDragOverlay(null);
+        setAlignmentGuides([]);
       }
       setDraggingElementId(null);
       if (shouldPushHistory) pushHistory();
@@ -1285,7 +1441,16 @@ export default function InfiniteCanvas() {
           />
         ))}
         <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} />
-        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} />
+        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} dragOverlay={dragOverlay} />
+        {alignmentGuides.map((guide, index) => (
+          <div
+            key={`${guide.orientation}-${index}`}
+            className={`fb-alignment-guide fb-alignment-guide--${guide.orientation}`}
+            style={guide.orientation === 'vertical'
+              ? { left: guide.x, top: guide.start, height: Math.max(0, guide.end - guide.start) }
+              : { left: guide.start, top: guide.y, width: Math.max(0, guide.end - guide.start) }}
+          />
+        ))}
         {reorderGhost && (
           <div
             className="fb-reorder-ghost"

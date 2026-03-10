@@ -873,6 +873,31 @@ html, body, #framebuilder-root {
   box-sizing: border-box;
   z-index: 10000;
 }
+.fb-constraint-guide {
+  position: absolute;
+  pointer-events: none;
+  border-color: rgba(99, 179, 237, 0.9);
+  z-index: 9998;
+}
+.fb-constraint-guide--left,
+.fb-constraint-guide--right {
+  border-top: calc(1.5px * var(--inv-scale, 1)) dashed rgba(99, 179, 237, 0.9);
+}
+.fb-constraint-guide--top,
+.fb-constraint-guide--bottom {
+  border-left: calc(1.5px * var(--inv-scale, 1)) dashed rgba(99, 179, 237, 0.9);
+}
+.fb-alignment-guide {
+  position: absolute;
+  pointer-events: none;
+  z-index: 10002;
+}
+.fb-alignment-guide--vertical {
+  border-left: calc(1.5px * var(--inv-scale, 1)) solid rgba(16, 185, 129, 0.95);
+}
+.fb-alignment-guide--horizontal {
+  border-top: calc(1.5px * var(--inv-scale, 1)) solid rgba(16, 185, 129, 0.95);
+}
 .fb-sel-overlay__handle {
   position: absolute;
   width: calc(8px * var(--inv-scale, 1));
@@ -948,6 +973,7 @@ html, body, #framebuilder-root {
   border-radius: calc(3px * var(--inv-scale, 1));
   box-sizing: border-box;
   z-index: 10001;
+  box-shadow: 0 0 0 calc(1px * var(--inv-scale, 1)) rgba(99,179,237,0.12) inset;
 }
 
 /* ─── Right Panel ────────────────────────────────────────── */
