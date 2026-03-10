@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
 
-export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn }) {
+export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir }) {
   const [dropOver, setDropOver] = useState(false);
 
   const el                     = useEditorStore(s => s.getAllElements().find(e => e.id === elementId));
@@ -14,6 +14,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const bpDef                  = useEditorStore(s => s.breakpointDefs[bpId]);
   const drilledContainerId     = useEditorStore(s => s.drilledContainerId);
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
+  const pendingDraw            = useEditorStore(s => s.pendingDraw);
 
   if (!el) return null;
 
@@ -25,15 +26,50 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   const isRelative = positionType === 'relative';
   const isFixed    = positionType === 'fixed';
-  // Auto-layout: treat as flow (relative) unless manually pinned with absoluteInLayout
-  const isFlowInLayout = !!artboardLayoutOn && !resolved.absoluteInLayout;
+  // Root-level auto-layout items flow unless explicitly pinned out of layout.
+  const isFlowInLayout = !!artboardLayoutOn
+    && !el.parentId
+    && !resolved.absoluteInLayout
+    && !isFixed;
   const effectiveRelative = isRelative || isFlowInLayout;
-  const csW = widthMode === 'fill' ? '100%' : widthMode === 'hug' ? 'fit-content' : width;
-  const csH = heightMode === 'fill' ? '100%' : heightMode === 'hug' ? 'fit-content' : height;
+
+  // ── Parent flex direction (needed for fill mode) ───────────
+  const parentEl       = useEditorStore(s =>
+    el.parentId ? s.getAllElements().find(e => e.id === el.parentId) : null);
+  const parentResolved = parentEl ? resolveElement(parentEl, bpId) : null;
+  // 'row' | 'column' | 'block'  (block = not a flex parent)
+  const parentDir = (() => {
+    if (!effectiveRelative) return 'block';
+    if (!el.parentId && artboardLayoutOn) return artboardFlexDir ?? 'column';
+    if (el.parentId && parentResolved?.styles?.display === 'flex')
+      return parentResolved.styles.flexDirection ?? 'row';
+    return 'block';
+  })();
+
+  // ── Width / Height CSS values ──────────────────────────────
+  // Modes: fixed (px), fill (flex/stretch/100%), relative (%), hug (fit-content)
+  const wFr  = resolved.widthFr  ?? 1;
+  const hFr  = resolved.heightFr ?? 1;
+  const wPct = resolved.widthPct  ?? width;
+  const hPct = resolved.heightPct ?? height;
+  const csW = widthMode  === 'fill'     ? '100%'
+            : widthMode  === 'hug'      ? 'fit-content'
+            : widthMode  === 'relative' ? `${wPct}%`
+            : width; // fixed px
+  const csH = heightMode === 'fill'     ? '100%'
+            : heightMode === 'hug'      ? 'fit-content'
+            : heightMode === 'relative' ? `${hPct}%`
+            : height; // fixed px
+
+  // ── Min / Max constraints (only emit when explicitly set) ──
+  const minW = (resolved.minW != null && resolved.minW !== 0) ? resolved.minW : undefined;
+  const maxW = (resolved.maxW != null && resolved.maxW !== 0) ? resolved.maxW : undefined;
+  const minH = (resolved.minH != null && resolved.minH !== 0) ? resolved.minH : undefined;
+  const maxH = (resolved.maxH != null && resolved.maxH !== 0) ? resolved.maxH : undefined;
 
   // Off-canvas: only meaningful on desktop — tablet/mobile inherit desktop positions
   // which may overflow their narrower artboard, but that's expected behaviour not an error.
-  const isOffCanvas = bpId === 'desktop' && !el.parentId && bpDef && !isRelative
+  const isOffCanvas = bpId === 'desktop' && !el.parentId && bpDef && !effectiveRelative
     ? (x + width <= 0 || x >= bpDef.width || y + height <= 0 || y >= bpDef.height)
     : false;
 
@@ -97,12 +133,45 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     }
   };
 
+  // ── Fill-mode flex styles (direction-aware) ───────────────
+  // row parent  → width-fill uses flexGrow (main axis), height-fill uses alignSelf
+  // column parent → height-fill uses flexGrow (main axis), width-fill uses alignSelf
+  // block parent  → fall back to width/height: 100%
+  const wFill = effectiveRelative && widthMode  === 'fill';
+  const hFill = effectiveRelative && heightMode === 'fill';
+  const fillW        = wFill ? (parentDir === 'row'    ? undefined   // flexGrow owns it
+                              : parentDir === 'column' ? undefined   // alignSelf owns it
+                              : '100%')                              // block fallback
+                     : undefined;
+  const fillH        = hFill ? (parentDir === 'column' ? undefined   // flexGrow owns it
+                              : parentDir === 'row'    ? undefined   // alignSelf owns it
+                              : '100%')                              // block fallback
+                     : undefined;
+  const fillFlexGrow = (wFill && parentDir === 'row')    ? wFr
+                     : (hFill && parentDir === 'column') ? hFr
+                     : undefined;
+  const fillFlexBasis   = fillFlexGrow != null ? '0%' : undefined;
+  const fillFlexShrink  = fillFlexGrow != null ? 1   : undefined;
+  const fillAlignSelf   = (wFill && parentDir === 'column') ? 'stretch'
+                        : (hFill && parentDir === 'row')    ? 'stretch'
+                        : undefined;
+
   const inlineStyle = {
     position: effectiveRelative ? 'relative' : 'absolute',
     ...(effectiveRelative
-      ? { width: csW, height: csH }
+      ? { width:      wFill ? fillW : csW,
+          height:     hFill ? fillH : csH,
+          flexGrow:   fillFlexGrow,
+          flexShrink: fillFlexShrink,
+          flexBasis:  fillFlexBasis,
+          alignSelf:  fillAlignSelf,
+        }
       : { left: x, top: y, width: csW, height: csH }
     ),
+    minWidth:  minW,
+    maxWidth:  maxW,
+    minHeight: minH,
+    maxHeight: maxH,
     transform: rotation ? `rotate(${rotation}deg)` : undefined,
     // backgroundColor can hold a CSS gradient string — route accordingly
     backgroundColor: styles?.backgroundColor && !styles.backgroundColor.includes('gradient(')
@@ -147,7 +216,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     backgroundPosition: styles?.backgroundImage ? (styles?.backgroundPosition ?? 'center center') : undefined,
     backgroundRepeat:   styles?.backgroundImage && styles?.backgroundSize === 'repeat' ? 'repeat' : (styles?.backgroundImage ? 'no-repeat' : undefined),
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
-    cursor:  locked ? 'not-allowed' : 'move',
+    cursor:  pendingDraw ? 'crosshair' : locked ? 'not-allowed' : 'move',
     zIndex:  isSelected ? 9999 : undefined,
     boxSizing: 'border-box',
   };

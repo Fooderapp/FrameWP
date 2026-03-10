@@ -33,6 +33,9 @@ class FrameBuilder_Exporter {
 	/** @var array<string,array|null> Cascaded page layout (flex) per breakpoint; null = off */
 	private array  $page_layout = [];
 
+	/** @var array<string,float|null> Per-breakpoint viewport fold height (null = auto-compute) */
+	private array $viewport_fold_h = [ 'desktop' => null, 'tablet' => null, 'mobile' => null ];
+
 	public function __construct( array $layout ) {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
@@ -46,6 +49,10 @@ class FrameBuilder_Exporter {
 						'max_w'     => (float) ( $defs[ $bpId ]['width']  ?? $this->bp_cfg[ $bpId ]['max_w'] ),
 						'default_h' => (float) ( $defs[ $bpId ]['height'] ?? $this->bp_cfg[ $bpId ]['default_h'] ),
 					];
+					// Store viewport fold height for correct fixed-element bottom positioning
+					if ( isset( $defs[ $bpId ]['viewportFoldH'] ) && $defs[ $bpId ]['viewportFoldH'] !== null ) {
+						$this->viewport_fold_h[ $bpId ] = (float) $defs[ $bpId ]['viewportFoldH'];
+					}
 				}
 			}
 		}
@@ -120,8 +127,9 @@ class FrameBuilder_Exporter {
 			$html    .= '<div class="fb-bp fb-bp-' . esc_attr( $bpId ) . '" style="background:' . $bg_color . ';">';
 			$html    .= '<div class="fb-bp-inner">';
 			$artboard_layout_on = is_array( $this->page_layout[ $bpId ] ?? null );
+			$artboard_flex_dir  = $artboard_layout_on ? ( $this->page_layout[ $bpId ]['flexDirection'] ?? 'column' ) : 'none';
 			foreach ( $root_els as $el ) {
-				$html .= $this->render_element( $el, $bpId, $cw, $ch, $artboard_layout_on );
+				$html .= $this->render_element( $el, $bpId, $cw, $ch, $artboard_layout_on, $artboard_flex_dir );
 			}
 			$html .= '</div>';
 			$html .= '</div>';
@@ -185,8 +193,9 @@ class FrameBuilder_Exporter {
 					. "right: {$pad['right']}px; bottom: {$pad['bottom']}px; "
 					. "}";
 			}
+			$artboard_flex_dir_css = $layout !== null ? ( $layout['flexDirection'] ?? 'column' ) : 'none';
 			foreach ( $root_els as $el ) {
-				$this->collect_element_css( $el, $bpId, $cw_css, $ch_css, $layout !== null );
+				$this->collect_element_css( $el, $bpId, $cw_css, $ch_css, $layout !== null, $artboard_flex_dir_css );
 			}
 		}
 
@@ -204,7 +213,7 @@ class FrameBuilder_Exporter {
 	 * @param float $cw  Design width  of the containing context in px.
 	 * @param float $ch  Design height of the containing context in px.
 	 */
-	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false ): string {
+	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): string {
 		$resolved = $this->resolve( $el, $bpId );
 		if ( ! empty( $resolved['hidden'] ) ) return '';
 
@@ -228,18 +237,51 @@ class FrameBuilder_Exporter {
 		}
 		$width_mode  = $resolved['widthMode']  ?? 'fixed';
 		$height_mode = $resolved['heightMode'] ?? 'fixed';
-		$w_str = $width_mode  === 'fill' ? '100%'        : ( $width_mode  === 'hug' ? 'fit-content' : "{$w}px" );
-		$h_str = $height_mode === 'fill' ? '100%'        : ( $height_mode === 'hug' ? 'fit-content' : "{$h}px" );
+		$w_fr  = floatval( $resolved['widthFr']   ?? 1 );
+		$h_fr  = floatval( $resolved['heightFr']  ?? 1 );
+		$w_pct = floatval( $resolved['widthPct']  ?? $w );
+		$h_pct = floatval( $resolved['heightPct'] ?? $h );
+		$min_w = isset( $resolved['minW'] ) && $resolved['minW'] !== null ? floatval( $resolved['minW'] ) : null;
+		$max_w = isset( $resolved['maxW'] ) && $resolved['maxW'] !== null ? floatval( $resolved['maxW'] ) : null;
+		$min_h = isset( $resolved['minH'] ) && $resolved['minH'] !== null ? floatval( $resolved['minH'] ) : null;
+		$max_h = isset( $resolved['maxH'] ) && $resolved['maxH'] !== null ? floatval( $resolved['maxH'] ) : null;
+		$w_str = $width_mode  === 'fill'     ? '100%'
+		       : ( $width_mode  === 'hug'      ? 'fit-content'
+		       : ( $width_mode  === 'relative' ? "{$w_pct}%"
+		       : "{$w}px" ) );
+		$h_str = $height_mode === 'fill'     ? '100%'
+		       : ( $height_mode === 'hug'      ? 'fit-content'
+		       : ( $height_mode === 'relative' ? "{$h_pct}%"
+		       : "{$h}px" ) );
 		$pin_right  = !empty( $cx['right'] );
 		$pin_bottom = !empty( $cx['bottom'] );
 		$right_val  = $cw - $x - $w;
 		$bottom_val = $ch - $y - $h;
 
 		if ( $pos_type === 'relative' ) {
-			$inline = "position:relative;box-sizing:border-box;width:{$w_str};height:{$h_str};";
+			// Direction-aware fill sizing (matches CanvasElement.jsx logic)
+			$extra = '';
+			if ( $parent_flex_dir === 'row' && $width_mode === 'fill' ) {
+				// Main axis (width) grows via flex
+				$extra  = "flex:{$w_fr} 1 0%;min-width:0;";
+				$extra .= ( $height_mode === 'fill' ) ? 'align-self:stretch;' : "height:{$h_str};";
+			} elseif ( $parent_flex_dir === 'column' && $height_mode === 'fill' ) {
+				// Main axis (height) grows via flex
+				$extra  = "flex:{$h_fr} 1 0%;min-height:0;";
+				$extra .= ( $width_mode === 'fill' ) ? 'align-self:stretch;' : "width:{$w_str};";
+			} else {
+				// Cross-axis fill or no flex parent
+				$w_part = ( $width_mode  === 'fill' ) ? 'width:100%;'  : "width:{$w_str};";
+				$h_part = ( $height_mode === 'fill' ) ? 'height:100%;' : "height:{$h_str};";
+				if ( $parent_flex_dir === 'column' && $width_mode  === 'fill' ) $extra .= 'align-self:stretch;';
+				if ( $parent_flex_dir === 'row'    && $height_mode === 'fill' ) $extra .= 'align-self:stretch;';
+				$extra .= $w_part . $h_part;
+			}
+			$inline = "position:relative;box-sizing:border-box;{$extra}";
 		} elseif ( $pos_type === 'fixed' ) {
+			$vfh   = $this->get_viewport_fold_h( $bpId );
 			$pos_l = $pin_right && empty( $cx['left'] ) ? "right:{$right_val}px" : "left:{$x}px";
-			$pos_t = $pin_bottom && empty( $cx['top'] ) ? "bottom:{$bottom_val}px" : "top:{$y}px";
+			$pos_t = $pin_bottom && empty( $cx['top'] ) ? 'bottom:' . ( $vfh - $y - $h ) . 'px' : "top:{$y}px";
 			$inline = "position:fixed;box-sizing:border-box;"
 				. "{$pos_l};{$pos_t};width:{$w_str};height:{$h_str};";
 		} else {
@@ -248,6 +290,10 @@ class FrameBuilder_Exporter {
 			$inline = "position:absolute;box-sizing:border-box;"
 				. "{$pos_l};{$pos_t};width:{$w_str};height:{$h_str};";
 		}
+		if ( $min_w !== null && $min_w > 0 ) $inline .= "min-width:{$min_w}px;";
+		if ( $max_w !== null && $max_w > 0 ) $inline .= "max-width:{$max_w}px;";
+		if ( $min_h !== null && $min_h > 0 ) $inline .= "min-height:{$min_h}px;";
+		if ( $max_h !== null && $max_h > 0 ) $inline .= "max-height:{$max_h}px;";
 
 		if ( ! empty( $resolved['rotation'] ) ) {
 			$inline .= 'transform:rotate(' . floatval( $resolved['rotation'] ) . 'deg);';
@@ -305,10 +351,16 @@ class FrameBuilder_Exporter {
 			}
 		}
 
+		// Compute flex direction this element provides to its own children
+		$child_flex_dir = 'none';
+		if ( ( $styles['display'] ?? '' ) === 'flex' ) {
+			$child_flex_dir = $styles['flexDirection'] ?? 'column';
+		}
+		$child_layout_on = $child_flex_dir !== 'none';
 		foreach ( $el['children'] ?? [] as $child_id ) {
 			$child = $this->el_index[ $child_id ] ?? null;
 			if ( $child ) {
-				$html .= $this->render_element( $child, $bpId, $w, $h );
+				$html .= $this->render_element( $child, $bpId, $w, $h, $child_layout_on, $child_flex_dir );
 			}
 		}
 
@@ -324,7 +376,7 @@ class FrameBuilder_Exporter {
 	 * @param float $cw  Design width  of containing context (artboard or parent) in px.
 	 * @param float $ch  Design height of containing context in px.
 	 */
-	private function collect_element_css( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false ): void {
+	private function collect_element_css( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): void {
 		$resolved = $this->resolve( $el, $bpId );
 		if ( ! empty( $resolved['hidden'] ) ) return;
 
@@ -345,6 +397,14 @@ class FrameBuilder_Exporter {
 		}
 		$width_mode  = $resolved['widthMode']    ?? 'fixed';
 		$height_mode = $resolved['heightMode']   ?? 'fixed';
+		$w_fr  = floatval( $resolved['widthFr']   ?? 1 );
+		$h_fr  = floatval( $resolved['heightFr']  ?? 1 );
+		$w_pct = floatval( $resolved['widthPct']  ?? $w );
+		$h_pct = floatval( $resolved['heightPct'] ?? $h );
+		$min_w = isset( $resolved['minW'] ) && $resolved['minW'] !== null ? floatval( $resolved['minW'] ) : null;
+		$max_w = isset( $resolved['maxW'] ) && $resolved['maxW'] !== null ? floatval( $resolved['maxW'] ) : null;
+		$min_h = isset( $resolved['minH'] ) && $resolved['minH'] !== null ? floatval( $resolved['minH'] ) : null;
+		$max_h = isset( $resolved['maxH'] ) && $resolved['maxH'] !== null ? floatval( $resolved['maxH'] ) : null;
 		$pin_top    = !empty( $cx['top'] );
 		$pin_bottom = !empty( $cx['bottom'] );
 		$pin_left   = !empty( $cx['left'] );
@@ -359,20 +419,62 @@ class FrameBuilder_Exporter {
 		}
 
 		if ( $pos_type === 'relative' ) {
-			$w_rule = $width_mode  === 'fill' ? 'width: 100%'     : ( $width_mode  === 'hug' ? 'width: fit-content'  : "width: {$w}px" );
-			$h_rule = $height_mode === 'fill' ? 'height: 100%'    : ( $height_mode === 'hug' ? 'height: fit-content' : "height: {$h}px" );
-			$rules = [
-				'position: relative',
-				'box-sizing: border-box',
-				$w_rule,
-				$h_rule,
-			];
+			$rules = [ 'position: relative', 'box-sizing: border-box' ];
+			if ( $parent_flex_dir === 'row' && $width_mode === 'fill' ) {
+				// Main axis: width grows via flex
+				$rules[] = "flex: {$w_fr} 1 0%";
+				$rules[] = 'min-width: 0';
+				if ( $height_mode === 'fill' ) {
+					$rules[] = 'align-self: stretch';
+				} elseif ( $height_mode === 'hug' ) {
+					$rules[] = 'height: fit-content';
+				} elseif ( $height_mode === 'relative' ) {
+					$rules[] = "height: {$h_pct}%";
+				} else {
+					$rules[] = "height: {$h}px";
+				}
+			} elseif ( $parent_flex_dir === 'column' && $height_mode === 'fill' ) {
+				// Main axis: height grows via flex
+				$rules[] = "flex: {$h_fr} 1 0%";
+				$rules[] = 'min-height: 0';
+				if ( $width_mode === 'fill' ) {
+					$rules[] = 'align-self: stretch';
+				} elseif ( $width_mode === 'hug' ) {
+					$rules[] = 'width: fit-content';
+				} elseif ( $width_mode === 'relative' ) {
+					$rules[] = "width: {$w_pct}%";
+				} else {
+					$rules[] = "width: {$w}px";
+				}
+			} else {
+				// Cross-axis fill or no flex parent
+				if ( $width_mode === 'fill' ) {
+					if ( $parent_flex_dir === 'column' ) { $rules[] = 'align-self: stretch'; }
+					else { $rules[] = 'width: 100%'; }
+				} elseif ( $width_mode === 'hug' ) {
+					$rules[] = 'width: fit-content';
+				} elseif ( $width_mode === 'relative' ) {
+					$rules[] = "width: {$w_pct}%";
+				} else {
+					$rules[] = "width: {$w}px";
+				}
+				if ( $height_mode === 'fill' ) {
+					if ( $parent_flex_dir === 'row' ) { $rules[] = 'align-self: stretch'; }
+					else { $rules[] = 'height: 100%'; }
+				} elseif ( $height_mode === 'hug' ) {
+					$rules[] = 'height: fit-content';
+				} elseif ( $height_mode === 'relative' ) {
+					$rules[] = "height: {$h_pct}%";
+				} else {
+					$rules[] = "height: {$h}px";
+				}
+			}
 		} elseif ( $pos_type === 'fixed' || $pos_type === 'absolute' ) {
 			$rules = [
 				'position: ' . $pos_type,
 				'box-sizing: border-box',
 			];
-			// Horizontal: fill/hug override pinning
+			// Horizontal: fill/hug/relative override pinning
 			if ( $width_mode === 'fill' ) {
 				$rules[] = 'left: 0';
 				$rules[] = 'right: 0';
@@ -380,6 +482,9 @@ class FrameBuilder_Exporter {
 			} elseif ( $width_mode === 'hug' ) {
 				$rules[] = "left: {$x}px";
 				$rules[] = 'width: fit-content';
+			} elseif ( $width_mode === 'relative' ) {
+				$rules[] = "left: {$x}px";
+				$rules[] = "width: {$w_pct}%";
 			} elseif ( $pin_left && $pin_right ) {
 				$rules[] = "left: {$x}px";
 				$rules[] = "right: {$right_val}px";
@@ -390,7 +495,11 @@ class FrameBuilder_Exporter {
 				$rules[] = "left: {$x}px";
 				$rules[] = "width: {$w}px";
 			}
-			// Vertical: fill/hug override pinning
+			// For fixed elements bottom is measured from the viewport fold, not the parent height
+			$eff_bottom_val = ( $pos_type === 'fixed' )
+				? ( $this->get_viewport_fold_h( $bpId ) - $y - $h )
+				: $bottom_val;
+			// Vertical: fill/hug/relative override pinning
 			if ( $height_mode === 'fill' ) {
 				$rules[] = 'top: 0';
 				$rules[] = 'bottom: 0';
@@ -398,17 +507,25 @@ class FrameBuilder_Exporter {
 			} elseif ( $height_mode === 'hug' ) {
 				$rules[] = "top: {$y}px";
 				$rules[] = 'height: fit-content';
+			} elseif ( $height_mode === 'relative' ) {
+				$rules[] = "top: {$y}px";
+				$rules[] = "height: {$h_pct}%";
 			} elseif ( $pin_top && $pin_bottom ) {
 				$rules[] = "top: {$y}px";
-				$rules[] = "bottom: {$bottom_val}px";
+				$rules[] = "bottom: {$eff_bottom_val}px";
 			} elseif ( $pin_bottom && !$pin_top ) {
-				$rules[] = "bottom: {$bottom_val}px";
+				$rules[] = "bottom: {$eff_bottom_val}px";
 				$rules[] = "height: {$h}px";
 			} else {
 				$rules[] = "top: {$y}px";
 				$rules[] = "height: {$h}px";
 			}
 		}
+
+		if ( $min_w !== null && $min_w > 0 ) $rules[] = "min-width: {$min_w}px";
+		if ( $max_w !== null && $max_w > 0 ) $rules[] = "max-width: {$max_w}px";
+		if ( $min_h !== null && $min_h > 0 ) $rules[] = "min-height: {$min_h}px";
+		if ( $max_h !== null && $max_h > 0 ) $rules[] = "max-height: {$max_h}px";
 
 		if ( ! empty( $resolved['rotation'] ) ) {
 			$rules[] = 'transform: rotate(' . floatval( $resolved['rotation'] ) . 'deg)';
@@ -462,11 +579,16 @@ class FrameBuilder_Exporter {
 
 		$this->css[] = $selector . ' { ' . implode( '; ', $rules ) . ' }';
 
-		// Recurse: children are % relative to this element's design dimensions.
+		// Recurse: pass this element's flex direction to children for fill-mode awareness.
+		$child_flex_dir = 'none';
+		if ( ( $styles['display'] ?? '' ) === 'flex' ) {
+			$child_flex_dir = $styles['flexDirection'] ?? 'column';
+		}
+		$child_layout_on = $child_flex_dir !== 'none';
 		foreach ( $el['children'] ?? [] as $child_id ) {
 			$child = $this->el_index[ $child_id ] ?? null;
 			if ( $child ) {
-				$this->collect_element_css( $child, $bpId, $w, $h );
+				$this->collect_element_css( $child, $bpId, $w, $h, $child_layout_on, $child_flex_dir );
 			}
 		}
 	}
@@ -525,6 +647,18 @@ class FrameBuilder_Exporter {
 
 	private function camel_to_kebab( string $str ): string {
 		return strtolower( preg_replace( '/([A-Z])/', '-$1', $str ) );
+	}
+
+	/**
+	 * Return the visible viewport fold height for a breakpoint.
+	 * Matches the JS autoFoldH formula: desktop uses 9/16 aspect, others use 16/9.
+	 */
+	private function get_viewport_fold_h( string $bpId ): float {
+		if ( isset( $this->viewport_fold_h[ $bpId ] ) && $this->viewport_fold_h[ $bpId ] !== null ) {
+			return $this->viewport_fold_h[ $bpId ];
+		}
+		$w = (float) ( $this->bp_cfg[ $bpId ]['max_w'] ?? 1440 );
+		return $bpId === 'desktop' ? round( $w * 9 / 16 ) : round( $w * 16 / 9 );
 	}
 
 	/**

@@ -66,6 +66,12 @@ export default function Artboard({
   // Root-level elements only (parentId === null)
   const rootEls = allElements.filter(e => !e.parentId);
 
+  const isFlowRootAtBp = (el, targetBpId) => {
+    const r = resolveElement(el, targetBpId);
+    const targetLayout = resolvePageLayout(page?.layout, targetBpId);
+    return !el.parentId && targetLayout !== null && !r.absoluteInLayout && r.positionType !== 'fixed';
+  };
+
   // One-way inheritance: if an element is off-canvas on desktop, it is completely
   // excluded from tablet/mobile artboards (not even shown as ghost).
   const desktopBp = breakpointDefs['desktop'];
@@ -73,6 +79,7 @@ export default function Artboard({
     if (bp.id === 'desktop' || !desktopBp) return false;
     const r = resolveElement(el, 'desktop');
     if (r.hidden) return false; // hidden-on-desktop elements (bp-specific) are kept
+    if (isFlowRootAtBp(el, 'desktop')) return false;
     return (r.x + r.width <= 0 || r.x >= desktopBp.width || r.y + r.height <= 0 || r.y >= desktopBp.height);
   };
 
@@ -80,12 +87,13 @@ export default function Artboard({
   const isOffCanvas = (el) => {
     const r = resolveElement(el, bp.id);
     if (r.hidden) return false;
+    if (isFlowRootAtBp(el, bp.id)) return false;
     return (r.x + r.width <= 0 || r.x >= bp.width || r.y + r.height <= 0 || r.y >= bp.height);
   };
   const eligibleEls  = rootEls.filter(el => !isDesktopOffCanvas(el));
   // Off-canvas elements are those geometrically outside the artboard bounds.
   // This applies even when layoutOn — absoluteInLayout exceptions can be dragged outside.
-  // Flow elements (no explicit x/y) will never satisfy the bounds check so they stay in onCanvasEls.
+  // Root flow elements are never treated as off-canvas; only positioned exceptions are.
   const offCanvasEls = eligibleEls.filter(el => isOffCanvas(el));
   const onCanvasEls  = eligibleEls.filter(el => !isOffCanvas(el));
 
@@ -205,10 +213,11 @@ export default function Artboard({
                 <CanvasElement
                   elementId={el.id}
                   bpId={bp.id}
-                  isSelected={selection?.elementId === el.id}
+                  isSelected={selection?.elementId === el.id && selection?.bpId === bp.id}
                   isDropTarget={dropTargetId === el.id}
                   dropTargetId={dropTargetId}
                   artboardLayoutOn={layoutOn}
+                  artboardFlexDir={resolvedLayout?.flexDirection ?? 'column'}
                   onStartElementDrag={onStartElementDrag}
                   onStartElementResize={onStartResize}
                   onDropOntoElement={onDropOntoElement}
@@ -300,7 +309,7 @@ export default function Artboard({
                 key={el.id}
                 elementId={el.id}
                 bpId={bp.id}
-                isSelected={selection?.elementId === el.id}
+                isSelected={selection?.elementId === el.id && selection?.bpId === bp.id}
                 onStartElementDrag={onStartElementDrag}
                 onStartElementResize={onStartResize}
                 onDropOntoElement={onDropOntoElement}

@@ -61,6 +61,46 @@ function NumberInput({ value, onChange, label, unit = 'px', min, max, step = 1 }
   );
 }
 
+/** Like NumberInput but shows blank when value is null/0/undefined */
+function NullableNumberInput({ value, onChange, label, placeholder = '', min, step = 1 }) {
+  const hasValue = value != null && value !== 0;
+  const [draft, setDraft] = React.useState(hasValue ? String(value) : '');
+  const [focused, setFocused] = React.useState(false);
+  React.useEffect(() => {
+    if (!focused) setDraft(value != null && value !== 0 ? String(Math.round(value * 10) / 10) : '');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, focused]);
+  return (
+    <div className="fb-prop-mini">
+      <input
+        className="fb-prop-input"
+        type="number"
+        value={focused ? draft : (value != null && value !== 0 ? String(Math.round(value * 10) / 10) : '')}
+        placeholder={placeholder}
+        min={min}
+        step={step}
+        onFocus={e => { setFocused(true); setDraft(value != null && value !== 0 ? String(Math.round(value * 10) / 10) : ''); e.target.select(); }}
+        onBlur={() => {
+          setFocused(false);
+          if (draft === '' || draft === null) { onChange(null); return; }
+          const num = parseFloat(draft);
+          if (!isNaN(num) && num > 0) onChange(num);
+          else { onChange(null); setDraft(''); }
+        }}
+        onChange={e => {
+          const raw = e.target.value;
+          setDraft(raw);
+          if (raw === '') { onChange(null); return; }
+          const num = parseFloat(raw);
+          if (!isNaN(num) && num > 0) onChange(num);
+        }}
+        style={{ textAlign: 'center' }}
+      />
+      {label && <label>{label}</label>}
+    </div>
+  );
+}
+
 function ColorInput({ value, onChange }) {
   const hex = rgbaToHex(value ?? '#cccccc');
 
@@ -97,6 +137,111 @@ function IconGroup({ options, value, onChange }) {
           {o.icon}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Figma-style layout grid (direction + wrap + align + justify compact) ───────
+const LAYOUT_ICONS = {
+  row:    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="1" y="4" width="3" height="6" rx="0.5"/><rect x="5.5" y="4" width="3" height="6" rx="0.5"/><rect x="10" y="4" width="3" height="6" rx="0.5"/></svg>,
+  column: <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="4" y="1" width="6" height="3" rx="0.5"/><rect x="4" y="5.5" width="6" height="3" rx="0.5"/><rect x="4" y="10" width="6" height="3" rx="0.5"/></svg>,
+  nowrap: <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="1" y="4" width="3" height="6" rx="0.5"/><rect x="5.5" y="4" width="3" height="6" rx="0.5"/><rect x="10" y="4" width="3" height="6" rx="0.5"/></svg>,
+  wrap:   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="1" y="1.5" width="3" height="4.5" rx="0.5"/><rect x="5.5" y="1.5" width="3" height="4.5" rx="0.5"/><rect x="10" y="1.5" width="3" height="4.5" rx="0.5"/><rect x="1" y="8" width="3" height="4.5" rx="0.5"/><rect x="5.5" y="8" width="3" height="4.5" rx="0.5"/></svg>,
+  'align-start':   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M1 1h12"/><rect x="2" y="3" width="3" height="8" rx="0.5"/><rect x="6.5" y="3" width="4" height="5" rx="0.5"/></svg>,
+  'align-center':  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M1 7h12"/><rect x="2" y="2" width="3" height="10" rx="0.5"/><rect x="6.5" y="3.5" width="4" height="7" rx="0.5"/></svg>,
+  'align-end':     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M1 13h12"/><rect x="2" y="3" width="3" height="8" rx="0.5"/><rect x="6.5" y="6" width="4" height="5" rx="0.5"/></svg>,
+  'align-stretch': <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M1 1h12M1 13h12"/><rect x="2" y="2.5" width="3" height="9" rx="0.5"/><rect x="6.5" y="2.5" width="4" height="9" rx="0.5"/></svg>,
+  'just-start':   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M1 1v12"/><rect x="3" y="4" width="3" height="6" rx="0.5"/><rect x="7.5" y="4" width="3" height="6" rx="0.5"/></svg>,
+  'just-center':  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M7 1v12"/><rect x="2.5" y="4" width="3" height="6" rx="0.5"/><rect x="8.5" y="4" width="3" height="6" rx="0.5"/></svg>,
+  'just-end':     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M13 1v12"/><rect x="3.5" y="4" width="3" height="6" rx="0.5"/><rect x="8" y="4" width="3" height="6" rx="0.5"/></svg>,
+  'just-between': <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M1 1v12M13 1v12"/><rect x="2.5" y="4" width="3" height="6" rx="0.5"/><rect x="8.5" y="4" width="3" height="6" rx="0.5"/></svg>,
+  'just-around':  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="1.5" y="4" width="3" height="6" rx="0.5"/><rect x="9.5" y="4" width="3" height="6" rx="0.5"/></svg>,
+};
+
+function LayoutGrid({ layout, onChange }) {
+  const { flexDirection, alignItems, justifyContent, flexWrap } = layout;
+  return (
+    <div className="fb-layout-grid">
+      <div className="fb-prop-row">
+        <span className="fb-prop-label">Direction</span>
+        <IconGroup
+          value={flexDirection}
+          onChange={v => onChange('flexDirection', v)}
+          options={[
+            { value: 'row',    icon: LAYOUT_ICONS.row,    label: 'Row' },
+            { value: 'column', icon: LAYOUT_ICONS.column, label: 'Column' },
+          ]}
+        />
+      </div>
+      <div className="fb-prop-row">
+        <span className="fb-prop-label">Wrap</span>
+        <IconGroup
+          value={flexWrap}
+          onChange={v => onChange('flexWrap', v)}
+          options={[
+            { value: 'nowrap', icon: LAYOUT_ICONS.nowrap, label: 'No wrap' },
+            { value: 'wrap',   icon: LAYOUT_ICONS.wrap,   label: 'Wrap' },
+          ]}
+        />
+      </div>
+      <div className="fb-prop-row">
+        <span className="fb-prop-label">Align</span>
+        <IconGroup
+          value={alignItems}
+          onChange={v => onChange('alignItems', v)}
+          options={[
+            { value: 'flex-start', icon: LAYOUT_ICONS['align-start'],   label: 'Start' },
+            { value: 'center',     icon: LAYOUT_ICONS['align-center'],  label: 'Center' },
+            { value: 'flex-end',   icon: LAYOUT_ICONS['align-end'],     label: 'End' },
+            { value: 'stretch',    icon: LAYOUT_ICONS['align-stretch'], label: 'Stretch' },
+          ]}
+        />
+      </div>
+      <div className="fb-prop-row">
+        <span className="fb-prop-label">Justify</span>
+        <IconGroup
+          value={justifyContent}
+          onChange={v => onChange('justifyContent', v)}
+          options={[
+            { value: 'flex-start',    icon: LAYOUT_ICONS['just-start'],   label: 'Start' },
+            { value: 'center',        icon: LAYOUT_ICONS['just-center'],  label: 'Center' },
+            { value: 'flex-end',      icon: LAYOUT_ICONS['just-end'],     label: 'End' },
+            { value: 'space-between', icon: LAYOUT_ICONS['just-between'], label: 'Between' },
+            { value: 'space-around',  icon: LAYOUT_ICONS['just-around'],  label: 'Around' },
+          ]}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── Align strip for absolute/fixed positioned elements ─────────────────────────
+const ALIGN_SVG = {
+  left:    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M1 1v12"/><rect x="3" y="3" width="4" height="8" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="3" y="3" width="4" height="8" rx="0.5"/></svg>,
+  hcenter: <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M7 1v12"/><rect x="3" y="3" width="8" height="8" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="3" y="3" width="8" height="8" rx="0.5"/></svg>,
+  right:   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M13 1v12"/><rect x="7" y="3" width="4" height="8" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="7" y="3" width="4" height="8" rx="0.5"/></svg>,
+  top:     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M1 1h12"/><rect x="3" y="3" width="8" height="4" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="3" y="3" width="8" height="4" rx="0.5"/></svg>,
+  vcenter: <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M1 7h12"/><rect x="3" y="3" width="8" height="8" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="3" y="3" width="8" height="8" rx="0.5"/></svg>,
+  bottom:  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M1 13h12"/><rect x="3" y="7" width="8" height="4" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="3" y="7" width="8" height="4" rx="0.5"/></svg>,
+  hleft:   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M1 7h12" strokeDasharray="2 1.5"/><rect x="1" y="4.5" width="5" height="5" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="1" y="4.5" width="5" height="5" rx="0.5"/></svg>,
+  hright:  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M1 7h12" strokeDasharray="2 1.5"/><rect x="8" y="4.5" width="5" height="5" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="8" y="4.5" width="5" height="5" rx="0.5"/></svg>,
+  vtop:    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M7 1v12" strokeDasharray="2 1.5"/><rect x="4.5" y="1" width="5" height="5" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="4.5" y="1" width="5" height="5" rx="0.5"/></svg>,
+  vbottom: <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M7 1v12" strokeDasharray="2 1.5"/><rect x="4.5" y="8" width="5" height="5" rx="0.5" fill="currentColor" fillOpacity="0.15"/><rect x="4.5" y="8" width="5" height="5" rx="0.5"/></svg>,
+};
+
+function AlignStrip({ resolved, containerW, containerH, upd, commit, disabled }) {
+  const w = resolved.width ?? 100;
+  const h = resolved.height ?? 100;
+  const go = (axis, val) => { upd(axis, val); commit(); };
+  return (
+    <div className={`fb-align-strip${disabled ? ' fb-align-strip--disabled' : ''}`}>
+      <div className="fb-align-strip__btn" title="Align left"         onClick={() => !disabled && go('x', 0)}>{ALIGN_SVG.left}</div>
+      <div className="fb-align-strip__btn" title="Center horizontal"  onClick={() => !disabled && go('x', Math.round((containerW - w) / 2))}>{ALIGN_SVG.hcenter}</div>
+      <div className="fb-align-strip__btn" title="Align right"        onClick={() => !disabled && go('x', containerW - w)}>{ALIGN_SVG.right}</div>
+      <div className="fb-align-strip__sep" />
+      <div className="fb-align-strip__btn" title="Align top"          onClick={() => !disabled && go('y', 0)}>{ALIGN_SVG.top}</div>
+      <div className="fb-align-strip__btn" title="Center vertical"    onClick={() => !disabled && go('y', Math.round((containerH - h) / 2))}>{ALIGN_SVG.vcenter}</div>
+      <div className="fb-align-strip__btn" title="Align bottom"       onClick={() => !disabled && go('y', containerH - h)}>{ALIGN_SVG.bottom}</div>
     </div>
   );
 }
@@ -215,7 +360,8 @@ function ConstraintWidget({ constraints, onChange }) {
 /** Expandable min/max width/height section */
 function MinMaxRow({ resolved, upd, commit }) {
   const [open, setOpen] = useState(false);
-  const hasAny = resolved.minW != null || resolved.maxW != null || resolved.minH != null || resolved.maxH != null;
+  const hasAny = (resolved.minW != null && resolved.minW !== 0) || (resolved.maxW != null && resolved.maxW !== 0)
+               || (resolved.minH != null && resolved.minH !== 0) || (resolved.maxH != null && resolved.maxH !== 0);
   return (
     <div className="fb-minmax">
       <div className="fb-minmax__trigger" onClick={() => setOpen(o => !o)}>
@@ -227,12 +373,12 @@ function MinMaxRow({ resolved, upd, commit }) {
       {open && (
         <div className="fb-minmax__body">
           <div className="fb-quad" style={{ marginTop: 4 }}>
-            <NumberInput value={resolved.minW ?? 0} label="Min W" onChange={v => { upd('minW', v || null); commit(); }} />
-            <NumberInput value={resolved.maxW ?? 0} label="Max W" onChange={v => { upd('maxW', v || null); commit(); }} />
+            <NullableNumberInput value={resolved.minW} placeholder="—" label="Min W" onChange={v => { upd('minW', v); commit(); }} />
+            <NullableNumberInput value={resolved.maxW} placeholder="—" label="Max W" onChange={v => { upd('maxW', v); commit(); }} />
           </div>
           <div className="fb-quad" style={{ marginTop: 4 }}>
-            <NumberInput value={resolved.minH ?? 0} label="Min H" onChange={v => { upd('minH', v || null); commit(); }} />
-            <NumberInput value={resolved.maxH ?? 0} label="Max H" onChange={v => { upd('maxH', v || null); commit(); }} />
+            <NullableNumberInput value={resolved.minH} placeholder="—" label="Min H" onChange={v => { upd('minH', v); commit(); }} />
+            <NullableNumberInput value={resolved.maxH} placeholder="—" label="Max H" onChange={v => { upd('maxH', v); commit(); }} />
           </div>
         </div>
       )}
@@ -405,56 +551,11 @@ export default function PropertiesPanel() {
                 </div>
                 {layoutOn && (
                   <>
-                    <div className="fb-prop-row">
-                      <span className="fb-prop-label">Direction</span>
-                      <IconGroup
-                        value={activeLayout.flexDirection}
-                        onChange={v => updLayout('flexDirection', v)}
-                        options={[
-                          { value: 'row',    icon: '→', label: 'Row' },
-                          { value: 'column', icon: '↓', label: 'Column' },
-                        ]}
-                      />
-                    </div>
-                    <div className="fb-prop-row">
-                      <span className="fb-prop-label">Wrap</span>
-                      <IconGroup
-                        value={activeLayout.flexWrap}
-                        onChange={v => updLayout('flexWrap', v)}
-                        options={[
-                          { value: 'nowrap', icon: '⇥', label: 'No wrap' },
-                          { value: 'wrap',   icon: '↵', label: 'Wrap' },
-                        ]}
-                      />
-                    </div>
-                    <div className="fb-prop-row">
-                      <span className="fb-prop-label">Align</span>
-                      <IconGroup
-                        value={activeLayout.alignItems}
-                        onChange={v => updLayout('alignItems', v)}
-                        options={[
-                          { value: 'flex-start', icon: '⤒', label: 'Start' },
-                          { value: 'center',     icon: '⊡', label: 'Center' },
-                          { value: 'flex-end',   icon: '⤓', label: 'End' },
-                          { value: 'stretch',    icon: '↕', label: 'Stretch' },
-                        ]}
-                      />
-                    </div>
-                    <div className="fb-prop-row">
-                      <span className="fb-prop-label">Justify</span>
-                      <IconGroup
-                        value={activeLayout.justifyContent}
-                        onChange={v => updLayout('justifyContent', v)}
-                        options={[
-                          { value: 'flex-start',    icon: '⤒', label: 'Start' },
-                          { value: 'center',        icon: '⊡', label: 'Center' },
-                          { value: 'flex-end',      icon: '⤓', label: 'End' },
-                          { value: 'space-between', icon: '⤛⤜', label: 'Between' },
-                          { value: 'space-around',  icon: '⇔', label: 'Around' },
-                        ]}
-                      />
-                    </div>
-                    <div className="fb-prop-row">
+                    <LayoutGrid
+                      layout={activeLayout}
+                      onChange={(key, val) => updLayout(key, val)}
+                    />
+                    <div className="fb-prop-row" style={{ marginTop: 6 }}>
                       <span className="fb-prop-label">Gap</span>
                       <NumberInput value={activeLayout.gap ?? 0} min={0} onChange={v => updLayout('gap', v)} />
                     </div>
@@ -495,7 +596,8 @@ export default function PropertiesPanel() {
   const resolved = resolveElement(element, bpId);
   const s = resolved.styles || {};
 
-  // Container dimensions for T/L/R/B position inputs
+  // Container dimensions for T/L/R/B position inputs and AlignStrip
+  // AlignStrip must NOT involve page padding — use raw artboard/parent dimensions.
   const bp = bpDefs?.[bpId];
   let containerW = bp?.width  ?? 1440;
   let containerH = bp?.height ?? 900;
@@ -507,6 +609,14 @@ export default function PropertiesPanel() {
       containerH = pr.height ?? containerH;
     }
   }
+
+  // For fixed-position elements, bottom is measured from viewport fold, not artboard height
+  const isFixedEl = (resolved?.positionType ?? 'absolute') === 'fixed';
+  const autoFoldH = bp
+    ? (bp.id === 'desktop' ? Math.round(bp.width * 9 / 16) : Math.round(bp.width * 16 / 9))
+    : containerH;
+  const bpViewportFoldH = bp?.viewportFoldH ?? autoFoldH;
+  const effectiveContainerH = isFixedEl ? bpViewportFoldH : containerH;
 
   const upd = (key, val) => {
     updateElementLayout(element.id, bpId, { [key]: val });
@@ -549,6 +659,16 @@ export default function PropertiesPanel() {
 
       <div className="fb-panel-body">
 
+        {/* ── Align strip (top of panel, active for absolute/fixed) ─── */}
+        <AlignStrip
+          resolved={resolved}
+          containerW={containerW}
+          containerH={containerH}
+          upd={upd}
+          commit={commit}
+          disabled={['relative'].includes(resolved.positionType ?? 'absolute') || isFlowInLayout}
+        />
+
         {/* ── Position ──────────────────────────────────────── */}
         <Section title="Position" action={<ResetBtn show={isOv('x','y','constraints','positionType')} onReset={() => resetOv('x','y','constraints','positionType')} />}>
           {/* Auto-layout position override — full type selector incl. exceptions */}
@@ -564,7 +684,10 @@ export default function PropertiesPanel() {
                 onChange={e => {
                   const v = e.target.value;
                   if (v === 'auto') {
-                    upd('absoluteInLayout', false);
+                    updateElementLayout(element.id, bpId, {
+                      absoluteInLayout: false,
+                      positionType: resolved.positionType === 'fixed' ? 'fixed' : 'relative',
+                    });
                   } else {
                     // Mark as exception from auto-layout flow
                     updateElementLayout(element.id, bpId, { absoluteInLayout: true, positionType: v });
@@ -598,9 +721,9 @@ export default function PropertiesPanel() {
               </div>
               <div className="fb-pos-widget__row">
                 <PosInput
-                  value={Math.max(0, containerH - (resolved.y ?? 0) - (resolved.height ?? 100))}
+                  value={Math.max(0, effectiveContainerH - (resolved.y ?? 0) - (resolved.height ?? 100))}
                   label="B"
-                  onChange={v => { upd('y', Math.max(0, containerH - v - (resolved.height ?? 100))); commit(); }}
+                  onChange={v => { upd('y', Math.max(0, effectiveContainerH - v - (resolved.height ?? 100))); commit(); }}
                 />
               </div>
             </div>
@@ -623,33 +746,50 @@ export default function PropertiesPanel() {
         </Section>
 
         {/* ── Size ──────────────────────────────────────────── */}
-        <Section title="Size" action={<ResetBtn show={isOv('width','widthMode','height','heightMode','minW','maxW','minH','maxH')} onReset={() => resetOv('width','widthMode','height','heightMode','minW','maxW','minH','maxH')} />}>
+        <Section title="Size" action={<ResetBtn show={isOv('width','widthMode','widthPct','widthFr','height','heightMode','heightPct','heightFr','minW','maxW','minH','maxH')} onReset={() => resetOv('width','widthMode','widthPct','widthFr','height','heightMode','heightPct','heightFr','minW','maxW','minH','maxH')} />}>
+          {/* Width row */}
           <div className="fb-prop-row">
             <span className="fb-prop-label">Width</span>
             <div className="fb-size-row">
-              <NumberInput value={resolved.width ?? 100} min={1} onChange={v => { upd('width', v); commit(); }} />
+              {/* Value input — shown for all modes except hug */}
+              {(() => {
+                const wm = resolved.widthMode ?? 'fixed';
+                if (wm === 'hug') return <div className="fb-prop-mini" style={{ flex: 1 }} />;
+                if (wm === 'fill') return <NumberInput key="wfr" value={resolved.widthFr ?? 1} min={0.1} step={0.1} unit="fr" label="fr" onChange={v => { upd('widthFr', v); commit(); }} />;
+                if (wm === 'relative') return <NumberInput key="wpct" value={resolved.widthPct ?? resolved.width ?? 100} min={0} max={100} step={1} unit="%" label="%" onChange={v => { upd('widthPct', v); commit(); }} />;
+                return <NumberInput key="wpx" value={resolved.width ?? 100} min={1} unit="px" onChange={v => { upd('width', v); commit(); }} />;
+              })()}
               <select
                 className="fb-prop-input fb-size-mode"
                 value={resolved.widthMode ?? 'fixed'}
                 onChange={e => { upd('widthMode', e.target.value); commit(); }}
               >
-                <option value="fixed">Fixed</option>
-                <option value="fill">Fill</option>
+                <option value="fixed">Fixed px</option>
+                <option value="fill">Fill fr</option>
+                <option value="relative">Relative %</option>
                 <option value="hug">Hug</option>
               </select>
             </div>
           </div>
+          {/* Height row */}
           <div className="fb-prop-row">
             <span className="fb-prop-label">Height</span>
             <div className="fb-size-row">
-              <NumberInput value={resolved.height ?? 100} min={1} onChange={v => { upd('height', v); commit(); }} />
+              {(() => {
+                const hm = resolved.heightMode ?? 'fixed';
+                if (hm === 'hug') return <div className="fb-prop-mini" style={{ flex: 1 }} />;
+                if (hm === 'fill') return <NumberInput key="hfr" value={resolved.heightFr ?? 1} min={0.1} step={0.1} unit="fr" label="fr" onChange={v => { upd('heightFr', v); commit(); }} />;
+                if (hm === 'relative') return <NumberInput key="hpct" value={resolved.heightPct ?? resolved.height ?? 100} min={0} max={100} step={1} unit="%" label="%" onChange={v => { upd('heightPct', v); commit(); }} />;
+                return <NumberInput key="hpx" value={resolved.height ?? 100} min={1} unit="px" onChange={v => { upd('height', v); commit(); }} />;
+              })()}
               <select
                 className="fb-prop-input fb-size-mode"
                 value={resolved.heightMode ?? 'fixed'}
                 onChange={e => { upd('heightMode', e.target.value); commit(); }}
               >
-                <option value="fixed">Fixed</option>
-                <option value="fill">Fill</option>
+                <option value="fixed">Fixed px</option>
+                <option value="fill">Fill fr</option>
+                <option value="relative">Relative %</option>
                 <option value="hug">Hug</option>
               </select>
             </div>
@@ -839,78 +979,97 @@ export default function PropertiesPanel() {
         </Section>
 
         {/* ── Layout (frame-specific) ────────────────────────── */}
-        {element.type === 'frame' && (
-          <Section title="Layout" action={<ResetBtn show={isSOv('flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} onReset={() => resetSOv('flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} />}>
-            {/* Direction */}
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Direction</span>
-              <IconGroup
-                value={s.flexDirection}
-                onChange={v => { updS('flexDirection', v); commit(); }}
-                options={[
-                  { value: 'row',    icon: '→', label: 'Row' },
-                  { value: 'column', icon: '↓', label: 'Column' },
-                ]}
-              />
-            </div>
-            {/* Wrap */}
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Wrap</span>
-              <IconGroup
-                value={s.flexWrap}
-                onChange={v => { updS('flexWrap', v); commit(); }}
-                options={[
-                  { value: 'nowrap', icon: '⇥', label: 'No wrap' },
-                  { value: 'wrap',   icon: '↵', label: 'Wrap' },
-                ]}
-              />
-            </div>
-            {/* Align items */}
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Align</span>
-              <IconGroup
-                value={s.alignItems}
-                onChange={v => { updS('alignItems', v); commit(); }}
-                options={[
-                  { value: 'flex-start', icon: '⤒', label: 'Start' },
-                  { value: 'center',     icon: '⊡', label: 'Center' },
-                  { value: 'flex-end',   icon: '⤓', label: 'End' },
-                  { value: 'stretch',    icon: '↕', label: 'Stretch' },
-                ]}
-              />
-            </div>
-            {/* Justify content */}
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Justify</span>
-              <IconGroup
-                value={s.justifyContent}
-                onChange={v => { updS('justifyContent', v); commit(); }}
-                options={[
-                  { value: 'flex-start',    icon: '⤒', label: 'Start' },
-                  { value: 'center',        icon: '⊡', label: 'Center' },
-                  { value: 'flex-end',      icon: '⤓', label: 'End' },
-                  { value: 'space-between', icon: '⤛⤜', label: 'Between' },
-                  { value: 'space-around',  icon: '⇔', label: 'Around' },
-                ]}
-              />
-            </div>
-            {/* Gap */}
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Gap</span>
-              <NumberInput value={s.gap ?? 0} min={0} onChange={v => { updS('gap', v); commit(); }} />
-            </div>
-            {/* Padding */}
-            <div className="fb-prop-row" style={{ marginTop: 4 }}>
-              <span className="fb-prop-label">Padding</span>
-            </div>
-            <div className="fb-quad-wide" style={{ marginTop: 2 }}>
-              <NumberInput value={s.paddingTop    ?? 0} min={0} onChange={v => updS('paddingTop',    v)} label="T" />
-              <NumberInput value={s.paddingRight  ?? 0} min={0} onChange={v => updS('paddingRight',  v)} label="R" />
-              <NumberInput value={s.paddingBottom ?? 0} min={0} onChange={v => updS('paddingBottom', v)} label="B" />
-              <NumberInput value={s.paddingLeft   ?? 0} min={0} onChange={v => updS('paddingLeft',   v)} label="L" />
-            </div>
-          </Section>
-        )}
+        {element.type === 'frame' && (() => {
+          const frameLayoutOn = s.display === 'flex';
+          return (
+            <Section title="Layout" action={<ResetBtn show={isSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} onReset={() => resetSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} />}>
+              {/* Auto layout toggle */}
+              <div className="fb-prop-row" style={{ marginBottom: 6 }}>
+                <span className="fb-prop-label">Auto layout</span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    className={`fb-icon-btn${!frameLayoutOn ? ' fb-icon-btn--active' : ''}`}
+                    title="Off – Group (free positioning)"
+                    onClick={() => { updS('display', null); commit(); }}
+                  >✕</button>
+                  <button
+                    className={`fb-icon-btn${frameLayoutOn ? ' fb-icon-btn--active' : ''}`}
+                    title="On – Auto layout (flex stack)"
+                    onClick={() => { updS('display', 'flex'); if (!s.flexDirection) updS('flexDirection', 'column'); commit(); }}
+                  >⇌</button>
+                </div>
+              </div>
+              {/* Direction, Wrap, Align, Justify, Gap — only when layout is on */}
+              {frameLayoutOn && (
+                <>
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Direction</span>
+                    <IconGroup
+                      value={s.flexDirection}
+                      onChange={v => { updS('flexDirection', v); commit(); }}
+                      options={[
+                        { value: 'row',    icon: LAYOUT_ICONS.row,    label: 'Row' },
+                        { value: 'column', icon: LAYOUT_ICONS.column, label: 'Column' },
+                      ]}
+                    />
+                  </div>
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Wrap</span>
+                    <IconGroup
+                      value={s.flexWrap}
+                      onChange={v => { updS('flexWrap', v); commit(); }}
+                      options={[
+                        { value: 'nowrap', icon: LAYOUT_ICONS.nowrap, label: 'No wrap' },
+                        { value: 'wrap',   icon: LAYOUT_ICONS.wrap,   label: 'Wrap' },
+                      ]}
+                    />
+                  </div>
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Align</span>
+                    <IconGroup
+                      value={s.alignItems}
+                      onChange={v => { updS('alignItems', v); commit(); }}
+                      options={[
+                        { value: 'flex-start', icon: LAYOUT_ICONS['align-start'],   label: 'Start' },
+                        { value: 'center',     icon: LAYOUT_ICONS['align-center'],  label: 'Center' },
+                        { value: 'flex-end',   icon: LAYOUT_ICONS['align-end'],     label: 'End' },
+                        { value: 'stretch',    icon: LAYOUT_ICONS['align-stretch'], label: 'Stretch' },
+                      ]}
+                    />
+                  </div>
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Justify</span>
+                    <IconGroup
+                      value={s.justifyContent}
+                      onChange={v => { updS('justifyContent', v); commit(); }}
+                      options={[
+                        { value: 'flex-start',    icon: LAYOUT_ICONS['just-start'],   label: 'Start' },
+                        { value: 'center',        icon: LAYOUT_ICONS['just-center'],  label: 'Center' },
+                        { value: 'flex-end',      icon: LAYOUT_ICONS['just-end'],     label: 'End' },
+                        { value: 'space-between', icon: LAYOUT_ICONS['just-between'], label: 'Between' },
+                        { value: 'space-around',  icon: LAYOUT_ICONS['just-around'],  label: 'Around' },
+                      ]}
+                    />
+                  </div>
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Gap</span>
+                    <NumberInput value={s.gap ?? 0} min={0} onChange={v => { updS('gap', v); commit(); }} />
+                  </div>
+                </>
+              )}
+              {/* Padding — always visible */}
+              <div className="fb-prop-row" style={{ marginTop: 4 }}>
+                <span className="fb-prop-label">Padding</span>
+              </div>
+              <div className="fb-quad-wide" style={{ marginTop: 2 }}>
+                <NumberInput value={s.paddingTop    ?? 0} min={0} onChange={v => updS('paddingTop',    v)} label="T" />
+                <NumberInput value={s.paddingRight  ?? 0} min={0} onChange={v => updS('paddingRight',  v)} label="R" />
+                <NumberInput value={s.paddingBottom ?? 0} min={0} onChange={v => updS('paddingBottom', v)} label="B" />
+                <NumberInput value={s.paddingLeft   ?? 0} min={0} onChange={v => updS('paddingLeft',   v)} label="L" />
+              </div>
+            </Section>
+          );
+        })()}
 
       </div>
     </aside>

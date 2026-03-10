@@ -3,9 +3,9 @@ import { create } from 'zustand';
 // ── Breakpoint definitions ────────────────────────────────────
 
 const BREAKPOINTS = {
-  desktop: { id: 'desktop', name: 'Desktop', icon: '🖥', width: 1440, height: 900, x: 100,  y: 120 },
-  tablet:  { id: 'tablet',  name: 'Tablet',  icon: '📟', width: 768,  height: 1024, x: 1600, y: 120 },
-  mobile:  { id: 'mobile',  name: 'Mobile',  icon: '📱', width: 375,  height: 812,  x: 2440, y: 120 },
+  desktop: { id: 'desktop', name: 'Desktop', icon: '🖥', width: 1440, height: 900, x: 100,  y: 120, viewportFoldH: null },
+  tablet:  { id: 'tablet',  name: 'Tablet',  icon: '📟', width: 768,  height: 1024, x: 1600, y: 120, viewportFoldH: null },
+  mobile:  { id: 'mobile',  name: 'Mobile',  icon: '📱', width: 375,  height: 812,  x: 2440, y: 120, viewportFoldH: null },
 };
 
 // Elements live in a flat page.elements array.
@@ -214,6 +214,8 @@ export const useEditorStore = create((set, get) => {
     setDrilledContainerId: (id) => set({ drilledContainerId: id }),
     artboardSel: null, // bpId of the currently selected artboard
     setArtboardSel: (bpId) => set({ artboardSel: bpId }),
+    pendingDraw: null, // 'frame' | 'image' | null — click-to-draw mode
+    setPendingDraw: (type) => set({ pendingDraw: type }),
     interacting: false,
     setInteracting: (v) => set({ interacting: v }),
     saveStatus: null,
@@ -259,7 +261,7 @@ export const useEditorStore = create((set, get) => {
         }
         return next;
       });
-      set({ selection: { elementId: el.id, bpId: 'desktop' } });
+      set({ selection: { elementId: el.id, bpId: bpId ?? 'desktop' } });
     },
 
     /** Update base (desktop) non-style props: name, locked, etc. */
@@ -378,7 +380,29 @@ export const useEditorStore = create((set, get) => {
       set(state => ({
         pages: state.pages.map(p =>
           p.id === state.currentPageId
-            ? { ...p, layout: { ...(p.layout ?? {}), [bpId]: layoutObj } }
+            ? {
+                ...p,
+                layout: { ...(p.layout ?? {}), [bpId]: layoutObj },
+                elements: layoutObj == null ? p.elements : p.elements.map(el => {
+                  const resolved = resolveElement(el, bpId);
+                  const shouldNormalizeToFlow = !el.parentId
+                    && !resolved.absoluteInLayout
+                    && resolved.positionType !== 'fixed'
+                    && resolved.positionType !== 'relative';
+                  if (!shouldNormalizeToFlow) return el;
+                  if (bpId === 'desktop') {
+                    return { ...el, base: { ...el.base, positionType: 'relative' } };
+                  }
+                  const ov = el.overrides?.[bpId] ?? {};
+                  return {
+                    ...el,
+                    overrides: {
+                      ...el.overrides,
+                      [bpId]: { ...ov, positionType: 'relative' },
+                    },
+                  };
+                }),
+              }
             : p
         ),
       }));

@@ -25,26 +25,12 @@ const ELEMENT_TYPES = [
 ];
 
 export default function ElementsPanel() {
-  const bpDefs    = useEditorStore(s => s.breakpointDefs);
-  const addElement = useEditorStore(s => s.addElement);
-  const pushHistory = useEditorStore(s => s.pushHistory);
-
-  // Quick-add to first breakpoint (desktop) at centre
-  const handleAdd = (type) => {
-    const bp = bpDefs.desktop;
-    let el;
-    if (type === 'frame') {
-      el = createFrame(bp.width / 2 - 120, bp.height / 2 - 80);
-    } else if (type === 'image') {
-      el = createImage(bp.width / 2 - 120, bp.height / 2 - 80);
-    }
-    if (el) {
-      addElement(el, null);
-      pushHistory();
-    }
-  };
+  const pendingDraw  = useEditorStore(s => s.pendingDraw);
+  const setPendingDraw = useEditorStore(s => s.setPendingDraw);
 
   const handleDragStart = (e, type) => {
+    // Drag → fixed-size drop (existing behaviour); cancel any draw mode
+    setPendingDraw(null);
     e.dataTransfer.setData('fb-element-type', type);
   };
 
@@ -55,11 +41,11 @@ export default function ElementsPanel() {
         {ELEMENT_TYPES.map(({ type, icon, label }) => (
           <div
             key={type}
-            className="fb-element-card"
+            className={`fb-element-card${pendingDraw === type ? ' fb-element-card--active' : ''}`}
             draggable
             onDragStart={(e) => handleDragStart(e, type)}
-            onClick={() => handleAdd(type)}
-            title={`Add ${label}`}
+            onClick={() => setPendingDraw(pendingDraw === type ? null : type)}
+            title={pendingDraw === type ? `Click on canvas to draw ${label} — Esc to cancel` : `Click to draw ${label}, or drag to place`}
           >
             <div className="fb-element-card__icon">{icon}</div>
             <div className="fb-element-card__label">{label}</div>
@@ -69,10 +55,11 @@ export default function ElementsPanel() {
 
       <div className="fb-section-label" style={{ marginTop: 8 }}>How to use</div>
       <div style={{ padding: '4px 12px 12px', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-        • <strong style={{ color: 'var(--text-secondary)' }}>Click</strong> to add to Desktop artboard<br />
-        • <strong style={{ color: 'var(--text-secondary)' }}>Drag</strong> onto any artboard<br />
+        • <strong style={{ color: 'var(--text-secondary)' }}>Click</strong> to enter draw mode, then draw on canvas<br />
+        • <strong style={{ color: 'var(--text-secondary)' }}>Drag</strong> onto any artboard to place at default size<br />
+        • <strong style={{ color: 'var(--text-secondary)' }}>Esc</strong> to cancel draw mode<br />
         • <strong style={{ color: 'var(--text-secondary)' }}>Ctrl+scroll</strong> to zoom<br />
-        • <strong style={{ color: 'var(--text-secondary)' }}>Scroll</strong> or <strong style={{ color: 'var(--text-secondary)' }}>Space+drag</strong> to pan<br />
+        • <strong style={{ color: 'var(--text-secondary)' }}>Space+drag</strong> to pan<br />
         • <strong style={{ color: 'var(--text-secondary)' }}>Del</strong> to remove selected
       </div>
     </div>

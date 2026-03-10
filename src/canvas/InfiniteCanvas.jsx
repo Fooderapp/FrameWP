@@ -26,6 +26,67 @@ function cloneSubtree(subtree, rootId) {
   }));
 }
 
+function collectDescendantIds(allEls, rootId) {
+  const ids = new Set([rootId]);
+  const visit = (id) => {
+    const el = allEls.find(item => item.id === id);
+    (el?.children ?? []).forEach((childId) => {
+      if (ids.has(childId)) return;
+      ids.add(childId);
+      visit(childId);
+    });
+  };
+  visit(rootId);
+  return ids;
+}
+
+function getSiblingIds(allEls, parentId, excludedId) {
+  if (parentId) {
+    const parent = allEls.find(el => el.id === parentId);
+    return (parent?.children ?? []).filter(id => id !== excludedId);
+  }
+  return allEls.filter(el => !el.parentId && el.id !== excludedId).map(el => el.id);
+}
+
+function getInsertBeforeIdFromDom(parentDom, siblingIds, clientX, clientY, axis = 'y') {
+  if (!parentDom) return null;
+  for (const siblingId of siblingIds) {
+    const node = parentDom.querySelector(`[data-id="${siblingId}"]`);
+    if (!node) continue;
+    const rect = node.getBoundingClientRect();
+    const midpoint = axis === 'x' ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+    const cursor = axis === 'x' ? clientX : clientY;
+    if (cursor < midpoint) return siblingId;
+  }
+  return null;
+}
+
+/** Draggable viewport-fold line, rendered at world-space for every breakpoint. */
+function ViewportFoldOverlay({ onStartFoldDrag }) {
+  const bpDefs = useEditorStore(s => s.breakpointDefs);
+  return (
+    <>
+      {Object.values(bpDefs).map(bp => {
+        const autoFoldH = bp.id === 'desktop'
+          ? Math.round(bp.width * 9 / 16)
+          : Math.round(bp.width * 16 / 9);
+        const foldH = bp.viewportFoldH ?? autoFoldH;
+        return (
+          <div
+            key={bp.id}
+            className="fb-viewport-indicator fb-viewport-indicator--draggable"
+            style={{ position: 'absolute', left: bp.x, top: bp.y + foldH, width: bp.width }}
+            onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onStartFoldDrag(e, bp.id, foldH); }}
+          >
+            <div className="fb-viewport-indicator__line" />
+            <span className="fb-viewport-indicator__pill">Viewport fold</span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 /** Renders a bounding-box overlay in world-space, as a sibling of artboards.
  *  Not clipped by artboard's overflow:hidden, so it shows even for overflowing elements. */
 function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
@@ -35,6 +96,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
   const page                   = useEditorStore(s => s.pages?.find(p => p.id === s.currentPageId));
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const setSelection           = useEditorStore(s => s.setSelection);
+  const viewport               = useEditorStore(s => s.viewport);
 
   if (!selection) return null;
   const el = allElements.find(e => e.id === selection.elementId);
@@ -43,53 +105,80 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
   const resolved = resolveElement(el, selection.bpId);
   if (resolved.hidden) return null;
   if (resolved.positionType === 'relative') return null; // handled by inline handles inside CanvasElement
+  const isFixed = resolved.positionType === 'fixed';
 
   // Elements that flow inside an auto-layout artboard also render inline handles.
   const pageLayout = resolvePageLayout(page?.layout, selection.bpId);
-  const isFlowInLayout = pageLayout !== null && !resolved.absoluteInLayout && !el.parentId;
+  // Match CanvasElement's effectiveRelative: any root element in an auto-layout artboard
+  // without absoluteInLayout is in-flow, regardless of stored positionType (except fixed).
+  // NotE: explicitly 'absolute' elements inside auto-layout also render as flow children.
+  const isFlowInLayout = pageLayout !== null && !resolved.absoluteInLayout && !el.parentId
+    && resolved.positionType !== 'fixed';
   if (isFlowInLayout) return null;
 
   const bp = bpDefs[selection.bpId];
   if (!bp) return null;
 
-  // Walk parent chain to compute absolute position within artboard content area
-  let absX = resolved.x ?? 0;
-  let absY = resolved.y ?? 0;
-  let cur = el;
-  while (cur.parentId) {
-    const parent = allElements.find(e => e.id === cur.parentId);
-    if (!parent) break;
-    const pr = resolveElement(parent, selection.bpId);
-    absX += pr.x ?? 0;
-    absY += pr.y ?? 0;
-    cur = parent;
-  }
+  // Viewport fold height based on device aspect ratio (desktop 16:9, others 9:16)
+  const viewportFoldH = bp.id === 'desktop'
+    ? Math.round(bp.width * 9 / 16)
+    : Math.round(bp.width * 16 / 9);
+
   const pad    = resolvePagePadding(page?.padding, selection.bpId);
   const w        = resolved.width  ?? 100;
   const h        = resolved.height ?? 100;
   const rotation = resolved.rotation;
-  // Off-canvas root elements live outside fb-bp-inner (no padding offset applied)
-  const isElOffCanvas = !el.parentId && (
-    absX + w <= 0 || absX >= bp.width ||
-    absY + h <= 0 || absY >= bp.height
-  );
-  // Auto-layout exception elements (absoluteInLayout) are positioned absolute within
-  // the artboard-content div which is not offset — so do NOT add page padding here.
-  const isAutoLayoutException = !el.parentId && pageLayout !== null && !!resolved.absoluteInLayout;
-  const worldX = bp.x + (isElOffCanvas || isAutoLayoutException ? 0 : (pad?.left ?? 0)) + absX;
-  const worldY = bp.y + (isElOffCanvas || isAutoLayoutException ? 0 : (pad?.top  ?? 0)) + absY;
+
+  let worldX, worldY;
+  if (el.parentId) {
+    // Nested element: the parent may be a flex container with no meaningful x/y in the
+    // data model. Measure the parent's current screen position and add the element's own
+    // x/y from the store. The parent DOM is stable (it's not the one being dragged),
+    // and the element x/y in the store is always the latest value — even during drag.
+    const sc       = viewport.scale ?? 1;
+    const boardDom = document.querySelector(`.fb-artboard[data-bp="${bp.id}"]`);
+    // Scope parent lookup to the correct artboard — querySelector without scope
+    // would return the Desktop copy when the same element exists in all artboards.
+    const parentDom = boardDom?.querySelector(`[data-id="${el.parentId}"]`);
+    if (parentDom && boardDom) {
+      const parentRect = parentDom.getBoundingClientRect();
+      const boardRect  = boardDom.getBoundingClientRect();
+      const parentOffX = (parentRect.left - boardRect.left) / sc;
+      const parentOffY = (parentRect.top  - boardRect.top)  / sc;
+      worldX = bp.x + parentOffX + (resolved.x ?? 0);
+      worldY = bp.y + parentOffY + (resolved.y ?? 0);
+    } else {
+      // Fallback: no DOM available (SSR / unmounted)
+      worldX = bp.x + (resolved.x ?? 0);
+      worldY = bp.y + (resolved.y ?? 0);
+    }
+  } else {
+    // Root-level element: use data-model values + page padding
+    const absX = resolved.x ?? 0;
+    const absY = resolved.y ?? 0;
+    const isElOffCanvas = (
+      absX + w <= 0 || absX >= bp.width ||
+      absY + h <= 0 || absY >= bp.height
+    );
+    // absoluteInLayout elements are positioned absolute inside artboard-content
+    // which carries no additional offset — do NOT add page padding.
+    const isAutoLayoutException = pageLayout !== null && !!resolved.absoluteInLayout;
+    worldX = bp.x + (isElOffCanvas || isAutoLayoutException ? 0 : (pad?.left ?? 0)) + absX;
+    worldY = bp.y + (isElOffCanvas || isAutoLayoutException ? 0 : (pad?.top  ?? 0)) + absY;
+  }
 
   const elChildren = allElements.filter(e => e.parentId === el.id);
   const canDrill   = elChildren.length > 0;
 
   return (
-    <div
-      className="fb-sel-overlay"
-      style={{
-        left: worldX, top: worldY, width: w, height: h,
-        transform: rotation ? `rotate(${rotation}deg)` : undefined,
-        transformOrigin: '50% 50%',
-      }}
+    <>
+      <div
+        className="fb-sel-overlay"
+        style={{
+          left: worldX, top: worldY, width: w, height: h,
+          transform: rotation ? `rotate(${rotation}deg)` : undefined,
+          transformOrigin: '50% 50%',
+        }}
       onMouseDown={(e) => {
         // Only trigger move on the overlay itself, not on its handle children
         if (e.target !== e.currentTarget) return;
@@ -118,7 +207,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
           }}
         />
       ))}
-      {!el.locked && onStartRadiusDrag && (() => {
+        {!el.locked && onStartRadiusDrag && (() => {
         const isIndep = resolved.styles?.borderRadiusMode === 'independent';
         const corners = isIndep
           ? [
@@ -144,7 +233,8 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag }) {
           />
         ));
       })()}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -160,10 +250,14 @@ export default function InfiniteCanvas() {
   const artboardSel    = useEditorStore(s => s.artboardSel);
   const setDrilled     = useEditorStore(s => s.setDrilledContainerId);
   const addElement          = useEditorStore(s => s.addElement);
-  const updateElementLayout  = useEditorStore(s => s.updateElementLayout);
   const reparentElement      = useEditorStore(s => s.reparentElement);
   const pushHistory          = useEditorStore(s => s.pushHistory);
   const setInteracting       = useEditorStore(s => s.setInteracting);
+  const pendingDraw          = useEditorStore(s => s.pendingDraw);
+  const setPendingDraw       = useEditorStore(s => s.setPendingDraw);
+
+  // Draw-mode rubber-band preview rect (screen coords)
+  const [drawRect, setDrawRect] = useState(null); // { left, top, width, height } in screen px
 
   // ── Pan state ──────────────────────────────────────────────
   const isPanning  = useRef(false);
@@ -176,13 +270,142 @@ export default function InfiniteCanvas() {
   const [radiusDragInfo,   setRadiusDragInfo]   = useState(null); // { value, clientX, clientY }
   const [paddingDragInfo,  setPaddingDragInfo]  = useState(null); // { value, side, clientX, clientY }
   const [gapDragInfo,      setGapDragInfo]      = useState(null); // { value, clientX, clientY }
+  const [foldDragInfo,     setFoldDragInfo]     = useState(null); // { value, clientX, clientY }
+  const [dragHint,         setDragHint]         = useState(null); // { label, clientX, clientY }
+  const [reorderGhost,     setReorderGhost]     = useState(null); // { worldX, worldY, width, height, bgColor? }
+  const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
   const clipboard = useRef(null);
 
   // ── Drag state ─────────────────────────────────────────────
   const drag = useRef(null);
   // drag.current shape:
-  // { type:'move'|'resize'|'artboard-move', bpId, elementId?, handle?,
+  // { type:'element-drag'|'resize'|'artboard-move', bpId, elementId?, handle?,
   //   startMX, startMY, startX?, startY?, startW?, startH?, startBpX?, startBpY? }
+
+  const getProjectedWorldPoint = useCallback((clientX, clientY, grabOffsetWorldX = 0, grabOffsetWorldY = 0) => {
+    const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
+    const containerRect = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    return {
+      worldX: (clientX - containerRect.left - panX) / scale - grabOffsetWorldX,
+      worldY: (clientY - containerRect.top - panY) / scale - grabOffsetWorldY,
+    };
+  }, []);
+
+  const resolveElementDragDrop = useCallback((session, clientX, clientY) => {
+    const st = useEditorStore.getState();
+    const allEls = st.getAllElements();
+    const draggedEl = allEls.find(el => el.id === session.elementId);
+    if (!draggedEl) return null;
+
+    const bp = st.breakpointDefs[session.bpId];
+    if (!bp) return null;
+
+    const page = st.getCurrentPage?.();
+    const pagePadding = resolvePagePadding(page?.padding, session.bpId);
+    const pageLayout = resolvePageLayout(page?.layout, session.bpId);
+    const artboardDom = document.querySelector(`.fb-artboard[data-bp="${session.bpId}"]`);
+    const artboardRect = artboardDom?.getBoundingClientRect() ?? null;
+    const { scale } = st.viewport;
+
+    const projectedClientW = session.ghostClientW ?? ((session.ghostW ?? 100) * scale);
+    const projectedClientH = session.ghostClientH ?? ((session.ghostH ?? 40) * scale);
+    const clientLeft = clientX - (session.grabOffsetClientX ?? projectedClientW / 2);
+    const clientTop = clientY - (session.grabOffsetClientY ?? projectedClientH / 2);
+    const clientRight = clientLeft + projectedClientW;
+    const clientBottom = clientTop + projectedClientH;
+    const { worldX, worldY } = getProjectedWorldPoint(
+      clientX,
+      clientY,
+      session.grabOffsetWorldX ?? (session.ghostW ?? 100) / 2,
+      session.grabOffsetWorldY ?? (session.ghostH ?? 40) / 2,
+    );
+
+    const overlapRatioWithRect = (rect) => {
+      if (!rect) return 0;
+      const overlapW = Math.max(0, Math.min(clientRight, rect.right) - Math.max(clientLeft, rect.left));
+      const overlapH = Math.max(0, Math.min(clientBottom, rect.bottom) - Math.max(clientTop, rect.top));
+      return (overlapW * overlapH) / Math.max(1, projectedClientW * projectedClientH);
+    };
+
+    const offCanvas = !artboardRect || overlapRatioWithRect(artboardRect) < 0.35;
+    const descendants = collectDescendantIds(allEls, session.elementId);
+    let dropContainer = null;
+    for (const node of document.elementsFromPoint(clientX, clientY)) {
+      const dataId = node.dataset?.id;
+      if (!dataId || descendants.has(dataId)) continue;
+      const candidate = allEls.find(el => el.id === dataId);
+      if (!candidate || candidate.type !== 'frame') continue;
+      const candidateResolved = resolveElement(candidate, session.bpId);
+      if (candidateResolved.hidden) continue;
+      dropContainer = candidate;
+      break;
+    }
+
+    const containerResolved = dropContainer ? resolveElement(dropContainer, session.bpId) : null;
+    const containerIsFlex = containerResolved?.styles?.display === 'flex';
+    const wasRootLevel = session.origParentId == null;
+    const canRootFlow = !!pageLayout
+      && session.origPositionType !== 'fixed'
+      && wasRootLevel
+      && (session.origWasFlow || session.origWasOffCanvas || session.dragMode === 'flow');
+
+    let mode = 'root-free';
+    let targetParentId = null;
+    if (session.origPositionType === 'fixed') {
+      mode = 'fixed-root';
+    } else if (offCanvas) {
+      mode = 'offcanvas';
+    } else if (dropContainer) {
+      targetParentId = dropContainer.id;
+      mode = containerIsFlex ? 'container-flow' : 'container-free';
+    } else if (canRootFlow) {
+      mode = 'root-flow';
+    }
+
+    let reorderTarget = null;
+    let insertBeforeId = null;
+    if (mode === 'root-flow' || mode === 'container-flow') {
+      const reorderParentId = mode === 'container-flow' ? targetParentId : null;
+      const siblingIds = getSiblingIds(allEls, reorderParentId, session.elementId);
+      const parentDom = reorderParentId ? artboardDom?.querySelector(`[data-id="${reorderParentId}"]`) : artboardDom;
+      const axis = reorderParentId
+        ? ((containerResolved?.styles?.flexDirection ?? 'column') === 'row' ? 'x' : 'y')
+        : ((pageLayout?.flexDirection ?? 'column') === 'row' ? 'x' : 'y');
+      insertBeforeId = getInsertBeforeIdFromDom(parentDom, siblingIds, clientX, clientY, axis);
+      reorderTarget = {
+        insertBeforeId,
+        bpId: session.bpId,
+        parentId: reorderParentId,
+        dragId: session.elementId,
+      };
+    }
+
+    return {
+      bp,
+      pagePadding,
+      pageLayout,
+      artboardDom,
+      artboardRect,
+      dropContainer,
+      targetParentId,
+      mode,
+      insertBeforeId,
+      reorderTarget,
+      dropTargetId: dropContainer?.id ?? null,
+      hint: mode === 'root-flow' || mode === 'container-flow' ? 'Auto' : 'Free',
+      clientLeft,
+      clientTop,
+      worldX,
+      worldY,
+      ghost: {
+        worldX,
+        worldY,
+        width: session.ghostW ?? 100,
+        height: session.ghostH ?? 40,
+        bgColor: session.ghostBgColor,
+      },
+    };
+  }, [getProjectedWorldPoint]);
 
   // ── Keyboard ───────────────────────────────────────────────
   useEffect(() => {
@@ -197,9 +420,13 @@ export default function InfiniteCanvas() {
         if (e.shiftKey) useEditorStore.getState().redo();
         else useEditorStore.getState().undo();
       }
-      // Escape: exit one drill level, or deselect
+      // Escape: cancel draw mode first, then exit drill level, then deselect
       if (e.key === 'Escape' && !e.target.matches('input,textarea')) {
         const st = useEditorStore.getState();
+        if (st.pendingDraw) {
+          st.setPendingDraw(null);
+          return;
+        }
         const drilled = st.drilledContainerId;
         if (drilled !== null) {
           const drilledEl = st.getAllElements().find(el => el.id === drilled);
@@ -324,14 +551,17 @@ export default function InfiniteCanvas() {
     return () => el.removeEventListener('wheel', onWheel);
   }, [onWheel]);
 
-  // ── Mouse down (pan or canvas deselect) ────────────────────
+  // ── Mouse down (pan, draw, or canvas deselect) ─────────────
   const onMouseDown = (e) => {
     if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
       e.preventDefault();
       isPanning.current = true;
       panOrigin.current = { x: e.clientX, y: e.clientY };
       panStart.current  = { x: viewport.x, y: viewport.y };
-    } else if (e.button === 0 && (e.target === worldRef.current || e.target === containerRef.current)) {
+      return;
+    }
+    // Draw mode: start rubber-band on any left-click on the canvas (not on a UI widget)
+    if (e.button === 0 && (e.target === worldRef.current || e.target === containerRef.current)) {
       setSelection(null);
       setArtboardSel(null);
       setDrilled(null);
@@ -351,6 +581,21 @@ export default function InfiniteCanvas() {
 
     // Element drag / resize
     if (!drag.current) return;
+
+    // ── Draw rubber-band preview ────────────────────────────
+    if (drag.current.type === 'draw') {
+      const rect = containerRef.current.getBoundingClientRect();
+      const rawW = e.clientX - drag.current.startMX;
+      const rawH = e.clientY - drag.current.startMY;
+      setDrawRect({
+        left:   rect.left + Math.min(drag.current.startMX, e.clientX) - rect.left,
+        top:    rect.top  + Math.min(drag.current.startMY, e.clientY) - rect.top,
+        width:  Math.abs(rawW),
+        height: Math.abs(rawH),
+      });
+      return;
+    }
+
     const { type, bpId, elementId, handle,
             startMX, startMY, startX, startY, startW, startH } = drag.current;
     const { scale } = useEditorStore.getState().viewport;
@@ -363,85 +608,23 @@ export default function InfiniteCanvas() {
     drag.current.lastMX = e.clientX;
     drag.current.lastMY = e.clientY;
 
-    if (type === 'move') {
-      // If nested, check whether cursor has left the parent container → eject to root
-      (() => {
-        const st = useEditorStore.getState();
-        const els = st.getAllElements();
-        const mvEl = els.find(ee => ee.id === elementId);
-        if (!mvEl?.parentId || drag.current.wasEjected) return;
-        // Only eject from parent container on desktop; on tablet/mobile keep inside parent
-        if (bpId !== 'desktop') return;
-        const artboardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
-        const parentDom   = artboardDom?.querySelector(`[data-id="${mvEl.parentId}"]`);
-        const parentRect  = parentDom?.getBoundingClientRect();
-        if (!parentRect) return;
-        const outside = e.clientX < parentRect.left || e.clientX > parentRect.right ||
-                        e.clientY < parentRect.top  || e.clientY > parentRect.bottom;
-        if (!outside) return;
-        drag.current.wasEjected = true;
-        const { x: pX, y: pY, scale: sc } = st.viewport;
-        const bp2  = st.breakpointDefs[bpId];
-        const pad2 = resolvePagePadding(st.getCurrentPage?.()?.padding, bpId);
-        const cRect = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
-        const nx = Math.round((e.clientX - cRect.left - pX) / sc - bp2.x - (pad2?.left ?? 0) - (startW ?? 100) / 2);
-        const ny = Math.round((e.clientY - cRect.top  - pY) / sc - bp2.y - (pad2?.top  ?? 0) - (startH ?? 40)  / 2);
-        st.reparentElement(elementId, null);
-        st.updateElementLayout(elementId, bpId, { positionType: drag.current.origPositionType ?? 'absolute', x: nx, y: ny });
-        drag.current = { type: 'move', bpId, elementId, startMX: e.clientX, startMY: e.clientY, startX: nx, startY: ny, wasEjected: true, origPositionType: drag.current.origPositionType ?? 'absolute' };
-        setDropTargetId(null);
-      })();
+    if (type === 'element-drag') {
       const hasMoved = Math.abs(e.clientX - drag.current.startMX) > 4 ||
-                        Math.abs(e.clientY - drag.current.startMY) > 4;
+        Math.abs(e.clientY - drag.current.startMY) > 4;
       if (hasMoved) drag.current.hasMoved = true;
-      if (drag.current.wasEjected && drag.current.startMX !== undefined) {
-        // recalc after possible mutation above
-        const { startMX: sMX2, startMY: sMY2, startX: sX2, startY: sY2 } = drag.current;
-        const { scale: sc2 } = useEditorStore.getState().viewport;
-        useEditorStore.getState().updateElementLayout(elementId, bpId, {
-          x: sX2 + (e.clientX - sMX2) / sc2,
-          y: sY2 + (e.clientY - sMY2) / sc2,
-        });
-      } else {
-        const { scale: sc2 } = useEditorStore.getState().viewport;
-        let nx = startX + dxWorld;
-        let ny = startY + dyWorld;
-        // On tablet/mobile clamp root elements to artboard bounds so they can't go off-canvas
-        if (bpId !== 'desktop') {
-          const st2   = useEditorStore.getState();
-          const mvEl2 = st2.getAllElements().find(ee => ee.id === elementId);
-          if (mvEl2 && !mvEl2.parentId) {
-            const bp2 = st2.breakpointDefs[bpId];
-            const res2 = resolveElement(mvEl2, bpId);
-            const elW2 = res2.width  ?? 100;
-            const elH2 = res2.height ?? 40;
-            if (bp2) {
-              nx = Math.max(0, Math.min(bp2.width  - elW2, nx));
-              ny = Math.max(0, Math.min(bp2.height - elH2, ny));
-            }
-          }
-        }
-        useEditorStore.getState().updateElementLayout(elementId, bpId, { x: nx, y: ny });
+      const preview = resolveElementDragDrop(drag.current, e.clientX, e.clientY);
+      if (!preview) {
+        setReorderTarget(null);
+        setDropTargetId(null);
+        setReorderGhost(null);
+        setDragHint(null);
+        return;
       }
-      // Live hit-test: find deepest .fb-el container under cursor that isn't the dragged element or its descendants
-      (() => {
-        const mvSt = useEditorStore.getState();
-        const mvEls = mvSt.getAllElements();
-        const mvEl = mvEls.find(e => e.id === elementId);
-        if (!mvEl) { setDropTargetId(null); return; }
-        const desc = new Set([elementId]);
-        const collectD = (id) => { const e = mvEls.find(x => x.id === id); (e?.children ?? []).forEach(cid => { desc.add(cid); collectD(cid); }); };
-        collectD(elementId);
-        const hits = document.elementsFromPoint(e.clientX, e.clientY);
-        let best = null;
-        for (const node of hits) {
-          const did = node.dataset?.id;
-          if (!did || desc.has(did)) continue;
-          const candidate = mvEls.find(x => x.id === did);
-          if (candidate) { best = candidate; break; }
-        }
-        setDropTargetId(best?.id ?? null);
-      })();
+      drag.current.preview = preview;
+      setReorderTarget(preview.reorderTarget);
+      setDropTargetId(preview.dropTargetId);
+      setReorderGhost(preview.ghost);
+      setDragHint({ label: preview.hint, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'artboard-move') {
       useEditorStore.getState().updateBreakpointDef(bpId, {
         x: drag.current.startBpX + dxWorld,
@@ -479,102 +662,6 @@ export default function InfiniteCanvas() {
         default: break;
       }
       useEditorStore.getState().updateElementLayout(elementId, bpId, { x: newX, y: newY, width: newW, height: newH });
-    } else if (type === 'reorder') {
-      drag.current.hasMoved = true;
-      const allEls = useEditorStore.getState().getAllElements();
-      const rEl    = allEls.find(el => el.id === elementId);
-      if (!rEl) return;
-      const parentId = rEl.parentId;
-      const artboardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
-      const artboardRect = artboardDom?.getBoundingClientRect();
-
-      // Check if cursor left the parent container (drag out from container)
-      if (parentId && !drag.current.wasEjected) {
-        const parentDom  = artboardDom?.querySelector(`[data-id="${parentId}"]`);
-        const parentRect = parentDom?.getBoundingClientRect();
-        if (parentRect && (
-          e.clientX < parentRect.left || e.clientX > parentRect.right ||
-          e.clientY < parentRect.top  || e.clientY > parentRect.bottom
-        )) {
-          drag.current.wasEjected = true;
-          const state2 = useEditorStore.getState();
-          const rect2  = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
-          const { x: pX2, y: pY2, scale: sc2 } = state2.viewport;
-          const bp2  = state2.breakpointDefs[bpId];
-          const pad2 = resolvePagePadding(state2.getCurrentPage?.()?.padding, bpId);
-          const wx2  = (e.clientX - rect2.left - pX2) / sc2 - bp2.x - (pad2?.left ?? 0);
-          const wy2  = (e.clientY - rect2.top  - pY2) / sc2 - bp2.y - (pad2?.top  ?? 0);
-          const rEl2 = state2.getAllElements().find(el => el.id === elementId);
-          const res2 = resolveElement(rEl2, bpId);
-          const nx2  = Math.round(wx2 - (res2.width  ?? 100) / 2);
-          const ny2  = Math.round(wy2 - (res2.height ?? 40)  / 2);
-          state2.reparentElement(elementId, null);
-          state2.updateElementLayout(elementId, bpId, { positionType: drag.current.origPositionType ?? 'absolute', x: nx2, y: ny2 });
-          drag.current = { type: 'move', bpId, elementId, startMX: e.clientX, startMY: e.clientY, startX: nx2, startY: ny2, wasEjected: true, origPositionType: drag.current.origPositionType ?? 'absolute' };
-          setReorderTarget(null);
-          setDropTargetId(null);
-          return;
-        }
-      }
-
-      // Check if cursor is outside artboard bounds → off-canvas eject mode (desktop only)
-      const bp = useEditorStore.getState().breakpointDefs[bpId];
-      const isOutside = bpId === 'desktop' && artboardRect
-        ? (e.clientX < artboardRect.left || e.clientX > artboardRect.right ||
-           e.clientY < artboardRect.top  || e.clientY > artboardRect.bottom)
-        : false;
-      drag.current.reorderOffCanvas = isOutside;
-      if (isOutside) {
-        setReorderTarget(null);
-        // Immediately eject to absolute so element tracks cursor visually
-        if (!drag.current.wasEjected) {
-          drag.current.wasEjected = true;
-          const state2 = useEditorStore.getState();
-          const rect2  = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
-          const { x: pX2, y: pY2, scale: sc2 } = state2.viewport;
-          const bp2  = state2.breakpointDefs[bpId];
-          const wx2  = (e.clientX - rect2.left - pX2) / sc2 - bp2.x;
-          const wy2  = (e.clientY - rect2.top  - pY2) / sc2 - bp2.y;
-          const rEl2 = state2.getAllElements().find(el => el.id === elementId);
-          const res2 = resolveElement(rEl2, bpId);
-          const nx2  = Math.round(wx2 - (res2.width  ?? 100) / 2);
-          const ny2  = Math.round(wy2 - (res2.height ?? 40)  / 2);
-          state2.reparentElement(elementId, null);
-          state2.updateElementLayout(elementId, bpId, { positionType: drag.current.origPositionType ?? 'absolute', x: nx2, y: ny2 });
-          drag.current = {
-            type: 'move', bpId, elementId,
-            startMX: e.clientX, startMY: e.clientY,
-            startX: nx2, startY: ny2,
-            wasEjected: true,
-            origPositionType: drag.current.origPositionType ?? 'absolute',
-          };
-        }
-        return;
-      }
-      // Determine axis from parent flex direction
-      let axis = 'y';
-      if (parentId) {
-        const parent = allEls.find(p => p.id === parentId);
-        if (parent && resolveElement(parent, bpId)?.styles?.flexDirection === 'row') axis = 'x';
-      }
-      const siblingIds = parentId
-        ? (allEls.find(p => p.id === parentId)?.children ?? []).filter(id => id !== elementId)
-        : allEls.filter(el => !el.parentId && el.id !== elementId).map(el => el.id);
-      let insertBeforeId = null;
-      // Search siblings within the parent DOM element if possible (avoids wrong-level matches)
-      const parentDomEl = parentId
-        ? artboardDom?.querySelector(`[data-id="${parentId}"]`)
-        : artboardDom;
-      for (const sibId of siblingIds) {
-        const domEl = parentDomEl?.querySelector(`[data-id="${sibId}"]`);
-        if (!domEl) continue;
-        const rect = domEl.getBoundingClientRect();
-        const mid    = axis === 'x' ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
-        const cursor = axis === 'x' ? e.clientX : e.clientY;
-        if (cursor < mid) { insertBeforeId = sibId; break; }
-      }
-      drag.current.insertBeforeId = insertBeforeId;
-      setReorderTarget({ insertBeforeId, bpId, parentId, dragId: elementId });
     } else if (type === 'radius') {
       const { elementId: radId, bpId: radBp, startRadius, corner } = drag.current;
       const allEls = useEditorStore.getState().getAllElements();
@@ -596,156 +683,186 @@ export default function InfiniteCanvas() {
       const capKey = side.charAt(0).toUpperCase() + side.slice(1);
       useEditorStore.getState().updateElementStyles(elId, elBp, newPad);
       setPaddingDragInfo({ side, value: newPad[`padding${capKey}`], clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'viewport-fold') {
+      const { startFoldH, bpId: foldBpId, initialFixedEls } = drag.current;
+      const newFoldH = Math.max(100, Math.round(startFoldH + dyWorld));
+      useEditorStore.getState().updateBreakpointDef(foldBpId, { viewportFoldH: newFoldH });
+      // Move fixed elements with bottom constraint: maintain their distance from the fold
+      if (initialFixedEls?.length) {
+        const foldDelta = newFoldH - startFoldH;
+        initialFixedEls.forEach(({ id, y }) => {
+          useEditorStore.getState().updateElementLayout(id, foldBpId, { y: y + foldDelta });
+        });
+      }
+      setFoldDragInfo({ value: newFoldH, clientX: e.clientX, clientY: e.clientY });
     }
   }, [setViewport]);
 
-  const onMouseUp = useCallback(() => {
+  const onMouseUp = useCallback((e) => {
     if (isPanning.current) {
       isPanning.current = false;
     }
+    // ── Commit draw ─────────────────────────────────────────
+    if (drag.current?.type === 'draw') {
+      const { drawType, startMX, startMY, startWorldX, startWorldY } = drag.current;
+      drag.current = null;
+      setDrawRect(null);
+      const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
+      const rect = containerRef.current.getBoundingClientRect();
+      const endWorldX = (e.clientX - rect.left - panX) / scale;
+      const endWorldY = (e.clientY - rect.top  - panY) / scale;
+      const rawW = endWorldX - startWorldX;
+      const rawH = endWorldY - startWorldY;
+      const elX = Math.round(Math.min(startWorldX, endWorldX));
+      const elY = Math.round(Math.min(startWorldY, endWorldY));
+      const elW = Math.max(20, Math.round(Math.abs(rawW)));
+      const elH = Math.max(20, Math.round(Math.abs(rawH)));
+      // Detect which artboard: check which bp contains the DRAW-START point.
+      // Falls back to nearest artboard centre so drawing outside artboards still works.
+      const bpDefsNow = useEditorStore.getState().breakpointDefs;
+      let targetBpId = null;
+      for (const bp of Object.values(bpDefsNow)) {
+        if (startWorldX >= bp.x && startWorldX <= bp.x + bp.width &&
+            startWorldY >= bp.y && startWorldY <= bp.y + bp.height) {
+          targetBpId = bp.id; break;
+        }
+      }
+      if (!targetBpId) {
+        // Off-canvas draw: assign to nearest artboard
+        let minDist = Infinity;
+        for (const bp of Object.values(bpDefsNow)) {
+          const d = Math.hypot(startWorldX - (bp.x + bp.width / 2), startWorldY - (bp.y + bp.height / 2));
+          if (d < minDist) { minDist = d; targetBpId = bp.id; }
+        }
+      }
+      if (!targetBpId) { setPendingDraw(null); return; }
+      const targetBpDef = bpDefsNow[targetBpId];
+      const page2 = useEditorStore.getState().getCurrentPage();
+      const pad2  = resolvePagePadding(page2?.padding, targetBpId);
+      let localX = Math.round(elX - targetBpDef.x - (pad2?.left ?? 0));
+      let localY = Math.round(elY - targetBpDef.y - (pad2?.top  ?? 0));
+      // Hit-test at the START of the draw to find the parent container
+      let parentId = null;
+      {
+        const hits = document.elementsFromPoint(startMX, startMY);
+        const allEls = useEditorStore.getState().getAllElements();
+        for (const domEl of hits) {
+          const dataId = domEl.dataset?.id;
+          if (!dataId) continue;
+          const candidate = allEls.find(el => el.id === dataId);
+          if (!candidate || candidate.type !== 'frame') continue;
+          const candidateResolved = resolveElement(candidate, targetBpId);
+          if (candidateResolved.hidden) continue;
+          parentId = dataId;
+          const cRect = domEl.getBoundingClientRect();
+          const aRect = containerRef.current.getBoundingClientRect();
+          const { x: panX2, y: panY2, scale: sc2 } = useEditorStore.getState().viewport;
+          const cWorldX = (cRect.left - aRect.left - panX2) / sc2;
+          const cWorldY = (cRect.top  - aRect.top  - panY2) / sc2;
+          localX = Math.round(elX - cWorldX);
+          localY = Math.round(elY - cWorldY);
+          break;
+        }
+      }
+      const newEl = drawType === 'image' ? createImage(localX, localY) : createFrame(localX, localY);
+      newEl.base.width  = elW;
+      newEl.base.height = elH;
+      addElement(newEl, parentId, targetBpId);
+      // If drawn inside a container, drill into it so the element is interactable
+      if (parentId) useEditorStore.getState().setDrilledContainerId(parentId);
+      useEditorStore.getState().setSelection({ elementId: newEl.id, bpId: targetBpId });
+      pushHistory();
+      setPendingDraw(null);
+      return;
+    }
     if (drag.current) {
-      if (drag.current.type === 'reorder') {
-        const { elementId, insertBeforeId, reorderOffCanvas, hasMoved, bpId: rBpId } = drag.current;
-        if (hasMoved) {
-          const state  = useEditorStore.getState();
-          const allEls = state.getAllElements();
-          const rEl    = allEls.find(e => e.id === elementId);
-          if (rEl) {
-            if (reorderOffCanvas) {
-              // Eject: convert to absolute positioned off-canvas element
-              const bp        = state.breakpointDefs[rBpId];
-              const { x: panX, y: panY, scale } = state.viewport;
-              const lastMX    = drag.current.lastMX ?? drag.current.startMX;
-              const lastMY    = drag.current.lastMY ?? drag.current.startMY;
-              const rect      = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
-              const worldX    = (lastMX - rect.left - panX) / scale - bp.x;
-              const worldY    = (lastMY - rect.top  - panY) / scale - bp.y;
-              const resolved  = resolveElement(rEl, rBpId);
-              state.updateElementLayout(elementId, rBpId, {
+      let shouldPushHistory = drag.current.type !== 'element-drag' || !!drag.current.hasMoved;
+      if (drag.current.type === 'viewport-fold') {
+        setFoldDragInfo(null);
+        drag.current = null;
+        setInteracting(false);
+        return;
+      }
+      if (drag.current.type === 'element-drag') {
+        const session = drag.current;
+        shouldPushHistory = !!session.hasMoved;
+        if (session.hasMoved) {
+          const drop = session.preview ?? resolveElementDragDrop(session, e.clientX, e.clientY);
+          const st = useEditorStore.getState();
+          const dragEl = st.getAllElements().find(el => el.id === session.elementId);
+          if (drop && dragEl) {
+            const fixedWidth = session.ghostW ?? resolveElement(dragEl, session.bpId).width ?? 100;
+            const fixedHeight = session.ghostH ?? resolveElement(dragEl, session.bpId).height ?? 40;
+            const moveToParent = (nextParentId) => {
+              const currentEl = st.getAllElements().find(el => el.id === session.elementId);
+              if ((currentEl?.parentId ?? null) !== (nextParentId ?? null)) {
+                st.reparentElement(session.elementId, nextParentId ?? null);
+              }
+            };
+            const reorderWithinParent = (parentId, insertBeforeId) => {
+              const siblingIds = getSiblingIds(st.getAllElements(), parentId, session.elementId);
+              let nextIndex = insertBeforeId ? siblingIds.indexOf(insertBeforeId) : siblingIds.length;
+              if (nextIndex < 0) nextIndex = siblingIds.length;
+              st.reorderElementInParent(session.elementId, nextIndex);
+            };
+
+            if (drop.mode === 'container-flow' || drop.mode === 'root-flow') {
+              moveToParent(drop.mode === 'container-flow' ? drop.targetParentId : null);
+              if (drop.mode === 'container-flow') st.setDrilledContainerId(drop.targetParentId);
+              else st.setDrilledContainerId(null);
+              st.updateElementLayout(session.elementId, session.bpId, {
+                positionType: 'relative',
+                absoluteInLayout: false,
+                x: 0,
+                y: 0,
+                widthMode: 'fixed',
+                heightMode: 'fixed',
+                width: fixedWidth,
+                height: fixedHeight,
+              });
+              reorderWithinParent(drop.mode === 'container-flow' ? drop.targetParentId : null, drop.insertBeforeId);
+            } else if (drop.mode === 'container-free') {
+              moveToParent(drop.targetParentId);
+              st.setDrilledContainerId(drop.targetParentId);
+              const containerRect = drop.dropContainer
+                ? document.querySelector(`.fb-artboard[data-bp="${session.bpId}"]`)?.querySelector(`[data-id="${drop.targetParentId}"]`)?.getBoundingClientRect()
+                : null;
+              const localX = containerRect ? Math.round((drop.clientLeft - containerRect.left) / st.viewport.scale) : 0;
+              const localY = containerRect ? Math.round((drop.clientTop - containerRect.top) / st.viewport.scale) : 0;
+              st.updateElementLayout(session.elementId, session.bpId, {
                 positionType: 'absolute',
-                x: Math.round(worldX - (resolved.width ?? 100) / 2),
-                y: Math.round(worldY - (resolved.height ?? 40) / 2),
+                absoluteInLayout: false,
+                widthMode: 'fixed',
+                heightMode: 'fixed',
+                width: fixedWidth,
+                height: fixedHeight,
+                x: localX,
+                y: localY,
               });
             } else {
-              // Cross-container hit-test: check if cursor is over a different container
-              const lastMXr  = drag.current.lastMX ?? drag.current.startMX;
-              const lastMYr  = drag.current.lastMY ?? drag.current.startMY;
-              const descR    = new Set([elementId]);
-              const collectR = (id) => { const e = allEls.find(x => x.id === id); (e?.children ?? []).forEach(cid => { descR.add(cid); collectR(cid); }); };
-              collectR(elementId);
-              const hitsR = document.elementsFromPoint(lastMXr, lastMYr);
-              let crossTarget = null;
-              for (const node of hitsR) {
-                const did = node.dataset?.id;
-                if (!did || descR.has(did)) continue;
-                const candidate = allEls.find(x => x.id === did);
-                if (candidate && candidate.id !== rEl.parentId) { crossTarget = candidate; break; }
-              }
-              if (crossTarget) {
-                // Drop into a different container
-                const tRes = resolveElement(crossTarget, rBpId);
-                const isAutoLayout = tRes.styles?.display === 'flex';
-                if (isAutoLayout) {
-                  state.updateElementLayout(elementId, rBpId, { positionType: 'relative' });
-                  state.reparentElement(elementId, crossTarget.id);
-                } else {
-                  const artboardDomR = document.querySelector(`.fb-artboard[data-bp="${rBpId}"]`);
-                  const parentDomR   = artboardDomR?.querySelector(`[data-id="${crossTarget.id}"]`);
-                  const elDomR       = artboardDomR?.querySelector(`[data-id="${elementId}"]`);
-                  const parentRectR  = parentDomR?.getBoundingClientRect();
-                  const elRectR      = elDomR?.getBoundingClientRect();
-                  const { scale: scR } = state.viewport;
-                  const relXr = parentRectR && elRectR ? Math.round((elRectR.left - parentRectR.left) / scR) : 0;
-                  const relYr = parentRectR && elRectR ? Math.round((elRectR.top  - parentRectR.top)  / scR) : 0;
-                  const resR = resolveElement(rEl, rBpId);
-                  state.updateElementLayout(elementId, rBpId, {
-                    positionType: 'absolute',
-                    widthMode: 'fixed', heightMode: 'fixed',
-                    width: resR.width ?? 100, height: resR.height ?? 40,
-                    x: relXr, y: relYr,
-                  });
-                  state.reparentElement(elementId, crossTarget.id);
-                }
-              } else {
-                // Same parent reorder
-                const parentId = rEl.parentId;
-                const siblings = parentId
-                  ? (allEls.find(p => p.id === parentId)?.children ?? []).filter(id => id !== elementId)
-                  : allEls.filter(e => !e.parentId && e.id !== elementId).map(e => e.id);
-                let newIndex = insertBeforeId != null ? siblings.indexOf(insertBeforeId) : siblings.length;
-                if (newIndex < 0) newIndex = siblings.length;
-                state.reorderElementInParent(elementId, newIndex);
-              }
+              moveToParent(null);
+              st.setDrilledContainerId(null);
+              const absoluteInLayout = drop.mode !== 'fixed-root' && !!drop.pageLayout;
+              const offsetX = absoluteInLayout ? 0 : (drop.pagePadding?.left ?? 0);
+              const offsetY = absoluteInLayout ? 0 : (drop.pagePadding?.top ?? 0);
+              st.updateElementLayout(session.elementId, session.bpId, {
+                positionType: drop.mode === 'fixed-root' ? 'fixed' : 'absolute',
+                absoluteInLayout: drop.mode === 'fixed-root' ? false : absoluteInLayout,
+                widthMode: 'fixed',
+                heightMode: 'fixed',
+                width: fixedWidth,
+                height: fixedHeight,
+                x: Math.round(drop.worldX - drop.bp.x - offsetX),
+                y: Math.round(drop.worldY - drop.bp.y - offsetY),
+              });
             }
+            st.setSelection({ elementId: session.elementId, bpId: session.bpId });
+          } else {
+            shouldPushHistory = false;
           }
         }
         setReorderTarget(null);
-      }
-      setDropTargetId(null);
-      if (drag.current.type === 'move') {
-        const { elementId: mvId, bpId: mvBpId } = drag.current;
-        const mvState = useEditorStore.getState();
-        const mvAllEls = mvState.getAllElements();
-        const mvEl = mvAllEls.find(e => e.id === mvId);
-        // DOM-based hit-test: find deepest .fb-el under last cursor position that isn't the dragged element
-        // Only run nesting/positioning logic if the element was actually dragged, not just clicked
-        // Fixed elements never reparent into containers — they always stay root-level
-        if (mvEl && drag.current.hasMoved && drag.current.origPositionType !== 'fixed') {
-          const resolved = resolveElement(mvEl, mvBpId);
-          const bp = mvState.breakpointDefs[mvBpId];
-          if (bp) {
-            const elW = typeof resolved.width  === 'number' ? resolved.width  : 100;
-            const elH = typeof resolved.height === 'number' ? resolved.height :  40;
-            const lastMX2 = drag.current.lastMX ?? drag.current.startMX;
-            const lastMY2 = drag.current.lastMY ?? drag.current.startMY;
-            const desc2 = new Set([mvId]);
-            const collectD2 = (id) => { const e = mvAllEls.find(x => x.id === id); (e?.children ?? []).forEach(cid => { desc2.add(cid); collectD2(cid); }); };
-            collectD2(mvId);
-            const hits2 = document.elementsFromPoint(lastMX2, lastMY2);
-            let targetContainer = null;
-            for (const node of hits2) {
-              const did = node.dataset?.id;
-              if (!did || desc2.has(did)) continue;
-              const candidate = mvAllEls.find(x => x.id === did);
-              if (candidate) { targetContainer = candidate; break; }
-            }
-            if (targetContainer) {
-              const tRes = resolveElement(targetContainer, mvBpId);
-              const isAutoLayout = tRes.styles?.display === 'flex';
-              if (isAutoLayout) {
-                mvState.updateElementLayout(mvId, mvBpId, { positionType: 'relative' });
-                mvState.reparentElement(mvId, targetContainer.id);
-              } else {
-                // Compute position relative to the target container via DOM
-                const artboardDom2 = document.querySelector(`.fb-artboard[data-bp="${mvBpId}"]`);
-                const parentDom2   = artboardDom2?.querySelector(`[data-id="${targetContainer.id}"]`);
-                const elDom2       = artboardDom2?.querySelector(`[data-id="${mvId}"]`);
-                const parentRect2  = parentDom2?.getBoundingClientRect();
-                const elRect2      = elDom2?.getBoundingClientRect();
-                const { scale: sc3 } = mvState.viewport;
-                const relX = parentRect2 && elRect2 ? Math.round((elRect2.left - parentRect2.left) / sc3) : 0;
-                const relY = parentRect2 && elRect2 ? Math.round((elRect2.top  - parentRect2.top)  / sc3) : 0;
-                mvState.updateElementLayout(mvId, mvBpId, {
-                  positionType: 'absolute',
-                  widthMode: 'fixed', heightMode: 'fixed',
-                  width: elW, height: elH,
-                  x: relX, y: relY,
-                });
-                mvState.reparentElement(mvId, targetContainer.id);
-              }
-            } else {
-              // Dropped on artboard / empty canvas → preserve position type (fixed stays fixed)
-              if (mvEl.parentId) {
-                mvState.reparentElement(mvId, null);
-              }
-              mvState.updateElementLayout(mvId, mvBpId, {
-                positionType: drag.current.origPositionType ?? 'absolute',
-                widthMode: 'fixed', heightMode: 'fixed',
-                width: elW, height: elH,
-              });
-            }
-          }
-        }
+        setDropTargetId(null);
       }
       if (drag.current.type === 'radius') {
         setRadiusDragInfo(null);
@@ -756,11 +873,16 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'artboard-gap') {
         setGapDragInfo(null);
       }
-      pushHistory();
+      if (drag.current.type === 'element-drag') {
+        setDragHint(null);
+        setReorderGhost(null);
+      }
+      setDraggingElementId(null);
+      if (shouldPushHistory) pushHistory();
       drag.current = null;
       setInteracting(false);
     }
-  }, [pushHistory, setInteracting]);
+  }, [pushHistory, setInteracting, setDraggingElementId]);
 
   useEffect(() => {
     window.addEventListener('mousemove', onMouseMove);
@@ -770,20 +892,76 @@ export default function InfiniteCanvas() {
       window.removeEventListener('mouseup', onMouseUp);
     };
   }, [onMouseMove, onMouseUp]);
+
+  // ── Draw mode: capture-phase mousedown so child stopPropagation can't block it
+  // Always registered (empty deps) — reads fresh store state each time to avoid
+  // stale-closure bugs where pendingDraw was set to null but the old listener
+  // is still active because React hasn't yet re-run the cleanup effect.
+  useEffect(() => {
+    const handleCaptureDown = (e) => {
+      const drawType = useEditorStore.getState().pendingDraw; // always fresh
+      if (!drawType) return;
+      if (e.button !== 0 || spaceDown.current) return;
+      if (!containerRef.current?.contains(e.target)) return;
+      if (e.target.closest('.fb-artboard-header, .fb-right, .fb-left, .fb-topbar')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = containerRef.current.getBoundingClientRect();
+      const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
+      const worldX = (e.clientX - rect.left - panX) / scale;
+      const worldY = (e.clientY - rect.top  - panY) / scale;
+      drag.current = {
+        type: 'draw', drawType,
+        startMX: e.clientX, startMY: e.clientY,
+        startWorldX: worldX, startWorldY: worldY,
+      };
+      setDrawRect({ left: e.clientX - rect.left, top: e.clientY - rect.top, width: 0, height: 0 });
+    };
+    window.addEventListener('mousedown', handleCaptureDown, true);
+    return () => window.removeEventListener('mousedown', handleCaptureDown, true);
+  }, []); // empty — handler reads store directly
   // ── Start move from overlay (for elements clipped by artboard overflow) ───
   const startMoveFromOverlay = useCallback((e, bpId, element) => {
     const { getAllElements } = useEditorStore.getState();
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
+    const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+    const domEl = boardDom?.querySelector(`[data-id="${el.id}"]`);
+    const rect = domEl?.getBoundingClientRect();
+    const scale = useEditorStore.getState().viewport.scale;
+    const bpDef = useEditorStore.getState().breakpointDefs[bpId];
+    const ghostW = resolved.width ?? el.base?.width ?? 100;
+    const ghostH = resolved.height ?? el.base?.height ?? 40;
+    const isGeomOffCanvas = !el.parentId && bpDef
+      ? ((resolved.x ?? 0) + ghostW <= 0 || (resolved.x ?? 0) >= bpDef.width || (resolved.y ?? 0) + ghostH <= 0 || (resolved.y ?? 0) >= bpDef.height)
+      : false;
+    const grabOffsetClientX = rect ? (e.clientX - rect.left) : 0;
+    const grabOffsetClientY = rect ? (e.clientY - rect.top) : 0;
     drag.current = {
-      type: 'move', bpId, elementId: el.id,
+      type: 'element-drag',
+      dragMode: 'free',
+      bpId,
+      elementId: el.id,
       startMX: e.clientX, startMY: e.clientY,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
+      origParentId: el.parentId ?? null,
       origPositionType: resolved.positionType ?? 'absolute',
+      origWasFlow: false,
+      origWasOffCanvas: isGeomOffCanvas,
+      ghostBgColor: resolved.styles?.backgroundColor ?? null,
+      ghostW,
+      ghostH,
+      ghostClientW: rect?.width ?? ghostW * scale,
+      ghostClientH: rect?.height ?? ghostH * scale,
+      grabOffsetClientX,
+      grabOffsetClientY,
+      grabOffsetWorldX: grabOffsetClientX / scale,
+      grabOffsetWorldY: grabOffsetClientY / scale,
     };
+    setDraggingElementId(el.id);
     setInteracting(true);
-  }, [setInteracting]);
+  }, [setInteracting, setDraggingElementId]);
   // ── Start artboard drag (called from Artboard header) ───────
   const startArtboardDrag = useCallback((e, bpId) => {
     const bp = useEditorStore.getState().breakpointDefs[bpId];
@@ -835,6 +1013,27 @@ export default function InfiniteCanvas() {
     setGapDragInfo({ value: layout.gap ?? 0, clientX: e.clientX, clientY: e.clientY });
     setInteracting(true);
   }, [setInteracting]);
+  // ── Start viewport-fold drag ───────────────────────────────
+  const startViewportFoldDrag = useCallback((e, bpId, startFoldH) => {
+    const allEls0 = useEditorStore.getState().getAllElements();
+    // Capture current y of fixed root elements constrained to bottom so they can follow fold
+    const initialFixedEls = allEls0
+      .filter(el => !el.parentId)
+      .flatMap(el => {
+        const r = resolveElement(el, bpId);
+        if (r.positionType !== 'fixed') return [];
+        if (!r.constraints?.bottom) return [];
+        return [{ id: el.id, y: r.y ?? 0 }];
+      });
+    drag.current = {
+      type: 'viewport-fold', bpId,
+      startMX: e.clientX, startMY: e.clientY,
+      startFoldH,
+      initialFixedEls,
+    };
+    setInteracting(true);
+  }, [setInteracting]);
+
   // ── Start element padding drag ─────────────────────────────
   const startElementPaddingDrag = useCallback((e, bpId, elementId, side) => {
     e.stopPropagation();
@@ -888,17 +1087,73 @@ export default function InfiniteCanvas() {
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
     setSelection({ elementId: el.id, bpId });
-    const isRelative = (resolved.positionType ?? 'absolute') === 'relative';
+    const domEl = document.querySelector(`.fb-artboard[data-bp="${bpId}"] [data-id="${el.id}"]`);
+    const computedPosition = domEl ? window.getComputedStyle(domEl).position : null;
+    const bpDef0 = useEditorStore.getState().breakpointDefs[bpId];
+    const elX0 = resolved.x ?? el.base?.x ?? 0;
+    const elY0 = resolved.y ?? el.base?.y ?? 0;
+    const elW0 = resolved.width ?? el.base?.width ?? 100;
+    const elH0 = resolved.height ?? el.base?.height ?? 40;
+    const isGeomOffCanvas = !el.parentId && bpDef0
+      ? (elX0 + elW0 <= 0 || elX0 >= bpDef0.width || elY0 + elH0 <= 0 || elY0 >= bpDef0.height)
+      : false;
+    // Flow context: explicitly relative, OR root-level element in auto-layout artboard
+    // that hasn't been pinned as absoluteInLayout (matches CanvasElement's effectiveRelative logic).
+    // Root auto-layout exceptions that are geometrically off-canvas are not flow items.
+    const page0 = useEditorStore.getState().getCurrentPage();
+    const pgLayout = resolvePageLayout(page0?.layout, bpId);
+    const heuristicFlowCtx = (resolved.positionType ?? 'absolute') === 'relative'
+      || (!el.parentId && pgLayout !== null && !resolved.absoluteInLayout
+          && resolved.positionType !== 'fixed' && !isGeomOffCanvas);
+    const isFlowCtx = computedPosition != null
+      ? computedPosition === 'relative'
+      : heuristicFlowCtx;
+    const origPositionType = isFlowCtx ? 'relative' : (resolved.positionType ?? 'absolute');
+    // For ghost sizing during reorder drag, try to get actual rendered dimensions from DOM
+    let ghostW = resolved.width ?? 100;
+    let ghostH = resolved.height ?? 40;
+    let ghostClientW = ghostW * useEditorStore.getState().viewport.scale;
+    let ghostClientH = ghostH * useEditorStore.getState().viewport.scale;
+    let grabOffsetClientX = ghostClientW / 2;
+    let grabOffsetClientY = ghostClientH / 2;
+    if (domEl) {
+      const dr = domEl.getBoundingClientRect();
+      const sc0 = useEditorStore.getState().viewport.scale;
+      ghostClientW = dr.width;
+      ghostClientH = dr.height;
+      grabOffsetClientX = e.clientX - dr.left;
+      grabOffsetClientY = e.clientY - dr.top;
+      ghostW = Math.round(dr.width  / sc0);
+      ghostH = Math.round(dr.height / sc0);
+    }
+    const scale0 = useEditorStore.getState().viewport.scale;
+    // Detect if element currently lives off the artboard (x/y outside bp bounds).
+    // IMPORTANT: relative/flow elements are NEVER off-canvas (x/y are meaningless for flow).
+    // Used at drop time: off-canvas elements dropped on auto-layout artboard become flow.
+    const origWasOffCanvas = isFlowCtx ? false : isGeomOffCanvas;
     drag.current = {
-      type: isRelative ? 'reorder' : 'move',
-      bpId, elementId: el.id,
+      type: 'element-drag',
+      dragMode: isFlowCtx ? 'flow' : 'free',
+      bpId,
+      elementId: el.id,
       startMX: e.clientX, startMY: e.clientY,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
-      origPositionType: resolved.positionType ?? 'absolute',
+      origPositionType,
+      origParentId: el.parentId ?? null,
+      origWasFlow: isFlowCtx,
+      origWasOffCanvas,
+      ghostBgColor: resolved.styles?.backgroundColor ?? null,
+      ghostW, ghostH,
+      ghostClientW, ghostClientH,
+      grabOffsetClientX,
+      grabOffsetClientY,
+      grabOffsetWorldX: grabOffsetClientX / scale0,
+      grabOffsetWorldY: grabOffsetClientY / scale0,
     };
+    setDraggingElementId(el.id);
     setInteracting(true);
-  }, [setSelection, setArtboardSel, setInteracting]);
+  }, [setSelection, setArtboardSel, setInteracting, setDraggingElementId]);
 
   // ── Start resize (called from child) ──────────────────────
   const startResize = useCallback((e, bpId, element, handle) => {
@@ -983,12 +1238,12 @@ export default function InfiniteCanvas() {
 
   const onDragOver = (e) => e.preventDefault();
 
-  const cursor = spacePanCursor
+  const cursor = pendingDraw
+    ? 'crosshair'
+    : spacePanCursor
     ? (isPanning.current ? 'grabbing' : 'grab')
     : isPanning.current
     ? 'grabbing'
-    : drag.current
-    ? 'default'
     : 'default';
 
   const { x: panX, y: panY, scale } = viewport;
@@ -1029,7 +1284,26 @@ export default function InfiniteCanvas() {
             dropTargetId={dropTargetId}
           />
         ))}
+        <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} />
         <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} />
+        {reorderGhost && (
+          <div
+            className="fb-reorder-ghost"
+            style={{
+              position: 'absolute',
+              left: reorderGhost.worldX,
+              top: reorderGhost.worldY,
+              width: reorderGhost.width,
+              height: reorderGhost.height,
+              pointerEvents: 'none',
+              opacity: 0.65,
+              background: reorderGhost.bgColor || undefined,
+            }}
+          />
+        )}
+        {draggingElementId && (
+          <style>{`.fb-canvas-world [data-id="${draggingElementId.replace(/[^a-zA-Z0-9_-]/g, '')}"] { opacity: 0.4 !important; }`}</style>
+        )}
       </div>
       {radiusDragInfo && (
         <div className="fb-radius-tooltip" style={{ position: 'fixed', left: radiusDragInfo.clientX + 14, top: radiusDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
@@ -1045,6 +1319,29 @@ export default function InfiniteCanvas() {
         <div className="fb-radius-tooltip" style={{ position: 'fixed', left: gapDragInfo.clientX + 14, top: gapDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
           gap: {gapDragInfo.value}px
         </div>
+      )}
+      {foldDragInfo && (
+        <div className="fb-radius-tooltip" style={{ position: 'fixed', left: foldDragInfo.clientX + 14, top: foldDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
+          viewport fold: {foldDragInfo.value}px
+        </div>
+      )}
+      {dragHint && (
+        <div className="fb-drag-hint" style={{ position: 'fixed', left: dragHint.clientX + 16, top: dragHint.clientY - 30, pointerEvents: 'none', zIndex: 99999 }}>
+          {dragHint.label}
+        </div>
+      )}
+      {drawRect && (
+        <div style={{
+          position: 'fixed',
+          left: drawRect.left,
+          top: drawRect.top,
+          width: drawRect.width,
+          height: drawRect.height,
+          border: '1.5px dashed var(--accent-light)',
+          background: 'rgba(99,179,237,0.08)',
+          pointerEvents: 'none',
+          zIndex: 99999,
+        }} />
       )}
     </div>
   );

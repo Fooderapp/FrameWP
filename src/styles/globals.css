@@ -322,6 +322,12 @@ html, body, #framebuilder-root {
   border-color: var(--accent-light);
 }
 .fb-element-card:active { cursor: grabbing; }
+.fb-element-card--active {
+  border-color: var(--accent-light);
+  background: var(--bg-panel-hover);
+  box-shadow: inset 0 0 0 1.5px var(--accent-light);
+  cursor: crosshair;
+}
 .fb-element-card__icon {
   font-size: 20px;
   line-height: 1;
@@ -629,6 +635,108 @@ html, body, #framebuilder-root {
 }
 .fb-minmax__body { margin-top: 6px; }
 
+/* ─── Align strip (top of element panel) ────────────────── */
+.fb-align-strip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+}
+.fb-align-strip__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.1s;
+  flex-shrink: 0;
+}
+.fb-align-strip__btn:hover { background: var(--bg-panel-hover); color: var(--text-primary); }
+.fb-align-strip__sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+.fb-align-strip--disabled .fb-align-strip__btn {
+  opacity: 0.3;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ─── Layout grid (Figma-style align+justify matrix) ─────── */
+.fb-layout-grid { margin-top: 6px; }
+.fb-layout-grid__top {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.fb-layout-grid__top-group {
+  display: flex;
+  gap: 2px;
+}
+.fb-layout-grid__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.1s;
+}
+.fb-layout-grid__btn:hover { background: var(--bg-panel-hover); color: var(--text-primary); }
+.fb-layout-grid__btn--active {
+  background: var(--accent-dim);
+  border-color: var(--accent-light);
+  color: var(--accent-light);
+}
+.fb-layout-grid__matrix {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 2px;
+}
+.fb-layout-grid__cell {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.fb-layout-grid__cell:hover { background: var(--bg-panel-hover); }
+.fb-layout-grid__cell--active {
+  background: var(--accent-dim);
+  border-color: var(--accent-light);
+}
+.fb-layout-grid__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: background 0.1s;
+}
+.fb-layout-grid__cell--active .fb-layout-grid__dot { background: var(--accent-light); }
+.fb-layout-grid__dot--stretch {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+
 /* ─── Canvas Element ─────────────────────────────────────── */
 .fb-el {
   position: absolute;
@@ -783,6 +891,64 @@ html, body, #framebuilder-root {
 .fb-sel-overlay__handle--s  { bottom: calc(-4px * var(--inv-scale, 1)); left: calc(50% - 4px * var(--inv-scale, 1)); cursor: s-resize; }
 .fb-sel-overlay__handle--sw { bottom: calc(-4px * var(--inv-scale, 1)); left: calc(-4px * var(--inv-scale, 1)); cursor: sw-resize; }
 .fb-sel-overlay__handle--w  { top: calc(50% - 4px * var(--inv-scale, 1)); left: calc(-4px * var(--inv-scale, 1)); cursor: w-resize; }
+
+/* ─── Viewport indicator (fixed elements) ───────────────── */
+.fb-viewport-indicator {
+  position: absolute;
+  height: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
+.fb-viewport-indicator--draggable {
+  pointer-events: all;
+  cursor: ns-resize;
+}
+.fb-viewport-indicator--draggable:hover .fb-viewport-indicator__line {
+  opacity: 1;
+  border-top-color: var(--accent);
+}
+.fb-viewport-indicator__line {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  border-top: calc(1.5px * var(--inv-scale, 1)) dashed var(--accent-light);
+  opacity: 0.7;
+}
+.fb-viewport-indicator__pill {
+  position: absolute;
+  top: calc(-11px * var(--inv-scale, 1));
+  right: 0;
+  background: var(--accent);
+  color: #fff;
+  font-size: calc(10px * var(--inv-scale, 1));
+  line-height: 1;
+  padding: calc(3px * var(--inv-scale, 1)) calc(8px * var(--inv-scale, 1));
+  border-radius: calc(999px * var(--inv-scale, 1));
+  font-weight: 600;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+/* ─── Drag mode hint (Auto / Free badge near cursor) ─────── */
+.fb-drag-hint {
+  background: rgba(0,0,0,0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+
+/* ─── Ghost box during reorder drag ───────────────────────── */
+.fb-reorder-ghost {
+  border: calc(2px * var(--inv-scale, 1)) dashed var(--accent-light);
+  background: rgba(99,179,237,0.07);
+  border-radius: calc(3px * var(--inv-scale, 1));
+  box-sizing: border-box;
+  z-index: 10001;
+}
 
 /* ─── Right Panel ────────────────────────────────────────── */
 .fb-right {
