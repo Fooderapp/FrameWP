@@ -947,6 +947,23 @@ html, body, #framebuilder-root {
   margin: 0;
 }
 
+.fb-reorder-indicator-overlay {
+  position: fixed;
+  pointer-events: none;
+  background: #3b82f6;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.18);
+  z-index: 100002;
+}
+
+.fb-reorder-indicator-overlay--x {
+  min-width: 3px;
+}
+
+.fb-reorder-indicator-overlay--y {
+  min-height: 3px;
+}
+
 /* ─── Border-radius drag handle (circle inside bounding box) ─── */
 .fb-radius-handle {
   position: absolute;
@@ -1116,6 +1133,17 @@ html, body, #framebuilder-root {
 }
 
 /* ─── Ghost box during reorder drag ───────────────────────── */
+.fb-drag-cursor-ghost {
+  position: fixed;
+  border: 2px solid rgba(59, 130, 246, 0.95);
+  background: rgba(59, 130, 246, 0.12);
+  border-radius: 3px;
+  box-sizing: border-box;
+  z-index: 100003;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.22), 0 8px 24px rgba(0, 0, 0, 0.16);
+  opacity: 0.9;
+}
+
 .fb-reorder-ghost {
   border: calc(2px * var(--inv-scale, 1)) dashed var(--accent-light);
   background: rgba(99,179,237,0.07);

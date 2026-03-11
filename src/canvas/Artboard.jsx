@@ -53,6 +53,7 @@ export default function Artboard({
   dropTargetId,
   surfaceMode = 'artboard',
   dragPreview = null,
+  draggingElementId = null,
 }) {
   const allElements      = useEditorStore(s => s.getAllElements());
   const breakpointDefs   = useEditorStore(s => s.breakpointDefs);
@@ -233,6 +234,7 @@ export default function Artboard({
                   onStartPaddingDrag={(e, elementId, side) => onStartPaddingDrag && onStartPaddingDrag(e, bp.id, elementId, side)}
                   reorderTarget={reorderTarget}
                   dragPreview={dragPreview}
+                  draggingElementId={draggingElementId}
                 />
               </React.Fragment>
             );

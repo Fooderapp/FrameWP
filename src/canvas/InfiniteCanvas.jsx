@@ -90,6 +90,12 @@ function getNodeWorldRect(node, boardDom, bp, scale) {
   };
 }
 
+function getFlexAxis(node) {
+  if (!node) return 'y';
+  const style = window.getComputedStyle(node);
+  return (style.flexDirection ?? 'column').startsWith('row') ? 'x' : 'y';
+}
+
 function getElementWorldMetrics({ el, bpId, bp, page, boardDom, scale }) {
   if (!el || !bp) return null;
 
@@ -188,8 +194,8 @@ function getDragSessionWorldPosition(session, clientX, clientY, getProjectedWorl
   if (session.hasRotation) {
     const ghostW = session.ghostW ?? 100;
     const ghostH = session.ghostH ?? 40;
-    const localAnchorX = session.localAnchorX ?? ghostW / 2;
-    const localAnchorY = session.localAnchorY ?? ghostH / 2;
+    const localAnchorX = Number.isFinite(session.localAnchorX) ? session.localAnchorX : (ghostW / 2);
+    const localAnchorY = Number.isFinite(session.localAnchorY) ? session.localAnchorY : (ghostH / 2);
     const anchorFromCenterX = localAnchorX - ghostW / 2;
     const anchorFromCenterY = localAnchorY - ghostH / 2;
     const radians = ((session.rotation ?? 0) * Math.PI) / 180;
@@ -231,8 +237,15 @@ function buildFallbackDragPreview({ session, worldX, worldY, bp, pagePadding, pa
       width: session.ghostW ?? 100,
       height: session.ghostH ?? 40,
       bgColor: session.ghostBgColor,
+      rotation: session.rotation ?? 0,
     },
   };
+}
+
+function shouldUseDirectRotatedMove(session) {
+  if (!session?.hasRotation) return false;
+  if (session.dragMode === 'flow' || session.origWasFlow || session.origPositionType === 'relative') return false;
+  return true;
 }
 
 function getAxisAlignedBounds(rect) {
@@ -781,6 +794,7 @@ export default function InfiniteCanvas() {
   const [textSizeDragInfo, setTextSizeDragInfo] = useState(null); // { value, clientX, clientY }
   const [dragHint,         setDragHint]         = useState(null); // { label, clientX, clientY }
   const [reorderGhost,     setReorderGhost]     = useState(null); // { worldX, worldY, width, height, bgColor? }
+  const [reorderIndicatorOverlay, setReorderIndicatorOverlay] = useState(null); // { left, top, width, height, axis } in client px
   const [dragOverlay,      setDragOverlay]      = useState(null); // { elementId, worldX, worldY, width, height }
   const [alignmentGuides,  setAlignmentGuides]  = useState([]); // [{ orientation, x?, y?, start, end }]
   const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
@@ -789,6 +803,76 @@ export default function InfiniteCanvas() {
   const clipboard = useRef(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  useLayoutEffect(() => {
+    if (!reorderTarget?.bpId) {
+      setReorderIndicatorOverlay(null);
+      return;
+    }
+
+    const st = useEditorStore.getState();
+    const artboardDom = document.querySelector(`.fb-artboard[data-bp="${reorderTarget.bpId}"]`);
+    const parentDom = reorderTarget.parentId
+      ? artboardDom?.querySelector(`[data-id="${reorderTarget.parentId}"]`)
+      : artboardDom?.querySelector('.fb-artboard-content');
+
+    if (!artboardDom || !parentDom) {
+      setReorderIndicatorOverlay(null);
+      return;
+    }
+
+    const parentRect = parentDom.getBoundingClientRect();
+    if (!parentRect) {
+      setReorderIndicatorOverlay(null);
+      return;
+    }
+
+    const siblingIds = getSiblingIds(st.getAllElements(), reorderTarget.parentId, reorderTarget.dragId);
+    const siblingNodes = siblingIds
+      .map((id) => ({ id, node: artboardDom.querySelector(`[data-id="${id}"]`) }))
+      .filter((entry) => entry.node);
+    const axis = getFlexAxis(parentDom);
+    const thickness = 3;
+    const insertIndex = reorderTarget.insertBeforeId
+      ? siblingNodes.findIndex((entry) => entry.id === reorderTarget.insertBeforeId)
+      : siblingNodes.length;
+
+    const beforeNode = insertIndex > 0 ? siblingNodes[insertIndex - 1]?.node : null;
+    const beforeRect = beforeNode ? beforeNode.getBoundingClientRect() : null;
+    const targetNode = reorderTarget.insertBeforeId
+      ? siblingNodes.find((entry) => entry.id === reorderTarget.insertBeforeId)?.node ?? null
+      : null;
+    const targetRect = targetNode ? targetNode.getBoundingClientRect() : null;
+
+    if (axis === 'x') {
+      const left = targetRect
+        ? targetRect.left - (thickness / 2)
+        : beforeRect
+          ? beforeRect.right - (thickness / 2)
+          : parentRect.left - (thickness / 2);
+      setReorderIndicatorOverlay({
+        left,
+        top: parentRect.top,
+        width: thickness,
+        height: Math.max(parentRect.height, 16),
+        axis,
+      });
+      return;
+    }
+
+    const top = targetRect
+      ? targetRect.top - (thickness / 2)
+      : beforeRect
+        ? beforeRect.bottom - (thickness / 2)
+        : parentRect.top - (thickness / 2);
+    setReorderIndicatorOverlay({
+      left: parentRect.left,
+      top,
+      width: Math.max(parentRect.width, 16),
+      height: thickness,
+      axis,
+    });
+  }, [reorderTarget, viewport.scale]);
+
   const canPasteIntoFrame = useCallback((bpId = null, elementId = null) => {
     if (!clipboard.current) return false;
     const st = useEditorStore.getState();
@@ -988,7 +1072,15 @@ export default function InfiniteCanvas() {
       return (overlapW * overlapH) / Math.max(1, projectedClientW * projectedClientH);
     };
 
-    const offCanvas = !artboardRect || overlapRatioWithRect(artboardRect) < 0.35;
+    const pointerInsideArtboard = !!artboardRect
+      && clientX >= artboardRect.left
+      && clientX <= artboardRect.right
+      && clientY >= artboardRect.top
+      && clientY <= artboardRect.bottom;
+    const treatAsFlowDrag = session.origWasFlow || session.dragMode === 'flow' || session.origPositionType === 'relative';
+    const offCanvas = treatAsFlowDrag
+      ? !pointerInsideArtboard
+      : (!artboardRect || overlapRatioWithRect(artboardRect) < 0.35);
     const descendants = collectDescendantIds(allEls, session.elementId);
     let dropContainer = null;
     for (const node of document.elementsFromPoint(clientX, clientY)) {
@@ -1141,6 +1233,7 @@ export default function InfiniteCanvas() {
         width: session.ghostW ?? 100,
         height: session.ghostH ?? 40,
         bgColor: session.ghostBgColor,
+        rotation: session.rotation ?? 0,
       },
     };
   }, [getProjectedWorldPoint]);
@@ -1409,7 +1502,7 @@ export default function InfiniteCanvas() {
       const hasMoved = Math.abs(e.clientX - drag.current.startMX) > 4 ||
         Math.abs(e.clientY - drag.current.startMY) > 4;
       if (hasMoved) drag.current.hasMoved = true;
-      if (drag.current.hasRotation) {
+      if (shouldUseDirectRotatedMove(drag.current)) {
         useEditorStore.getState().updateElementLayout(elementId, bpId, {
           x: drag.current.startX + dxWorld,
           y: drag.current.startY + dyWorld,
@@ -1632,7 +1725,7 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'element-drag') {
         const session = drag.current;
         shouldPushHistory = !!session.hasMoved;
-        if (session.hasRotation) {
+        if (shouldUseDirectRotatedMove(session)) {
           setReorderTarget(null);
           setDropTargetId(null);
         } else if (session.hasMoved) {
@@ -1801,17 +1894,18 @@ export default function InfiniteCanvas() {
     const scale = useEditorStore.getState().viewport.scale;
     const bpDef = useEditorStore.getState().breakpointDefs[bpId];
     const metrics = getElementWorldMetrics({ el, bpId, bp: bpDef, page, boardDom, scale });
-    const ghostW = resolved.width ?? el.base?.width ?? 100;
-    const ghostH = resolved.height ?? el.base?.height ?? 40;
+    const ghostW = rect ? (rect.width / scale) : (resolved.width ?? el.base?.width ?? 100);
+    const ghostH = rect ? (rect.height / scale) : (resolved.height ?? el.base?.height ?? 40);
     const startWorldX = metrics?.modelWorldX ?? (resolved.x ?? el.base?.x ?? 0);
     const startWorldY = metrics?.modelWorldY ?? (resolved.y ?? el.base?.y ?? 0);
     const pointerWorld = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+    const pointerPoint = { x: pointerWorld.worldX, y: pointerWorld.worldY };
     const rotationValue = Math.abs(parseFloat(resolved.rotation) || 0);
     const rotationDegrees = parseFloat(resolved.rotation) || 0;
     const center = { x: startWorldX + ghostW / 2, y: startWorldY + ghostH / 2 };
     const unrotatedPointer = rotationValue > 0.01
-      ? rotatePointAround(pointerWorld, center, -rotationDegrees)
-      : pointerWorld;
+      ? rotatePointAround(pointerPoint, center, -rotationDegrees)
+      : pointerPoint;
     const isGeomOffCanvas = !el.parentId && bpDef
       ? ((resolved.x ?? 0) + ghostW <= 0 || (resolved.x ?? 0) >= bpDef.width || (resolved.y ?? 0) + ghostH <= 0 || (resolved.y ?? 0) >= bpDef.height)
       : false;
@@ -1825,8 +1919,8 @@ export default function InfiniteCanvas() {
       startMX: e.clientX, startMY: e.clientY,
       startWorldX,
       startWorldY,
-      previewStartWorldX: rotationValue > 0.01 ? startWorldX : (metrics?.domWorldX ?? startWorldX),
-      previewStartWorldY: rotationValue > 0.01 ? startWorldY : (metrics?.domWorldY ?? startWorldY),
+      previewStartWorldX: metrics?.domWorldX ?? startWorldX,
+      previewStartWorldY: metrics?.domWorldY ?? startWorldY,
       pointerOffsetWorldX: pointerWorld.worldX - startWorldX,
       pointerOffsetWorldY: pointerWorld.worldY - startWorldY,
       localAnchorX: unrotatedPointer.x - startWorldX,
@@ -2029,19 +2123,18 @@ export default function InfiniteCanvas() {
       ghostClientH = dr.height;
       grabOffsetClientX = e.clientX - dr.left;
       grabOffsetClientY = e.clientY - dr.top;
-      if (rotationValue < 0.01) {
-        ghostW = Math.round(dr.width  / sc0);
-        ghostH = Math.round(dr.height / sc0);
-      }
+      ghostW = dr.width / sc0;
+      ghostH = dr.height / sc0;
     }
     const scale0 = useEditorStore.getState().viewport.scale;
-    const startWorldX = metrics?.modelWorldX ?? 0;
-    const startWorldY = metrics?.modelWorldY ?? 0;
+    const startWorldX = (isFlowCtx ? (metrics?.domWorldX ?? metrics?.modelWorldX) : metrics?.modelWorldX) ?? 0;
+    const startWorldY = (isFlowCtx ? (metrics?.domWorldY ?? metrics?.modelWorldY) : metrics?.modelWorldY) ?? 0;
     const rotationDegrees = parseFloat(resolved.rotation) || 0;
     const center = { x: startWorldX + ghostW / 2, y: startWorldY + ghostH / 2 };
+    const pointerPoint = { x: pointerWorld.worldX, y: pointerWorld.worldY };
     const unrotatedPointer = rotationValue > 0.01
-      ? rotatePointAround(pointerWorld, center, -rotationDegrees)
-      : pointerWorld;
+      ? rotatePointAround(pointerPoint, center, -rotationDegrees)
+      : pointerPoint;
     // Detect if element currently lives off the artboard (x/y outside bp bounds).
     // IMPORTANT: relative/flow elements are NEVER off-canvas (x/y are meaningless for flow).
     // Used at drop time: off-canvas elements dropped on auto-layout artboard become flow.
@@ -2054,8 +2147,8 @@ export default function InfiniteCanvas() {
       startMX: e.clientX, startMY: e.clientY,
       startWorldX,
       startWorldY,
-      previewStartWorldX: rotationValue > 0.01 ? startWorldX : (metrics?.domWorldX ?? startWorldX),
-      previewStartWorldY: rotationValue > 0.01 ? startWorldY : (metrics?.domWorldY ?? startWorldY),
+      previewStartWorldX: metrics?.domWorldX ?? startWorldX,
+      previewStartWorldY: metrics?.domWorldY ?? startWorldY,
       pointerOffsetWorldX: pointerWorld.worldX - startWorldX,
       pointerOffsetWorldY: pointerWorld.worldY - startWorldY,
       localAnchorX: unrotatedPointer.x - startWorldX,
@@ -2234,6 +2327,16 @@ export default function InfiniteCanvas() {
         dy: dragOverlay.worldY - (drag.current?.previewStartWorldY ?? drag.current?.startWorldY ?? dragOverlay.worldY),
       }
     : null;
+  const rotatedCursorGhost = dragOverlay && drag.current?.type === 'element-drag' && drag.current?.hasRotation
+    ? {
+        left: (drag.current?.lastMX ?? drag.current?.startMX ?? 0) - (drag.current?.grabOffsetClientX ?? 0),
+        top: (drag.current?.lastMY ?? drag.current?.startMY ?? 0) - (drag.current?.grabOffsetClientY ?? 0),
+        width: drag.current?.ghostClientW ?? 0,
+        height: drag.current?.ghostClientH ?? 0,
+        bgColor: dragOverlay.bgColor,
+        rotation: drag.current?.rotation ?? 0,
+      }
+    : null;
 
   return (
     <div
@@ -2274,6 +2377,7 @@ export default function InfiniteCanvas() {
             reorderTarget={reorderTarget}
             dropTargetId={dropTargetId}
             dragPreview={activeDragPreview}
+            draggingElementId={draggingElementId}
           />
         ))}
         {activeSurface !== 'component' ? <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} /> : null}
@@ -2299,6 +2403,8 @@ export default function InfiniteCanvas() {
               pointerEvents: 'none',
               opacity: 0.65,
               background: reorderGhost.bgColor || undefined,
+              transform: (Math.abs(reorderGhost.rotation ?? 0) > 0.01) ? `rotate(${reorderGhost.rotation}deg)` : undefined,
+              transformOrigin: 'center center',
             }}
           />
         )}
@@ -2314,6 +2420,32 @@ export default function InfiniteCanvas() {
           </button>
         ) : null}
       </div>
+      {reorderIndicatorOverlay && (
+        <div
+          className={`fb-reorder-indicator-overlay fb-reorder-indicator-overlay--${reorderIndicatorOverlay.axis}`}
+          style={{
+            left: reorderIndicatorOverlay.left,
+            top: reorderIndicatorOverlay.top,
+            width: reorderIndicatorOverlay.width,
+            height: reorderIndicatorOverlay.height,
+          }}
+        />
+      )}
+      {rotatedCursorGhost && (
+        <div
+          className="fb-drag-cursor-ghost"
+          style={{
+            left: rotatedCursorGhost.left,
+            top: rotatedCursorGhost.top,
+            width: rotatedCursorGhost.width,
+            height: rotatedCursorGhost.height,
+            pointerEvents: 'none',
+            background: rotatedCursorGhost.bgColor || undefined,
+            transform: Math.abs(rotatedCursorGhost.rotation ?? 0) > 0.01 ? `rotate(${rotatedCursorGhost.rotation}deg)` : undefined,
+            transformOrigin: 'center center',
+          }}
+        />
+      )}
       {radiusDragInfo && (
         <div className="fb-radius-tooltip" style={{ position: 'fixed', left: radiusDragInfo.clientX + 14, top: radiusDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
           {radiusDragInfo.value}px

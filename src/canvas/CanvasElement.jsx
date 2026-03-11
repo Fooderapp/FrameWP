@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 
-export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, dragPreview = null }) {
+export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, dragPreview = null, draggingElementId = null }) {
   const [dropOver, setDropOver] = useState(false);
   const elementRef = useRef(null);
   const textEditorRef = useRef(null);
@@ -315,6 +315,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
                         : (hFill && parentDir === 'row')    ? 'stretch'
                         : undefined;
   const isDragPreviewActive = dragPreview?.elementId === id;
+  const isDraggingSource = draggingElementId === id;
   const previewDx = isDragPreviewActive ? (dragPreview.dx ?? 0) : 0;
   const previewDy = isDragPreviewActive ? (dragPreview.dy ?? 0) : 0;
   const absoluteLeft = !effectiveRelative ? x + previewDx : x;
@@ -365,7 +366,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     border: (styles?.borderWidth > 0)
       ? `${styles.borderWidth}px ${styles.borderStyle || 'solid'} ${styles.borderColor || '#000'}`
       : undefined,
-    opacity:          styles?.opacity,
+    opacity:          (isDraggingSource && effectiveRelative)
+      ? Math.min(typeof styles?.opacity === 'number' ? styles.opacity : 1, 0.24)
+      : styles?.opacity,
     overflow:         styles?.overflow,
     display:          styles?.display,
     flexDirection:    styles?.flexDirection,
@@ -552,6 +555,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               onStartPaddingDrag={onStartPaddingDrag}
               reorderTarget={reorderTarget}
               dragPreview={dragPreview}
+              draggingElementId={draggingElementId}
             />
           </React.Fragment>
         );
