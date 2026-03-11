@@ -191,12 +191,27 @@ class FrameBuilder_API {
 		$clean = [];
 		foreach ( $components as $component ) {
 			if ( ! is_array( $component ) || empty( $component['id'] ) ) continue;
+			$clean_variants = [];
+			if ( is_array( $component['variants'] ?? null ) ) {
+				foreach ( $component['variants'] as $variant ) {
+					if ( ! is_array( $variant ) || empty( $variant['id'] ) ) continue;
+					$clean_variants[] = [
+						'id'       => sanitize_text_field( $variant['id'] ),
+						'name'     => sanitize_text_field( $variant['name'] ?? 'Variant' ),
+						'snapshot' => is_array( $variant['snapshot'] ?? null ) ? $variant['snapshot'] : [],
+					];
+				}
+			}
 			$clean[] = [
-				'id'        => sanitize_text_field( $component['id'] ),
-				'name'      => sanitize_text_field( $component['name'] ?? 'Component' ),
-				'createdAt' => isset( $component['createdAt'] ) ? intval( $component['createdAt'] ) : 0,
-				'updatedAt' => isset( $component['updatedAt'] ) ? intval( $component['updatedAt'] ) : 0,
-				'snapshot'  => is_array( $component['snapshot'] ?? null ) ? $component['snapshot'] : [],
+				'id'             => sanitize_text_field( $component['id'] ),
+				'name'           => sanitize_text_field( $component['name'] ?? 'Component' ),
+				'createdAt'      => isset( $component['createdAt'] ) ? intval( $component['createdAt'] ) : 0,
+				'updatedAt'      => isset( $component['updatedAt'] ) ? intval( $component['updatedAt'] ) : 0,
+				'defaultVariantId' => sanitize_text_field( $component['defaultVariantId'] ?? '' ),
+				'variants'       => $clean_variants,
+				'snapshot'       => is_array( $component['snapshot'] ?? null )
+					? $component['snapshot']
+					: ( isset( $clean_variants[0]['snapshot'] ) ? $clean_variants[0]['snapshot'] : [] ),
 			];
 		}
 

@@ -109,7 +109,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
     ? components.find((component) => component.id === el.componentInstance.componentId)
     : null;
   const displayName = activeSurface === 'component' && el.componentRoot
-    ? 'Primary'
+    ? (el.componentVariantName || 'Primary')
     : (isMainSurfaceComponent ? (componentMeta?.name || el.base?.name || el.type) : (el.base?.name || el.type));
   const visibleChildren = isMainSurfaceComponent ? [] : children;
 

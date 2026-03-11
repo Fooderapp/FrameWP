@@ -895,6 +895,25 @@ html, body, #framebuilder-root {
   cursor: pointer;
 }
 
+.fb-component-canvas-add-variant {
+  position: absolute;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px dashed rgba(139, 92, 246, 0.5);
+  background: rgba(17, 13, 28, 0.94);
+  color: #ddd6fe;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+
+.fb-component-canvas-add-variant:hover {
+  background: rgba(35, 24, 56, 0.96);
+  border-color: rgba(139, 92, 246, 0.75);
+}
+
 /* ─── Artboard padding drag handles (pink) ────────────── */
 .fb-pad-zone {
   position: absolute;
@@ -1188,6 +1207,14 @@ html, body, #framebuilder-root {
   color: var(--text-secondary);
   white-space: nowrap;
   letter-spacing: 0.02em;
+}
+
+.fb-prop-value {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  color: var(--text-primary);
+  font-size: 12px;
 }
 
 .fb-prop-input {
@@ -1610,8 +1637,18 @@ html, body, #framebuilder-root {
   font-weight: 700;
 }
 
+.fb-component-editor-overlay__variants {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
 .fb-component-editor-overlay__chip {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
   margin-top: 8px;
   padding: 3px 8px;
   border-radius: 999px;
@@ -1622,6 +1659,29 @@ html, body, #framebuilder-root {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  cursor: pointer;
+}
+
+.fb-component-editor-overlay__chip--active {
+  background: rgba(139, 92, 246, 0.28);
+  border-color: rgba(139, 92, 246, 0.6);
+}
+
+.fb-component-editor-overlay__chip-add {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  background: rgba(139, 92, 246, 0.12);
+  color: #ddd6fe;
+  cursor: pointer;
+  line-height: 1;
+  font-size: 16px;
+  padding: 0;
+}
+
+.fb-component-editor-overlay__chip-add:hover {
+  background: rgba(139, 92, 246, 0.22);
 }
 
 .fb-component-editor-overlay__body {

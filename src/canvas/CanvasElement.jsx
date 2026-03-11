@@ -25,6 +25,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const pendingDraw            = useEditorStore(s => s.pendingDraw);
   const openComponentEditor    = useEditorStore(s => s.openComponentEditor);
   const activeSurface          = useEditorStore(s => s.activeSurface);
+  const setComponentEditorActiveVariant = useEditorStore(s => s.setComponentEditorActiveVariant);
 
   const parentEl               = el?.parentId ? allElements.find(e => e.id === el.parentId) : null;
   const resolved               = el ? resolveElement(el, bpId) : null;
@@ -171,6 +172,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       return;
     }
     e.stopPropagation();
+    if (activeSurface === 'component' && el?.componentEditorVariantId) {
+      setComponentEditorActiveVariant(el.componentEditorVariantId);
+    }
     // Clicking a root-level element while drilled into a nested frame exits drill mode
     if (isRootLevel && drilledContainerId !== null) {
       setDrilledContainerId(null);
@@ -421,10 +425,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           className="fb-component-root-label"
           onMouseDown={(e) => {
             e.stopPropagation();
+            if (el.componentEditorVariantId) setComponentEditorActiveVariant(el.componentEditorVariantId);
             setSelection({ elementId: id, bpId });
           }}
         >
-          Primary
+          {el.componentVariantName || 'Primary'}
         </button>
       ) : null}
       {/* Image element content */}

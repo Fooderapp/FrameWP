@@ -442,7 +442,10 @@ function ResetBtn({ show, onReset }) {
 export default function PropertiesPanel() {
   const selection           = useEditorStore(s => s.selection);
   const activeSurface       = useEditorStore(s => s.activeSurface);
+  const componentEditor     = useEditorStore(s => s.componentEditor);
   const element             = useEditorStore(s => s.getSelectedElement());
+  const components          = useEditorStore(s => s.components);
+  const changeComponentInstanceVariant = useEditorStore(s => s.changeComponentInstanceVariant);
   const updateElementLayout = useEditorStore(s => s.updateElementLayout);
   const updateStyles        = useEditorStore(s => s.updateElementStyles);
   const pushHistory         = useEditorStore(s => s.pushHistory);
@@ -659,11 +662,18 @@ export default function PropertiesPanel() {
   const isFlowInLayout = inAutoLayout && !resolved.absoluteInLayout;
   const isComponentRoot = activeSurface === 'component' && !element.parentId;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!element.componentInstance;
+  const componentMeta = isComponentInstanceOnPage
+    ? components.find((component) => component.id === element.componentInstance?.componentId)
+    : null;
+  const componentVariantId = element.componentInstance?.variantId ?? componentMeta?.defaultVariantId ?? componentMeta?.variants?.[0]?.id ?? '';
+  const selectedEditorVariant = activeSurface === 'component' && element.componentRoot
+    ? (componentEditor.variants ?? []).find((variant) => variant.id === element.componentEditorVariantId)
+    : null;
 
   if (activeSurface === 'component' && element.componentRoot) {
     return (
       <aside className="fb-right">
-        <div className="fb-right__header">Primary</div>
+        <div className="fb-right__header">{selectedEditorVariant?.name || element.componentVariantName || 'Primary'}</div>
         <div className="fb-panel-body">
           <Section title="Size">
             <div className="fb-quad" style={{ marginBottom: 6 }}>
@@ -681,7 +691,9 @@ export default function PropertiesPanel() {
               />
             </div>
             <div className="fb-artboard-bp-note">
-              Primary defines the component editor size. Instances on the main canvas can still be resized independently.
+              {selectedEditorVariant?.name === 'Primary'
+                ? 'Primary defines the base component size. Other variants inherit from it unless they override width or height.'
+                : 'This variant inherits from Primary until you override its size here. Instances on the main canvas can still be resized independently.'}
             </div>
           </Section>
         </div>
@@ -712,6 +724,30 @@ export default function PropertiesPanel() {
       </div>
 
       <div className="fb-panel-body">
+
+        {isComponentInstanceOnPage && componentMeta ? (
+          <Section title="Component">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Name</span>
+              <div className="fb-prop-value">{componentMeta.name}</div>
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Variant</span>
+              <select
+                className="fb-prop-input"
+                value={componentVariantId}
+                onChange={e => {
+                  changeComponentInstanceVariant(element.id, e.target.value);
+                  commit();
+                }}
+              >
+                {(componentMeta.variants ?? []).map((variant) => (
+                  <option key={variant.id} value={variant.id}>{variant.name}</option>
+                ))}
+              </select>
+            </div>
+          </Section>
+        ) : null}
 
         {/* ── Align strip (top of panel, active for absolute/fixed) ─── */}
         <AlignStrip

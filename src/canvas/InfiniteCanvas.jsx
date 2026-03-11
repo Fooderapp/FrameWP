@@ -412,6 +412,7 @@ export default function InfiniteCanvas() {
   const viewport      = useEditorStore(s => s.viewport);
   const setViewport   = useEditorStore(s => s.setViewport);
   const activeSurface = useEditorStore(s => s.activeSurface);
+  const componentEditor = useEditorStore(s => s.componentEditor);
   const bpDefs        = useEditorStore(s => s.breakpointDefs);
   const setSelection  = useEditorStore(s => s.setSelection);
   const setArtboardSel = useEditorStore(s => s.setArtboardSel);
@@ -422,6 +423,7 @@ export default function InfiniteCanvas() {
   const createComponentFromElement = useEditorStore(s => s.createComponentFromElement);
   const insertComponentInstance = useEditorStore(s => s.insertComponentInstance);
   const openComponentEditor = useEditorStore(s => s.openComponentEditor);
+  const addComponentVariant = useEditorStore(s => s.addComponentVariant);
   const deleteElement       = useEditorStore(s => s.deleteElement);
   const reparentElement      = useEditorStore(s => s.reparentElement);
   const pushHistory          = useEditorStore(s => s.pushHistory);
@@ -1706,6 +1708,18 @@ export default function InfiniteCanvas() {
     : 'default';
 
   const { x: panX, y: panY, scale } = viewport;
+  const componentVariantRoots = activeSurface === 'component'
+    ? (componentEditor.page?.elements ?? [])
+        .filter((el) => !el.parentId && el.componentRoot)
+        .sort((left, right) => (left.base?.x ?? 0) - (right.base?.x ?? 0))
+    : [];
+  const lastVariantRoot = componentVariantRoots[componentVariantRoots.length - 1] ?? null;
+  const canvasAddVariantPos = activeSurface === 'component' && lastVariantRoot && bpDefs.desktop
+    ? {
+        left: bpDefs.desktop.x + (lastVariantRoot.base?.x ?? 0) + (lastVariantRoot.base?.width ?? 240) + 44,
+        top: bpDefs.desktop.y + (lastVariantRoot.base?.y ?? 0) + Math.max(24, ((lastVariantRoot.base?.height ?? 160) * 0.5) - 18),
+      }
+    : null;
 
   return (
     <div
@@ -1775,6 +1789,17 @@ export default function InfiniteCanvas() {
         {draggingElementId && (
           <style>{`.fb-canvas-world [data-id="${draggingElementId.replace(/[^a-zA-Z0-9_-]/g, '')}"] { opacity: 0.4 !important; }`}</style>
         )}
+        {canvasAddVariantPos ? (
+          <button
+            type="button"
+            className="fb-component-canvas-add-variant"
+            style={{ left: canvasAddVariantPos.left, top: canvasAddVariantPos.top }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => addComponentVariant()}
+          >
+            + Variant
+          </button>
+        ) : null}
       </div>
       {radiusDragInfo && (
         <div className="fb-radius-tooltip" style={{ position: 'fixed', left: radiusDragInfo.clientX + 14, top: radiusDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>

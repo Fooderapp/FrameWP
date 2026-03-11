@@ -27,6 +27,10 @@ const COMPONENT_EDITOR_BREAKPOINTS = {
   desktop: { id: 'desktop', name: 'Component', icon: '⬢', width: 820, height: 560, x: 120, y: 120, viewportFoldH: null },
 };
 
+const COMPONENT_EDITOR_VARIANT_GAP = 140;
+const COMPONENT_EDITOR_VARIANT_TOP = 100;
+const COMPONENT_EDITOR_VARIANT_SIDE_PAD = 120;
+
 const COMPONENT_ROOT_LAYOUT_KEYS = [
   'width', 'height', 'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
   'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints',
@@ -135,17 +139,282 @@ function ensureComponentPrimaryRoot(snapshot = []) {
   return [wrapper, ...normalized];
 }
 
-function normalizeStoredComponent(component) {
+function normalizeComponentVariant(variant, fallbackName = 'Variant', { primary = false } = {}) {
   return {
-    ...component,
-    snapshot: ensureComponentPrimaryRoot(component?.snapshot ?? []),
+    id: variant?.id ?? makeId('cmp-var'),
+    name: primary ? 'Primary' : (variant?.name || fallbackName).trim(),
+    snapshot: primary
+      ? ensureComponentPrimaryRoot(variant?.snapshot ?? [])
+      : deepClone(Array.isArray(variant?.snapshot) ? variant.snapshot : []),
   };
 }
 
-function makeComponentEditorBreakpoints(snapshot = []) {
+function normalizeStoredComponent(component) {
+  const variants = Array.isArray(component?.variants) && component.variants.length
+    ? component.variants.map((variant, index) => normalizeComponentVariant(variant, index === 0 ? 'Primary' : `Variant ${index + 1}`, { primary: index === 0 }))
+    : [normalizeComponentVariant({
+        id: component?.defaultVariantId ?? makeId('cmp-var'),
+        name: 'Primary',
+        snapshot: component?.snapshot ?? [],
+      }, 'Primary', { primary: true })];
+
+  const normalizedVariants = variants.map((variant, index) => (
+    index === 0 ? { ...variant, name: 'Primary' } : variant
+  ));
+  const defaultVariantId = normalizedVariants.some((variant) => variant.id === component?.defaultVariantId)
+    ? component.defaultVariantId
+    : normalizedVariants[0]?.id ?? null;
+
+  return {
+    ...component,
+    defaultVariantId,
+    variants: normalizedVariants,
+    snapshot: normalizedVariants[0]?.snapshot ?? [],
+  };
+}
+
+function getComponentVariant(component, variantId = null) {
+  if (!component?.variants?.length) return null;
+  return component.variants.find((variant) => variant.id === variantId)
+    ?? component.variants.find((variant) => variant.id === component.defaultVariantId)
+    ?? component.variants[0]
+    ?? null;
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function diffValue(baseValue, nextValue) {
+  if (Array.isArray(baseValue) || Array.isArray(nextValue)) {
+    return JSON.stringify(baseValue ?? null) === JSON.stringify(nextValue ?? null)
+      ? undefined
+      : deepClone(nextValue);
+  }
+
+  if (isPlainObject(baseValue) && isPlainObject(nextValue)) {
+    const diff = {};
+    const keys = new Set([...Object.keys(baseValue ?? {}), ...Object.keys(nextValue ?? {})]);
+    keys.forEach((key) => {
+      const childDiff = diffValue(baseValue?.[key], nextValue?.[key]);
+      if (childDiff !== undefined) diff[key] = childDiff;
+    });
+    return Object.keys(diff).length ? diff : undefined;
+  }
+
+  return JSON.stringify(baseValue ?? null) === JSON.stringify(nextValue ?? null)
+    ? undefined
+    : deepClone(nextValue);
+}
+
+function deepMerge(baseValue, patchValue) {
+  if (Array.isArray(baseValue) || Array.isArray(patchValue)) return deepClone(patchValue);
+  if (!isPlainObject(baseValue) || !isPlainObject(patchValue)) return deepClone(patchValue);
+
+  const merged = { ...deepClone(baseValue) };
+  Object.entries(patchValue).forEach(([key, value]) => {
+    merged[key] = isPlainObject(value) && isPlainObject(merged[key])
+      ? deepMerge(merged[key], value)
+      : deepClone(value);
+  });
+  return merged;
+}
+
+function applyVariantOverrides(primarySnapshot, overrideSnapshot = []) {
+  const normalizedPrimary = ensureComponentPrimaryRoot(primarySnapshot ?? []);
+  const baseMap = new Map(normalizedPrimary.map((el) => [el.id, deepClone(el)]));
+  const deleteIds = new Set();
+
+  const collectDeleteIds = (elementId) => {
+    if (deleteIds.has(elementId)) return;
+    deleteIds.add(elementId);
+    const el = baseMap.get(elementId);
+    (el?.children ?? []).forEach(collectDeleteIds);
+  };
+
+  overrideSnapshot.forEach((entry) => {
+    if (entry?.__deleted) collectDeleteIds(entry.id);
+  });
+
+  let next = normalizedPrimary
+    .filter((el) => !deleteIds.has(el.id))
+    .map((el) => ({ ...deepClone(el), children: (el.children ?? []).filter((childId) => !deleteIds.has(childId)) }));
+
+  const nextMap = new Map(next.map((el) => [el.id, el]));
+  overrideSnapshot.forEach((entry) => {
+    if (!entry || entry.__deleted) return;
+    if (nextMap.has(entry.id)) {
+      const merged = deepMerge(nextMap.get(entry.id), entry);
+      delete merged.__added;
+      nextMap.set(entry.id, merged);
+    } else {
+      const added = deepClone(entry);
+      delete added.__added;
+      nextMap.set(added.id, added);
+    }
+  });
+
+  next = Array.from(nextMap.values());
+  return ensureComponentPrimaryRoot(next);
+}
+
+function composeVariantSnapshot(component, variantId = null) {
+  const primaryVariant = component?.variants?.[0] ?? null;
+  if (!primaryVariant) return [];
+  const primarySnapshot = ensureComponentPrimaryRoot(primaryVariant.snapshot ?? []);
+  const variant = getComponentVariant(component, variantId ?? primaryVariant.id);
+  if (!variant || variant.id === primaryVariant.id) return primarySnapshot;
+  return applyVariantOverrides(primarySnapshot, variant.snapshot ?? []);
+}
+
+function stripComponentEditorMeta(element) {
+  const next = deepClone(element);
+  delete next.componentEditorVariantId;
+  delete next.componentSourceId;
+  delete next.componentVariantName;
+  delete next.componentVariantOrder;
+  delete next.componentVariantPrimary;
+  return next;
+}
+
+function instantiateEditorVariantSnapshot(snapshot, variant, order, rootX, rootY) {
   const root = getSnapshotRoot(snapshot);
-  const width = Math.max(1400, Math.round((root?.base?.width ?? 420) + 720));
-  const height = Math.max(960, Math.round((root?.base?.height ?? 280) + 560));
+  if (!root) return [];
+
+  const idMap = {};
+  snapshot.forEach((el) => {
+    idMap[el.id] = makeId(el.type === 'text' ? 'txt' : el.type === 'image' ? 'img' : 'fr');
+  });
+
+  return deepClone(snapshot).map((el) => {
+    const isRoot = el.id === root.id;
+    return {
+      ...el,
+      id: idMap[el.id],
+      parentId: isRoot ? null : (idMap[el.parentId] ?? null),
+      children: (el.children ?? []).map((childId) => idMap[childId]).filter(Boolean),
+      componentEditorVariantId: variant.id,
+      componentSourceId: el.id,
+      componentVariantName: variant.name,
+      componentVariantOrder: order,
+      componentVariantPrimary: order === 0,
+      base: isRoot
+        ? { ...el.base, x: rootX, y: rootY }
+        : el.base,
+    };
+  });
+}
+
+function buildComponentEditorElements(component) {
+  const variants = component?.variants ?? [];
+  let cursorX = COMPONENT_EDITOR_VARIANT_SIDE_PAD;
+  let maxBottom = COMPONENT_EDITOR_VARIANT_TOP + 320;
+  const elements = [];
+
+  variants.forEach((variant, index) => {
+    const snapshot = composeVariantSnapshot(component, variant.id);
+    const root = getSnapshotRoot(snapshot);
+    if (!root) return;
+    const runtimeSnapshot = instantiateEditorVariantSnapshot(snapshot, variant, index, cursorX, COMPONENT_EDITOR_VARIANT_TOP);
+    elements.push(...runtimeSnapshot);
+    cursorX += (root.base?.width ?? 240) + COMPONENT_EDITOR_VARIANT_GAP;
+    maxBottom = Math.max(maxBottom, COMPONENT_EDITOR_VARIANT_TOP + (root.base?.height ?? 160));
+  });
+
+  return {
+    elements,
+    width: Math.max(1400, cursorX + COMPONENT_EDITOR_VARIANT_SIDE_PAD),
+    height: Math.max(960, maxBottom + 360),
+  };
+}
+
+function getEditorVariantRoot(elements, variantId) {
+  return (elements ?? []).find((el) => !el.parentId && el.componentRoot && el.componentEditorVariantId === variantId) ?? null;
+}
+
+function extractEditorVariantSnapshot(elements, variantId) {
+  const root = getEditorVariantRoot(elements, variantId);
+  if (!root) return [];
+
+  const byRuntimeId = new Map((elements ?? []).map((el) => [el.id, el]));
+  const subtree = [];
+  const visit = (runtimeId) => {
+    const el = byRuntimeId.get(runtimeId);
+    if (!el) return;
+    subtree.push(el);
+    (el.children ?? []).forEach(visit);
+  };
+  visit(root.id);
+
+  const runtimeToSource = new Map(subtree.map((el) => [el.id, el.componentSourceId ?? el.id]));
+  const normalized = subtree.map((el) => {
+    const next = stripComponentEditorMeta(el);
+    next.id = el.componentSourceId ?? el.id;
+    next.parentId = el.parentId ? (runtimeToSource.get(el.parentId) ?? null) : null;
+    next.children = (el.children ?? []).map((childId) => runtimeToSource.get(childId)).filter(Boolean);
+    delete next.componentInstance;
+    if (next.componentRoot) {
+      next.name = 'Primary';
+      next.base = { ...next.base, x: 0, y: 0 };
+    }
+    return next;
+  });
+
+  return ensureComponentPrimaryRoot(normalized);
+}
+
+function extractVariantOverrides(primarySnapshot, variantSnapshot) {
+  const normalizedPrimary = ensureComponentPrimaryRoot(primarySnapshot ?? []);
+  const normalizedVariant = ensureComponentPrimaryRoot(variantSnapshot ?? []);
+  const primaryMap = new Map(normalizedPrimary.map((el) => [el.id, el]));
+  const variantMap = new Map(normalizedVariant.map((el) => [el.id, el]));
+  const overrides = [];
+
+  normalizedPrimary.forEach((primaryEl) => {
+    if (!variantMap.has(primaryEl.id)) overrides.push({ id: primaryEl.id, __deleted: true });
+  });
+
+  normalizedVariant.forEach((variantEl) => {
+    const primaryEl = primaryMap.get(variantEl.id);
+    if (!primaryEl) {
+      overrides.push({ ...deepClone(variantEl), __added: true });
+      return;
+    }
+
+    const delta = { id: variantEl.id };
+    ['type', 'name', 'parentId', 'children', 'base', 'overrides'].forEach((key) => {
+      const keyDiff = diffValue(primaryEl[key], variantEl[key]);
+      if (keyDiff !== undefined) delta[key] = keyDiff;
+    });
+
+    if (Object.keys(delta).length > 1) overrides.push(delta);
+  });
+
+  return overrides;
+}
+
+function syncComponentEditorVariants(componentEditor) {
+  const currentVariants = componentEditor?.variants ?? [];
+  if (!currentVariants.length) return [];
+  const primarySnapshot = extractEditorVariantSnapshot(componentEditor.page?.elements ?? [], currentVariants[0].id);
+  if (!primarySnapshot.length) return currentVariants;
+
+  return currentVariants.map((variant, index) => {
+    if (index === 0) {
+      return { ...variant, name: 'Primary', snapshot: primarySnapshot };
+    }
+    const fullVariantSnapshot = extractEditorVariantSnapshot(componentEditor.page?.elements ?? [], variant.id);
+    return {
+      ...variant,
+      snapshot: extractVariantOverrides(primarySnapshot, fullVariantSnapshot),
+    };
+  });
+}
+
+function makeComponentEditorBreakpoints(elements = []) {
+  const variantRoots = (elements ?? []).filter((el) => !el.parentId && el.componentRoot);
+  const width = Math.max(1400, ...variantRoots.map((root) => (root.base?.x ?? 0) + (root.base?.width ?? 240) + COMPONENT_EDITOR_VARIANT_SIDE_PAD));
+  const height = Math.max(960, ...variantRoots.map((root) => (root.base?.y ?? 0) + (root.base?.height ?? 160) + 360));
   return {
     desktop: {
       ...COMPONENT_EDITOR_BREAKPOINTS.desktop,
@@ -181,6 +450,8 @@ function makeEmptyComponentEditor() {
   return {
     isOpen: false,
     componentId: null,
+    activeVariantId: null,
+    variants: [],
     page: makeComponentEditorPage(),
     breakpointDefs: deepClone(COMPONENT_EDITOR_BREAKPOINTS),
     uiRestore: null,
@@ -618,24 +889,30 @@ export const useEditorStore = create((set, get) => {
 
       const subtree = collectSubtree(elements, elementId);
       const componentId = makeId('cmp');
+      const primaryVariant = normalizeComponentVariant({
+        name: 'Primary',
+        snapshot: normalizeComponentSnapshot(subtree, elementId),
+      }, 'Primary', { primary: true });
       const now = Date.now();
       const component = {
         id: componentId,
         name: name?.trim() || rootEl.name || 'Component',
         createdAt: now,
         updatedAt: now,
-        snapshot: normalizeComponentSnapshot(subtree, elementId),
+        defaultVariantId: primaryVariant.id,
+        variants: [primaryVariant],
+        snapshot: primaryVariant.snapshot,
       };
 
       const nextComponents = upsertComponent(get().components, component);
       get().saveComponents(nextComponents);
 
-      const instantiated = instantiateComponentSnapshot(component.snapshot, {
+      const instantiated = instantiateComponentSnapshot(primaryVariant.snapshot, {
         targetRootId: elementId,
         targetParentId: rootEl.parentId ?? null,
         rootPosition: { x: resolvedRoot.x ?? rootEl.base?.x ?? 0, y: resolvedRoot.y ?? rootEl.base?.y ?? 0 },
         bpId: activeBpId,
-        componentInstance: { componentId, role: 'main' },
+        componentInstance: { componentId, variantId: primaryVariant.id, role: 'main' },
       });
       const wrapperRoot = getSnapshotRoot(instantiated);
       const patched = instantiated.map((el) => (
@@ -649,13 +926,15 @@ export const useEditorStore = create((set, get) => {
 
     insertComponentInstance(componentId, { x = 80, y = 80, bpId = 'desktop', parentId = null } = {}) {
       const component = get().components.find(item => item.id === componentId);
-      if (!component?.snapshot?.length) return null;
+      const variant = getComponentVariant(component, component?.defaultVariantId);
+      const composedSnapshot = composeVariantSnapshot(component, variant?.id ?? component?.defaultVariantId);
+      if (!variant || !composedSnapshot.length) return null;
 
-      const instantiated = instantiateComponentSnapshot(ensureComponentPrimaryRoot(component.snapshot), {
+      const instantiated = instantiateComponentSnapshot(composedSnapshot, {
         targetParentId: parentId,
         rootPosition: { x, y },
         bpId,
-        componentInstance: { componentId, role: 'instance' },
+        componentInstance: { componentId, variantId: variant.id, role: 'instance' },
       });
       const root = getSnapshotRoot(instantiated);
       if (!root) return null;
@@ -677,17 +956,19 @@ export const useEditorStore = create((set, get) => {
 
     applyComponentToInstances(componentId) {
       const component = get().components.find(item => item.id === componentId);
-      if (!component?.snapshot?.length) return;
-      const normalizedSnapshot = ensureComponentPrimaryRoot(component.snapshot);
+      if (!component?.variants?.length) return;
 
       withPage((els) => {
         let nextEls = els;
         const roots = nextEls.filter(el => el.componentInstance?.componentId === componentId);
         roots.forEach((rootEl) => {
-          const instantiated = instantiateComponentSnapshot(normalizedSnapshot, {
+          const variant = getComponentVariant(component, rootEl.componentInstance?.variantId ?? component.defaultVariantId);
+          const composedSnapshot = composeVariantSnapshot(component, variant?.id ?? component.defaultVariantId);
+          if (!variant || !composedSnapshot.length) return;
+          const instantiated = instantiateComponentSnapshot(composedSnapshot, {
             targetRootId: rootEl.id,
             targetParentId: rootEl.parentId ?? null,
-            componentInstance: { ...(rootEl.componentInstance ?? {}), componentId },
+            componentInstance: { ...(rootEl.componentInstance ?? {}), componentId, variantId: variant.id },
           });
           const rootNext = getSnapshotRoot(instantiated);
           if (!rootNext) return;
@@ -697,6 +978,49 @@ export const useEditorStore = create((set, get) => {
           nextEls = replaceSubtree(nextEls, rootEl.id, patched);
         });
         return nextEls;
+      });
+    },
+
+    changeComponentInstanceVariant(elementId, variantId) {
+      const rootEl = findEl(getEls(), elementId);
+      const componentId = rootEl?.componentInstance?.componentId;
+      if (!rootEl || !componentId) return;
+
+      const component = get().components.find((item) => item.id === componentId);
+      const variant = getComponentVariant(component, variantId);
+      const composedSnapshot = composeVariantSnapshot(component, variant?.id ?? component?.defaultVariantId);
+      if (!variant || !composedSnapshot.length) return;
+
+      withPage((els) => {
+        const instantiated = instantiateComponentSnapshot(composedSnapshot, {
+          targetRootId: rootEl.id,
+          targetParentId: rootEl.parentId ?? null,
+          componentInstance: { ...(rootEl.componentInstance ?? {}), componentId, variantId: variant.id },
+        });
+        const rootNext = getSnapshotRoot(instantiated);
+        if (!rootNext) return els;
+        const patched = instantiated.map((el) => (
+          el.id === rootNext.id ? preserveComponentRootPlacement(el, rootEl) : el
+        ));
+        return replaceSubtree(els, rootEl.id, patched);
+      });
+
+      set((state) => ({
+        selection: state.selection?.elementId === elementId
+          ? { ...state.selection, elementId }
+          : state.selection,
+      }));
+    },
+
+    setComponentEditorActiveVariant(variantId) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            activeVariantId: variantId,
+          },
+        };
       });
     },
 
@@ -730,7 +1054,8 @@ export const useEditorStore = create((set, get) => {
       const component = get().components.find(item => item.id === componentId);
       if (!component) return;
       const normalizedComponent = normalizeStoredComponent(component);
-      const componentBreakpoints = makeComponentEditorBreakpoints(normalizedComponent.snapshot ?? []);
+      const editorCanvas = buildComponentEditorElements(normalizedComponent);
+      const componentBreakpoints = makeComponentEditorBreakpoints(editorCanvas.elements);
 
       const state = get();
       const uiRestore = {
@@ -755,10 +1080,12 @@ export const useEditorStore = create((set, get) => {
         componentEditor: {
           isOpen: true,
           componentId,
+          activeVariantId: normalizedComponent.variants?.[0]?.id ?? null,
+          variants: deepClone(normalizedComponent.variants ?? []),
           page: {
             ...makeComponentEditorPage(),
             title: normalizedComponent.name,
-            elements: deepClone(normalizedComponent.snapshot ?? []),
+            elements: editorCanvas.elements,
           },
           breakpointDefs: deepClone(componentBreakpoints),
           uiRestore,
@@ -766,13 +1093,63 @@ export const useEditorStore = create((set, get) => {
       });
     },
 
+    selectComponentEditorVariant(variantId) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        const root = getEditorVariantRoot(state.componentEditor.page?.elements ?? [], variantId);
+        return {
+          selection: root ? { elementId: root.id, bpId: 'desktop' } : state.selection,
+          componentEditor: {
+            ...state.componentEditor,
+            activeVariantId: variantId,
+          },
+        };
+      });
+    },
+
+    addComponentVariant() {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        const syncedVariants = syncComponentEditorVariants(state.componentEditor);
+        const newVariant = normalizeComponentVariant({
+          name: `Variant ${syncedVariants.length + 1}`,
+          snapshot: [],
+        }, `Variant ${syncedVariants.length + 1}`);
+        const nextVariants = [...syncedVariants, newVariant];
+        const editorCanvas = buildComponentEditorElements({ variants: nextVariants });
+        const nextBreakpoints = makeComponentEditorBreakpoints(editorCanvas.elements);
+        const newRoot = getEditorVariantRoot(editorCanvas.elements, newVariant.id);
+        return {
+          breakpointDefs: deepClone(nextBreakpoints),
+          selection: newRoot ? { elementId: newRoot.id, bpId: 'desktop' } : state.selection,
+          componentEditor: {
+            ...state.componentEditor,
+            activeVariantId: newVariant.id,
+            variants: nextVariants,
+            page: {
+              ...state.componentEditor.page,
+              elements: editorCanvas.elements,
+            },
+            breakpointDefs: deepClone(nextBreakpoints),
+          },
+        };
+      });
+    },
+
     closeComponentEditor() {
       const state = get();
       if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return;
       const current = state.componentEditor;
+      const syncedVariants = syncComponentEditorVariants(current);
       const nextComponents = state.components.map(component => (
         component.id === current.componentId
-          ? { ...component, updatedAt: Date.now(), snapshot: ensureComponentPrimaryRoot(current.page.elements ?? []) }
+          ? normalizeStoredComponent({
+              ...component,
+              updatedAt: Date.now(),
+              defaultVariantId: component.defaultVariantId ?? syncedVariants[0]?.id ?? null,
+              variants: syncedVariants,
+              snapshot: syncedVariants[0]?.snapshot ?? [],
+            })
           : component
       ));
       set({
