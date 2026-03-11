@@ -44,6 +44,18 @@ class FrameBuilder_API {
 			'callback'            => [ __CLASS__, 'save_color_styles' ],
 			'permission_callback' => [ __CLASS__, 'can_edit' ],
 		] );
+
+		register_rest_route( $ns, '/components', [
+			'methods'             => 'GET',
+			'callback'            => [ __CLASS__, 'get_components' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/components', [
+			'methods'             => 'POST',
+			'callback'            => [ __CLASS__, 'save_components' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
 	}
 
 	/**
@@ -160,6 +172,35 @@ class FrameBuilder_API {
 			];
 		}
 		update_option( '_fb_color_styles', wp_json_encode( $clean ) );
+		return rest_ensure_response( [ 'success' => true ] );
+	}
+
+	public static function get_components( WP_REST_Request $request ) {
+		$raw        = get_option( '_fb_component_library', '[]' );
+		$components = json_decode( $raw, true );
+		if ( ! is_array( $components ) ) $components = [];
+		return rest_ensure_response( [ 'success' => true, 'components' => $components ] );
+	}
+
+	public static function save_components( WP_REST_Request $request ) {
+		$components = $request->get_param( 'components' );
+		if ( ! is_array( $components ) ) {
+			return new WP_Error( 'invalid_components', 'components must be an array.', [ 'status' => 400 ] );
+		}
+
+		$clean = [];
+		foreach ( $components as $component ) {
+			if ( ! is_array( $component ) || empty( $component['id'] ) ) continue;
+			$clean[] = [
+				'id'        => sanitize_text_field( $component['id'] ),
+				'name'      => sanitize_text_field( $component['name'] ?? 'Component' ),
+				'createdAt' => isset( $component['createdAt'] ) ? intval( $component['createdAt'] ) : 0,
+				'updatedAt' => isset( $component['updatedAt'] ) ? intval( $component['updatedAt'] ) : 0,
+				'snapshot'  => is_array( $component['snapshot'] ?? null ) ? $component['snapshot'] : [],
+			];
+		}
+
+		update_option( '_fb_component_library', wp_json_encode( $clean ) );
 		return rest_ensure_response( [ 'success' => true ] );
 	}
 }

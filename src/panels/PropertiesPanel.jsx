@@ -441,6 +441,7 @@ function ResetBtn({ show, onReset }) {
 
 export default function PropertiesPanel() {
   const selection           = useEditorStore(s => s.selection);
+  const activeSurface       = useEditorStore(s => s.activeSurface);
   const element             = useEditorStore(s => s.getSelectedElement());
   const updateElementLayout = useEditorStore(s => s.updateElementLayout);
   const updateStyles        = useEditorStore(s => s.updateElementStyles);
@@ -463,7 +464,7 @@ export default function PropertiesPanel() {
   const removeStyleOverrideFn   = useEditorStore(s => s.removeStyleOverride);
 
   // Show artboard panel when artboard is selected and no element is selected
-  if (!element && artboardSel && bpDefs[artboardSel]) {
+  if (activeSurface !== 'component' && !element && artboardSel && bpDefs[artboardSel]) {
     const bp = bpDefs[artboardSel];
     const rawBg       = page?.background?.[artboardSel] ?? null;   // null = inherit
     const effectiveBg = resolveBackground(page?.background, artboardSel);
@@ -656,6 +657,37 @@ export default function PropertiesPanel() {
   const artboardLayout = resolvePageLayout(page?.layout, bpId);
   const inAutoLayout   = !element.parentId && artboardLayout !== null;
   const isFlowInLayout = inAutoLayout && !resolved.absoluteInLayout;
+  const isComponentRoot = activeSurface === 'component' && !element.parentId;
+  const isComponentInstanceOnPage = activeSurface === 'page' && !!element.componentInstance;
+
+  if (activeSurface === 'component' && element.componentRoot) {
+    return (
+      <aside className="fb-right">
+        <div className="fb-right__header">Primary</div>
+        <div className="fb-panel-body">
+          <Section title="Size">
+            <div className="fb-quad" style={{ marginBottom: 6 }}>
+              <NumberInput
+                value={resolved.width ?? 240}
+                min={20}
+                label="W"
+                onChange={v => { updateElementLayout(element.id, bpId, { width: Math.max(20, v), widthMode: 'fixed' }); commit(); }}
+              />
+              <NumberInput
+                value={resolved.height ?? 160}
+                min={20}
+                label="H"
+                onChange={v => { updateElementLayout(element.id, bpId, { height: Math.max(20, v), heightMode: 'fixed' }); commit(); }}
+              />
+            </div>
+            <div className="fb-artboard-bp-note">
+              Primary defines the component editor size. Instances on the main canvas can still be resized independently.
+            </div>
+          </Section>
+        </div>
+      </aside>
+    );
+  }
 
   // Override helpers — only meaningful on tablet/mobile breakpoints
   const bpOv  = bpId !== 'desktop' ? (element.overrides?.[bpId] ?? {}) : {};
@@ -787,7 +819,7 @@ export default function PropertiesPanel() {
                 onChange={e => { upd('widthMode', e.target.value); commit(); }}
               >
                 <option value="fixed">Fixed px</option>
-                <option value="fill">Fill fr</option>
+                <option value="fill" disabled={isComponentRoot}>Fill fr</option>
                 <option value="relative">Relative %</option>
                 <option value="hug">Hug</option>
               </select>
@@ -810,12 +842,17 @@ export default function PropertiesPanel() {
                 onChange={e => { upd('heightMode', e.target.value); commit(); }}
               >
                 <option value="fixed">Fixed px</option>
-                <option value="fill">Fill fr</option>
+                <option value="fill" disabled={isComponentRoot}>Fill fr</option>
                 <option value="relative">Relative %</option>
                 <option value="hug">Hug</option>
               </select>
             </div>
           </div>
+          {isComponentRoot && (
+            <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
+              Top-level component layers use the free canvas. `Fill` is disabled here to avoid unbounded component width or height.
+            </div>
+          )}
           <MinMaxRow resolved={resolved} upd={upd} commit={commit} />
         </Section>
 
@@ -905,6 +942,7 @@ export default function PropertiesPanel() {
 
         {/* ── Layout (frame-specific) ────────────────────────── */}
         {element.type === 'frame' ? (() => {
+          if (isComponentInstanceOnPage) return null;
           const frameLayoutOn = s.display === 'flex';
           return (
             <Section title="Layout" action={<ResetBtn show={isSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} onReset={() => resetSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} />}>
@@ -998,18 +1036,20 @@ export default function PropertiesPanel() {
           <Section title="Layout" defaultOpen={false} />
         )}
 
+        {!isComponentInstanceOnPage && (
         <Section title="Effects" defaultOpen={false} action={<ResetBtn show={isSOv('boxShadow')} onReset={() => resetSOv('boxShadow')} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Appear</span>
             <ShadowEditor value={s.boxShadow ?? ''} onChange={v => { updS('boxShadow', v); commit(); }} />
           </div>
         </Section>
+        )}
 
         <Section title="Overlays" defaultOpen={false} />
 
         <Section title="Cursor" defaultOpen={false} />
 
-        <Section title="Styles" action={<ResetBtn show={isOv('hidden','rotation') || isSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','objectFit','zIndex')} onReset={() => { resetOv('hidden','rotation'); resetSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','objectFit','zIndex'); }} />}>
+        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','objectFit','zIndex'); } }} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Opacity</span>
             <div className="fb-slider-field">
@@ -1048,6 +1088,7 @@ export default function PropertiesPanel() {
             />
           </div>
 
+          {!isComponentInstanceOnPage && (
           <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
             <span className="fb-prop-label">Fill</span>
             <div style={{ width: '100%' }}>
@@ -1058,15 +1099,16 @@ export default function PropertiesPanel() {
               )}
             </div>
           </div>
+          )}
 
-          {element.type === 'frame' && (
+          {!isComponentInstanceOnPage && element.type === 'frame' && (
             <div className="fb-prop-row">
               <span className="fb-prop-label">Image</span>
               <MediaPickerButton value={s.backgroundImage ?? ''} onChange={v => { updS('backgroundImage', v); commit(); }} />
             </div>
           )}
 
-          {(element.type === 'image' || (element.type === 'frame' && s.backgroundImage)) && (
+          {!isComponentInstanceOnPage && (element.type === 'image' || (element.type === 'frame' && s.backgroundImage)) && (
             <div className="fb-prop-row">
               <span className="fb-prop-label">Fit</span>
               <IconGroup
@@ -1086,6 +1128,7 @@ export default function PropertiesPanel() {
             </div>
           )}
 
+          {!isComponentInstanceOnPage && (
           <div className="fb-prop-row">
             <span className="fb-prop-label">Overflow</span>
             <select
@@ -1097,7 +1140,9 @@ export default function PropertiesPanel() {
               <option value="hidden">Hidden</option>
             </select>
           </div>
+          )}
 
+          {!isComponentInstanceOnPage && (
           <div className="fb-prop-row">
             <span className="fb-prop-label">Radius</span>
             <div className="fb-style-inline-group">
@@ -1106,8 +1151,9 @@ export default function PropertiesPanel() {
               <IconButton icon={UIIcons.radiusIndependent} title="Individual corners" active={s.borderRadiusMode === 'independent'} onClick={() => { updS('borderRadiusMode', 'independent'); commit(); }} />
             </div>
           </div>
+          )}
 
-          {s.borderRadiusMode === 'independent' && (
+          {!isComponentInstanceOnPage && s.borderRadiusMode === 'independent' && (
             <div className="fb-prop-row">
               <span className="fb-prop-label" />
               <div className="fb-quad fb-quad--spaced">
@@ -1119,6 +1165,7 @@ export default function PropertiesPanel() {
             </div>
           )}
 
+          {!isComponentInstanceOnPage && (
           <div className="fb-prop-row">
             <span className="fb-prop-label">Border</span>
             {(s.borderWidth ?? 0) > 0 ? (
@@ -1142,6 +1189,7 @@ export default function PropertiesPanel() {
               </button>
             )}
           </div>
+          )}
 
           <div className="fb-prop-row">
             <span className="fb-prop-label">Z Index</span>

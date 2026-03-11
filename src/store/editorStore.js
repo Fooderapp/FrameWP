@@ -1,5 +1,20 @@
 import { create } from 'zustand';
 
+function makeId(prefix = 'id') {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function pick(obj, keys) {
+  return keys.reduce((acc, key) => {
+    if (obj && key in obj) acc[key] = obj[key];
+    return acc;
+  }, {});
+}
+
 // ── Breakpoint definitions ────────────────────────────────────
 
 const BREAKPOINTS = {
@@ -7,6 +22,138 @@ const BREAKPOINTS = {
   tablet:  { id: 'tablet',  name: 'Tablet',  icon: '📟', width: 768,  height: 1024, x: 1600, y: 120, viewportFoldH: null },
   mobile:  { id: 'mobile',  name: 'Mobile',  icon: '📱', width: 375,  height: 812,  x: 2440, y: 120, viewportFoldH: null },
 };
+
+const COMPONENT_EDITOR_BREAKPOINTS = {
+  desktop: { id: 'desktop', name: 'Component', icon: '⬢', width: 820, height: 560, x: 120, y: 120, viewportFoldH: null },
+};
+
+const COMPONENT_ROOT_LAYOUT_KEYS = [
+  'width', 'height', 'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
+  'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints',
+];
+
+function makeComponentPrimaryRoot(config = {}) {
+  return {
+    id: config.id ?? makeId('cmp-root'),
+    type: 'frame',
+    name: 'Primary',
+    parentId: null,
+    children: [],
+    componentRoot: true,
+    base: {
+      x: config.x ?? 0,
+      y: config.y ?? 0,
+      width: config.width ?? 240,
+      height: config.height ?? 160,
+      rotation: 0,
+      locked: config.locked ?? false,
+      hidden: false,
+      widthMode: config.widthMode ?? 'fixed',
+      heightMode: config.heightMode ?? 'fixed',
+      widthPct: config.widthPct ?? null,
+      heightPct: config.heightPct ?? null,
+      widthFr: config.widthFr ?? 1,
+      heightFr: config.heightFr ?? 1,
+      minW: config.minW ?? null,
+      maxW: config.maxW ?? null,
+      minH: config.minH ?? null,
+      maxH: config.maxH ?? null,
+      constraints: deepClone(config.constraints ?? { top: true, left: true, right: false, bottom: false }),
+      styles: {
+        backgroundColor: 'transparent',
+        borderRadius: 0,
+        borderWidth: 0,
+        borderColor: 'transparent',
+        borderStyle: 'solid',
+        opacity: 1,
+        overflow: 'visible',
+        display: null,
+        flexDirection: 'row',
+        flexWrap: 'nowrap',
+        gap: 0,
+        paddingTop: 0,
+        paddingRight: 0,
+        paddingBottom: 0,
+        paddingLeft: 0,
+        alignItems: 'flex-start',
+        justifyContent: 'flex-start',
+        boxShadow: '',
+        zIndex: config.zIndex ?? 1,
+      },
+    },
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
+function ensureComponentPrimaryRoot(snapshot = []) {
+  const normalized = deepClone(snapshot ?? []);
+  const root = getSnapshotRoot(normalized);
+  if (!root) return [];
+
+  normalized.forEach((el) => {
+    delete el.componentInstance;
+  });
+
+  if (root.componentRoot) {
+    root.name = 'Primary';
+    root.parentId = null;
+    root.base = {
+      ...root.base,
+      widthMode: 'fixed',
+      heightMode: 'fixed',
+    };
+    return normalized;
+  }
+
+  const rootBase = root.base ?? {};
+  const wrapper = makeComponentPrimaryRoot({
+    ...pick(rootBase, COMPONENT_ROOT_LAYOUT_KEYS),
+    zIndex: rootBase.styles?.zIndex ?? 1,
+  });
+
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const sourceOverride = root.overrides?.[bpId] ?? {};
+    const nextOverride = pick(sourceOverride, COMPONENT_ROOT_LAYOUT_KEYS);
+    const zIndex = sourceOverride.styles?.zIndex;
+    if (zIndex != null) nextOverride.styles = { zIndex };
+    if (Object.keys(nextOverride).length) wrapper.overrides[bpId] = nextOverride;
+  });
+
+  wrapper.children = [root.id];
+  root.parentId = wrapper.id;
+  root.base = { ...root.base, x: 0, y: 0 };
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const override = root.overrides?.[bpId];
+    if (!override) return;
+    root.overrides[bpId] = {
+      ...override,
+      ...(override.x != null ? { x: 0 } : {}),
+      ...(override.y != null ? { y: 0 } : {}),
+    };
+  });
+
+  return [wrapper, ...normalized];
+}
+
+function normalizeStoredComponent(component) {
+  return {
+    ...component,
+    snapshot: ensureComponentPrimaryRoot(component?.snapshot ?? []),
+  };
+}
+
+function makeComponentEditorBreakpoints(snapshot = []) {
+  const root = getSnapshotRoot(snapshot);
+  const width = Math.max(1400, Math.round((root?.base?.width ?? 420) + 720));
+  const height = Math.max(960, Math.round((root?.base?.height ?? 280) + 560));
+  return {
+    desktop: {
+      ...COMPONENT_EDITOR_BREAKPOINTS.desktop,
+      width,
+      height,
+    },
+  };
+}
 
 // Elements live in a flat page.elements array.
 // Every element has base (desktop truth) + overrides per breakpoint.
@@ -22,6 +169,23 @@ const makeDefaultPage = () => ({
   layout: { desktop: null, tablet: null, mobile: null },
   elements: [],
 });
+
+const makeComponentEditorPage = () => ({
+  ...makeDefaultPage(),
+  title: 'Component',
+  background: { desktop: '#16161c', tablet: null, mobile: null },
+  padding: { desktop: { top: 0, right: 0, bottom: 0, left: 0 }, tablet: null, mobile: null },
+});
+
+function makeEmptyComponentEditor() {
+  return {
+    isOpen: false,
+    componentId: null,
+    page: makeComponentEditorPage(),
+    breakpointDefs: deepClone(COMPONENT_EDITOR_BREAKPOINTS),
+    uiRestore: null,
+  };
+}
 
 // ── Element factory ──────────────────────────────────────────
 
@@ -160,6 +324,183 @@ export function getChildEls(elements, parentId) {
 }
 export function findEl(elements, id) { return elements.find(e => e.id === id) ?? null; }
 
+function collectSubtree(elements, rootId) {
+  const subtree = [];
+  const visit = (id) => {
+    const el = findEl(elements, id);
+    if (!el) return;
+    subtree.push(el);
+    (el.children ?? []).forEach(visit);
+  };
+  visit(rootId);
+  return subtree;
+}
+
+function getSnapshotRoot(snapshot) {
+  const idSet = new Set(snapshot.map(el => el.id));
+  return snapshot.find(el => !idSet.has(el.parentId)) ?? snapshot[0] ?? null;
+}
+
+function normalizeComponentSnapshot(subtree, rootId) {
+  const normalized = deepClone(subtree).map((el) => {
+    const next = { ...el };
+    if (el.id === rootId) next.parentId = null;
+    delete next.componentInstance;
+    return next;
+  });
+  return ensureComponentPrimaryRoot(normalized);
+}
+
+function instantiateComponentSnapshot(snapshot, {
+  targetRootId = null,
+  targetParentId = null,
+  rootPosition = null,
+  bpId = 'desktop',
+  componentInstance = null,
+} = {}) {
+  const root = getSnapshotRoot(snapshot);
+  if (!root) return [];
+
+  const idMap = {};
+  snapshot.forEach((el) => {
+    idMap[el.id] = el.id === root.id && targetRootId ? targetRootId : makeId(el.type === 'text' ? 'txt' : el.type === 'image' ? 'img' : 'fr');
+  });
+
+  return deepClone(snapshot).map((el) => {
+    const isRoot = el.id === root.id;
+    const mappedId = idMap[el.id];
+    const next = {
+      ...el,
+      id: mappedId,
+      parentId: isRoot ? targetParentId : (idMap[el.parentId] ?? null),
+      children: (el.children ?? []).map(cid => idMap[cid]).filter(Boolean),
+      overrides: deepClone(el.overrides ?? { tablet: {}, mobile: {} }),
+    };
+
+    if (bpId !== 'desktop') {
+      next.base = { ...next.base, hidden: true };
+      next.overrides = {
+        ...next.overrides,
+        [bpId]: {
+          ...(next.overrides?.[bpId] ?? {}),
+          hidden: false,
+        },
+      };
+    }
+
+    if (isRoot && rootPosition) {
+      if (bpId === 'desktop') {
+        next.base = { ...next.base, x: rootPosition.x, y: rootPosition.y };
+      } else {
+        next.overrides = {
+          ...next.overrides,
+          [bpId]: {
+            ...(next.overrides?.[bpId] ?? {}),
+            x: rootPosition.x,
+            y: rootPosition.y,
+          },
+        };
+      }
+    }
+
+    if (isRoot && componentInstance) {
+      next.componentInstance = { ...componentInstance };
+    } else {
+      delete next.componentInstance;
+    }
+
+    return next;
+  });
+}
+
+function preserveComponentRootPlacement(nextRoot, currentRoot) {
+  if (!nextRoot || !currentRoot) return nextRoot;
+  const layoutKeys = [
+    'x', 'y', 'width', 'height', 'rotation',
+    'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
+    'minW', 'maxW', 'minH', 'maxH',
+    'hidden', 'locked', 'positionType', 'absoluteInLayout', 'constraints',
+  ];
+  const result = {
+    ...nextRoot,
+    parentId: currentRoot.parentId ?? null,
+    base: { ...nextRoot.base, ...pick(currentRoot.base ?? {}, layoutKeys) },
+    componentInstance: currentRoot.componentInstance ? { ...currentRoot.componentInstance } : nextRoot.componentInstance,
+    overrides: deepClone(nextRoot.overrides ?? { tablet: {}, mobile: {} }),
+  };
+
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const preserved = pick(currentRoot.overrides?.[bpId] ?? {}, [
+      'x', 'y', 'width', 'height', 'rotation',
+      'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
+      'minW', 'maxW', 'minH', 'maxH',
+      'hidden', 'positionType', 'absoluteInLayout', 'constraints',
+    ]);
+    if (Object.keys(preserved).length) {
+      result.overrides = {
+        ...result.overrides,
+        [bpId]: {
+          ...(result.overrides?.[bpId] ?? {}),
+          ...preserved,
+        },
+      };
+    }
+  });
+
+  return result;
+}
+
+function replaceSubtree(elements, rootId, nextSubtree) {
+  const currentRoot = findEl(elements, rootId);
+  if (!currentRoot || !nextSubtree.length) return elements;
+
+  const toDelete = new Set();
+  const visit = (id) => {
+    toDelete.add(id);
+    const el = findEl(elements, id);
+    (el?.children ?? []).forEach(visit);
+  };
+  visit(rootId);
+
+  const rootNext = getSnapshotRoot(nextSubtree);
+  const rootOrder = elements.filter(el => !el.parentId).map(el => el.id);
+  const rootInsertIndex = currentRoot.parentId == null ? rootOrder.indexOf(rootId) : -1;
+  const filtered = elements
+    .filter(el => !toDelete.has(el.id))
+    .map(el => ({ ...el, children: (el.children ?? []).filter(cid => !toDelete.has(cid) || cid === rootId) }));
+
+  const replaced = filtered.map((el) => {
+    if (el.id !== currentRoot.parentId) return el;
+    const existing = (el.children ?? []).filter(cid => cid !== rootId);
+    const insertIndex = (currentRoot.parentId ? (el.children ?? []).indexOf(rootId) : -1);
+    const nextChildren = [...existing];
+    if (insertIndex >= 0) nextChildren.splice(insertIndex, 0, rootNext.id);
+    else nextChildren.push(rootNext.id);
+    return { ...el, children: nextChildren };
+  });
+
+  if (currentRoot.parentId == null) {
+    const rootIdsAfter = replaced.filter(el => !el.parentId).map(el => el.id);
+    const insertionIndex = rootInsertIndex >= 0 ? Math.min(rootInsertIndex, rootIdsAfter.length) : rootIdsAfter.length;
+    const rootIdSet = new Set(rootIdsAfter);
+    const rootEntries = replaced.filter(el => !el.parentId);
+    const nestedEntries = replaced.filter(el => el.parentId);
+    const nextRootEntries = nextSubtree.filter(el => !el.parentId);
+    const nextNestedEntries = nextSubtree.filter(el => el.parentId);
+    const orderedRoots = [...rootEntries];
+    orderedRoots.splice(insertionIndex, 0, ...nextRootEntries);
+    return [...orderedRoots, ...nestedEntries, ...nextNestedEntries.filter(el => !rootIdSet.has(el.id))];
+  }
+
+  return replaced.concat(nextSubtree);
+}
+
+function upsertComponent(components, component) {
+  const exists = components.some(item => item.id === component.id);
+  if (exists) return components.map(item => item.id === component.id ? component : item);
+  return [...components, component];
+}
+
 // ── History helpers ──────────────────────────────────────────
 
 function snapshot(pages) { return JSON.stringify(pages); }
@@ -170,15 +511,37 @@ const MAX_HISTORY = 60;
 export const useEditorStore = create((set, get) => {
   // Helper: update elements array of current page
   const withPage = (updater) =>
-    set(state => ({
-      pages: state.pages.map(p =>
-        p.id === state.currentPageId ? { ...p, elements: updater(p.elements) } : p
-      ),
-    }));
+    set(state => {
+      if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            page: {
+              ...state.componentEditor.page,
+              elements: updater(state.componentEditor.page?.elements ?? []),
+            },
+          },
+        };
+      }
+      return {
+        pages: state.pages.map(p =>
+          p.id === state.currentPageId ? { ...p, elements: updater(p.elements) } : p
+        ),
+      };
+    });
 
   const getEls = () => {
     const s = get();
+    if (s.activeSurface === 'component' && s.componentEditor?.isOpen) {
+      return s.componentEditor.page?.elements ?? [];
+    }
     return s.pages.find(p => p.id === s.currentPageId)?.elements ?? [];
+  };
+
+  const getActivePage = () => {
+    const s = get();
+    if (s.activeSurface === 'component' && s.componentEditor?.isOpen) return s.componentEditor.page;
+    return s.pages.find(p => p.id === s.currentPageId) ?? s.pages[0];
   };
 
   return {
@@ -192,10 +555,240 @@ export const useEditorStore = create((set, get) => {
     pages: [makeDefaultPage()],
     currentPageId: 'page-1',
     breakpointDefs: BREAKPOINTS,
+    activeSurface: 'page',
+    componentEditor: makeEmptyComponentEditor(),
 
     // ── Color styles (site-wide) ───────────────────────────
     colorStyles: [],
     setColorStyles: (styles) => set({ colorStyles: styles }),
+
+    // ── Components (site-wide) ─────────────────────────────
+    components: [],
+    setComponents: (components) => set({ components }),
+
+    async loadComponents() {
+      try {
+        if (window.fbData?.restUrl) {
+          const nonce = window.fbData.nonce;
+          const url = window.fbData.restUrl + 'components?_wpnonce=' + encodeURIComponent(nonce);
+          const res = await fetch(url, {
+            credentials: 'same-origin',
+            headers: { 'X-WP-Nonce': nonce },
+          });
+          const data = await res.json();
+          if (data.success && Array.isArray(data.components)) {
+            set({ components: data.components.map(normalizeStoredComponent) });
+          }
+        } else {
+          const stored = localStorage.getItem('fb_component_library');
+          if (stored) set({ components: JSON.parse(stored).map(normalizeStoredComponent) });
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] loadComponents failed', e);
+      }
+    },
+
+    async saveComponents(components) {
+      const normalizedComponents = components.map(normalizeStoredComponent);
+      set({ components: normalizedComponents });
+      try {
+        if (window.fbData?.restUrl) {
+          const nonce = window.fbData.nonce;
+          const url = window.fbData.restUrl + 'components?_wpnonce=' + encodeURIComponent(nonce);
+          await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce },
+            body: JSON.stringify({ components: normalizedComponents }),
+          });
+        } else {
+          localStorage.setItem('fb_component_library', JSON.stringify(normalizedComponents));
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] saveComponents failed', e);
+      }
+    },
+
+    createComponentFromElement(elementId, name) {
+      const elements = get().pages.find(p => p.id === get().currentPageId)?.elements ?? [];
+      const rootEl = findEl(elements, elementId);
+      if (!rootEl) return null;
+      const activeBpId = get().selection?.bpId ?? 'desktop';
+      const resolvedRoot = resolveElement(rootEl, activeBpId);
+
+      const subtree = collectSubtree(elements, elementId);
+      const componentId = makeId('cmp');
+      const now = Date.now();
+      const component = {
+        id: componentId,
+        name: name?.trim() || rootEl.name || 'Component',
+        createdAt: now,
+        updatedAt: now,
+        snapshot: normalizeComponentSnapshot(subtree, elementId),
+      };
+
+      const nextComponents = upsertComponent(get().components, component);
+      get().saveComponents(nextComponents);
+
+      const instantiated = instantiateComponentSnapshot(component.snapshot, {
+        targetRootId: elementId,
+        targetParentId: rootEl.parentId ?? null,
+        rootPosition: { x: resolvedRoot.x ?? rootEl.base?.x ?? 0, y: resolvedRoot.y ?? rootEl.base?.y ?? 0 },
+        bpId: activeBpId,
+        componentInstance: { componentId, role: 'main' },
+      });
+      const wrapperRoot = getSnapshotRoot(instantiated);
+      const patched = instantiated.map((el) => (
+        el.id === wrapperRoot?.id ? preserveComponentRootPlacement(el, rootEl) : el
+      ));
+      withPage(els => replaceSubtree(els, elementId, patched));
+      set({ selection: { elementId, bpId: get().selection?.bpId ?? 'desktop' }, artboardSel: null });
+
+      return { componentId };
+    },
+
+    insertComponentInstance(componentId, { x = 80, y = 80, bpId = 'desktop', parentId = null } = {}) {
+      const component = get().components.find(item => item.id === componentId);
+      if (!component?.snapshot?.length) return null;
+
+      const instantiated = instantiateComponentSnapshot(ensureComponentPrimaryRoot(component.snapshot), {
+        targetParentId: parentId,
+        rootPosition: { x, y },
+        bpId,
+        componentInstance: { componentId, role: 'instance' },
+      });
+      const root = getSnapshotRoot(instantiated);
+      if (!root) return null;
+
+      withPage((els) => {
+        let next = [...els, ...instantiated];
+        if (parentId) {
+          next = next.map(el => (
+            el.id === parentId
+              ? { ...el, children: [...(el.children ?? []), root.id] }
+              : el
+          ));
+        }
+        return next;
+      });
+      set({ selection: { elementId: root.id, bpId } });
+      return root.id;
+    },
+
+    applyComponentToInstances(componentId) {
+      const component = get().components.find(item => item.id === componentId);
+      if (!component?.snapshot?.length) return;
+      const normalizedSnapshot = ensureComponentPrimaryRoot(component.snapshot);
+
+      withPage((els) => {
+        let nextEls = els;
+        const roots = nextEls.filter(el => el.componentInstance?.componentId === componentId);
+        roots.forEach((rootEl) => {
+          const instantiated = instantiateComponentSnapshot(normalizedSnapshot, {
+            targetRootId: rootEl.id,
+            targetParentId: rootEl.parentId ?? null,
+            componentInstance: { ...(rootEl.componentInstance ?? {}), componentId },
+          });
+          const rootNext = getSnapshotRoot(instantiated);
+          if (!rootNext) return;
+          const patched = instantiated.map(el => (
+            el.id === rootNext.id ? preserveComponentRootPlacement(el, rootEl) : el
+          ));
+          nextEls = replaceSubtree(nextEls, rootEl.id, patched);
+        });
+        return nextEls;
+      });
+    },
+
+    deleteComponent(componentId) {
+      const nextComponents = get().components.filter(component => component.id !== componentId);
+      get().saveComponents(nextComponents);
+      withPage((els) => els.map((el) => {
+        if (el.componentInstance?.componentId !== componentId) return el;
+        const next = { ...el };
+        delete next.componentInstance;
+        return next;
+      }));
+
+      const state = get();
+      if (state.componentEditor?.isOpen && state.componentEditor.componentId === componentId) {
+        set({
+          activeSurface: 'page',
+          selection: state.componentEditor.uiRestore?.selection ?? null,
+          artboardSel: state.componentEditor.uiRestore?.artboardSel ?? null,
+          hoveredId: state.componentEditor.uiRestore?.hoveredId ?? null,
+          drilledContainerId: state.componentEditor.uiRestore?.drilledContainerId ?? null,
+          pendingDraw: state.componentEditor.uiRestore?.pendingDraw ?? null,
+          leftTab: state.componentEditor.uiRestore?.leftTab ?? 'layers',
+          breakpointDefs: state.componentEditor.uiRestore?.breakpointDefs ?? BREAKPOINTS,
+          componentEditor: makeEmptyComponentEditor(),
+        });
+      }
+    },
+
+    openComponentEditor(componentId) {
+      const component = get().components.find(item => item.id === componentId);
+      if (!component) return;
+      const normalizedComponent = normalizeStoredComponent(component);
+      const componentBreakpoints = makeComponentEditorBreakpoints(normalizedComponent.snapshot ?? []);
+
+      const state = get();
+      const uiRestore = {
+        selection: state.selection,
+        artboardSel: state.artboardSel,
+        hoveredId: state.hoveredId,
+        drilledContainerId: state.drilledContainerId,
+        pendingDraw: state.pendingDraw,
+        leftTab: state.leftTab,
+        breakpointDefs: deepClone(state.breakpointDefs),
+      };
+
+      set({
+        activeSurface: 'component',
+        breakpointDefs: deepClone(componentBreakpoints),
+        leftTab: 'layers',
+        selection: null,
+        artboardSel: null,
+        hoveredId: null,
+        drilledContainerId: null,
+        pendingDraw: null,
+        componentEditor: {
+          isOpen: true,
+          componentId,
+          page: {
+            ...makeComponentEditorPage(),
+            title: normalizedComponent.name,
+            elements: deepClone(normalizedComponent.snapshot ?? []),
+          },
+          breakpointDefs: deepClone(componentBreakpoints),
+          uiRestore,
+        },
+      });
+    },
+
+    closeComponentEditor() {
+      const state = get();
+      if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return;
+      const current = state.componentEditor;
+      const nextComponents = state.components.map(component => (
+        component.id === current.componentId
+          ? { ...component, updatedAt: Date.now(), snapshot: ensureComponentPrimaryRoot(current.page.elements ?? []) }
+          : component
+      ));
+      set({
+        activeSurface: 'page',
+        selection: current.uiRestore?.selection ?? null,
+        artboardSel: current.uiRestore?.artboardSel ?? null,
+        hoveredId: current.uiRestore?.hoveredId ?? null,
+        drilledContainerId: current.uiRestore?.drilledContainerId ?? null,
+        pendingDraw: current.uiRestore?.pendingDraw ?? null,
+        leftTab: current.uiRestore?.leftTab ?? 'layers',
+        breakpointDefs: current.uiRestore?.breakpointDefs ?? BREAKPOINTS,
+        componentEditor: makeEmptyComponentEditor(),
+      });
+      get().saveComponents(nextComponents);
+      get().applyComponentToInstances(current.componentId);
+    },
 
     async loadColorStyles() {
       try {
@@ -259,8 +852,7 @@ export const useEditorStore = create((set, get) => {
 
     // ── Getters ────────────────────────────────────────────
     getCurrentPage() {
-      const s = get();
-      return s.pages.find(p => p.id === s.currentPageId) ?? s.pages[0];
+      return getActivePage();
     },
     getAllElements() { return getEls(); },
     getRootElements() { return getRootElements(getEls()); },
@@ -391,67 +983,129 @@ export const useEditorStore = create((set, get) => {
 
     /** Update artboard position/size/name in breakpointDefs */
     updateBreakpointDef(bpId, updates) {
-      set(state => ({
-        breakpointDefs: {
-          ...state.breakpointDefs,
-          [bpId]: { ...state.breakpointDefs[bpId], ...updates },
-        },
-      }));
+      set(state => {
+        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
+          return {
+            breakpointDefs: {
+              ...state.componentEditor.breakpointDefs,
+              [bpId]: { ...state.componentEditor.breakpointDefs[bpId], ...updates },
+            },
+            componentEditor: {
+              ...state.componentEditor,
+              breakpointDefs: {
+                ...state.componentEditor.breakpointDefs,
+                [bpId]: { ...state.componentEditor.breakpointDefs[bpId], ...updates },
+              },
+            },
+          };
+        }
+        return {
+          breakpointDefs: {
+            ...state.breakpointDefs,
+            [bpId]: { ...state.breakpointDefs[bpId], ...updates },
+          },
+        };
+      });
     },
 
     /** Update page background color for a specific breakpoint */
     setPageBackground(bpId, color) {
-      set(state => ({
-        pages: state.pages.map(p =>
-          p.id === state.currentPageId
-            ? { ...p, background: { ...p.background, [bpId]: color } }
-            : p
-        ),
-      }));
+      set(state => {
+        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
+          return {
+            componentEditor: {
+              ...state.componentEditor,
+              page: {
+                ...state.componentEditor.page,
+                background: { ...state.componentEditor.page.background, [bpId]: color },
+              },
+            },
+          };
+        }
+        return {
+          pages: state.pages.map(p =>
+            p.id === state.currentPageId
+              ? { ...p, background: { ...p.background, [bpId]: color } }
+              : p
+          ),
+        };
+      });
     },
 
     /** Update page padding for a specific breakpoint (null = inherit from parent) */
     setPagePadding(bpId, padObj) {
-      set(state => ({
-        pages: state.pages.map(p =>
-          p.id === state.currentPageId
-            ? { ...p, padding: { ...(p.padding ?? {}), [bpId]: padObj } }
-            : p
-        ),
-      }));
+      set(state => {
+        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
+          return {
+            componentEditor: {
+              ...state.componentEditor,
+              page: {
+                ...state.componentEditor.page,
+                padding: { ...(state.componentEditor.page.padding ?? {}), [bpId]: padObj },
+              },
+            },
+          };
+        }
+        return {
+          pages: state.pages.map(p =>
+            p.id === state.currentPageId
+              ? { ...p, padding: { ...(p.padding ?? {}), [bpId]: padObj } }
+              : p
+          ),
+        };
+      });
     },
 
     /** Update page layout for a specific breakpoint (null = inherit / disabled) */
     setPageLayout(bpId, layoutObj) {
-      set(state => ({
-        pages: state.pages.map(p =>
-          p.id === state.currentPageId
-            ? {
-                ...p,
-                layout: { ...(p.layout ?? {}), [bpId]: layoutObj },
-                elements: layoutObj == null ? p.elements : p.elements.map(el => {
-                  const resolved = resolveElement(el, bpId);
-                  const shouldNormalizeToFlow = !el.parentId
-                    && !resolved.absoluteInLayout
-                    && resolved.positionType !== 'fixed'
-                    && resolved.positionType !== 'relative';
-                  if (!shouldNormalizeToFlow) return el;
-                  if (bpId === 'desktop') {
-                    return { ...el, base: { ...el.base, positionType: 'relative' } };
-                  }
-                  const ov = el.overrides?.[bpId] ?? {};
-                  return {
-                    ...el,
-                    overrides: {
-                      ...el.overrides,
-                      [bpId]: { ...ov, positionType: 'relative' },
-                    },
-                  };
-                }),
-              }
-            : p
-        ),
-      }));
+      set(state => {
+        const normalizeElements = (elements) => (
+          layoutObj == null ? elements : elements.map(el => {
+            const resolved = resolveElement(el, bpId);
+            const shouldNormalizeToFlow = !el.parentId
+              && !resolved.absoluteInLayout
+              && resolved.positionType !== 'fixed'
+              && resolved.positionType !== 'relative';
+            if (!shouldNormalizeToFlow) return el;
+            if (bpId === 'desktop') {
+              return { ...el, base: { ...el.base, positionType: 'relative' } };
+            }
+            const ov = el.overrides?.[bpId] ?? {};
+            return {
+              ...el,
+              overrides: {
+                ...el.overrides,
+                [bpId]: { ...ov, positionType: 'relative' },
+              },
+            };
+          })
+        );
+
+        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
+          return {
+            componentEditor: {
+              ...state.componentEditor,
+              page: {
+                ...state.componentEditor.page,
+                layout: { ...(state.componentEditor.page.layout ?? {}), [bpId]: layoutObj },
+                elements: normalizeElements(state.componentEditor.page.elements ?? []),
+              },
+            },
+          };
+        }
+
+        return {
+          pages: state.pages.map(p =>
+            p.id === state.currentPageId
+              ? {
+                  ...p,
+                  layout: { ...(p.layout ?? {}), [bpId]: layoutObj },
+                  elements: normalizeElements(p.elements),
+                }
+              : p
+          ),
+        };
+      });
     },
 
     toggleElementVisibility(elementId, bpId) {

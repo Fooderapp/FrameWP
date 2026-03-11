@@ -51,6 +51,7 @@ export default function Artboard({
   onStartPaddingDrag,
   reorderTarget,
   dropTargetId,
+  surfaceMode = 'artboard',
 }) {
   const allElements      = useEditorStore(s => s.getAllElements());
   const breakpointDefs   = useEditorStore(s => s.breakpointDefs);
@@ -63,6 +64,7 @@ export default function Artboard({
   const resolvedLayout   = resolvePageLayout(page?.layout, bp.id);
   const layoutOn         = resolvedLayout !== null;
   const scale            = useEditorStore(s => s.viewport.scale);
+  const isComponentSurface = surfaceMode === 'component';
 
   // Root-level elements only (parentId === null)
   const rootEls = allElements.filter(e => !e.parentId);
@@ -101,7 +103,7 @@ export default function Artboard({
   const handleBoardClick = (e) => {
     if (e.target === e.currentTarget) {
       setSelection(null);
-      onSelectArtboard(bp.id);
+      if (!isComponentSurface) onSelectArtboard(bp.id);
     }
   };
   const handleContentClick = handleBoardClick;
@@ -143,40 +145,42 @@ export default function Artboard({
     /* Group: positioned so content starts at (bp.x, bp.y), header is above */
     <div
       className="fb-artboard-group"
-      style={{ left: bp.x, top: bp.y - HEADER_H / scale }}
+      style={{ left: bp.x, top: isComponentSurface ? bp.y : bp.y - HEADER_H / scale }}
     >
-      {/* Draggable header */}
-      <div
-        className={`fb-artboard-header${isArtboardSelected ? ' fb-artboard-header--selected' : ''}`}
-        style={{ width: bp.width }}
-        onMouseDown={(e) => {
-          if (e.target.tagName === 'INPUT') return;
-          e.stopPropagation();
-          onSelectArtboard(bp.id);
-          onStartArtboardDrag(e, bp.id);
-        }}
-      >
-        <span className="fb-artboard-header__name">{bp.name}</span>
-        <ArtboardNumInput
-          value={bp.width}
-          min={100}
-          onChange={v => updateBreakpointDef(bp.id, { width: v })}
-        />
-        <span className="fb-artboard-header__unit">W</span>
-        <ArtboardNumInput
-          value={bp.height}
-          min={100}
-          onChange={v => updateBreakpointDef(bp.id, { height: v })}
-        />
-        <span className="fb-artboard-header__unit">H</span>
-      </div>
+      {!isComponentSurface && (
+        <div
+          className={`fb-artboard-header${isArtboardSelected ? ' fb-artboard-header--selected' : ''}`}
+          style={{ width: bp.width }}
+          onMouseDown={(e) => {
+            if (e.target.tagName === 'INPUT') return;
+            e.stopPropagation();
+            onSelectArtboard(bp.id);
+            onStartArtboardDrag(e, bp.id);
+          }}
+        >
+          <span className="fb-artboard-header__name">{bp.name}</span>
+          <ArtboardNumInput
+            value={bp.width}
+            min={100}
+            onChange={v => updateBreakpointDef(bp.id, { width: v })}
+          />
+          <span className="fb-artboard-header__unit">W</span>
+          <ArtboardNumInput
+            value={bp.height}
+            min={100}
+            onChange={v => updateBreakpointDef(bp.id, { height: v })}
+          />
+          <span className="fb-artboard-header__unit">H</span>
+        </div>
+      )}
 
       {/* Artboard content — overflow:hidden clips on-canvas elements */}
       <div
         className={`fb-artboard${isArtboardSelected ? ' fb-artboard--selected' : ''}`}
         data-bp={bp.id}
-        style={{ width: bp.width, height: bp.height, background }}
+        style={{ width: bp.width, height: bp.height, background: isComponentSurface ? 'transparent' : background }}
         onClick={handleBoardClick}
+        data-surface-mode={surfaceMode}
       >
         {/* Content area */}
         <div
@@ -235,7 +239,7 @@ export default function Artboard({
           )}
         </div>
         {/* Artboard padding visual handles — shaded zones + pink drag lines */}
-        {isArtboardSelected && onStartArtboardPaddingDrag && (
+        {!isComponentSurface && isArtboardSelected && onStartArtboardPaddingDrag && (
           <>
             {/* Padding zone shading */}
             <div className="fb-pad-zone fb-pad-zone--top"    style={{ height: resolvedPad.top }} />
@@ -250,7 +254,7 @@ export default function Artboard({
           </>
         )}
         {/* Gap handles — shown when auto-layout is on and artboard is selected */}
-        {isArtboardSelected && layoutOn && onStartArtboardGapDrag && gapHandles.map((h, idx) => {
+        {!isComponentSurface && isArtboardSelected && layoutOn && onStartArtboardGapDrag && gapHandles.map((h, idx) => {
           const isRow = resolvedLayout?.flexDirection === 'row';
           const gap   = resolvedLayout?.gap ?? 0;
           return (
@@ -299,7 +303,7 @@ export default function Artboard({
         <div style={{
           position: 'absolute',
           left: 0,
-          top: HEADER_H / scale,
+          top: isComponentSurface ? 0 : HEADER_H / scale,
           width: 0,
           height: 0,
           overflow: 'visible',
@@ -323,14 +327,16 @@ export default function Artboard({
       )}
 
       {/* Bottom resize handle */}
-      <div
-        className="fb-artboard-resize-handle"
-        onMouseDown={(e) => {
-          e.stopPropagation();
-          onSelectArtboard(bp.id);
-          onStartArtboardResize(e, bp.id);
-        }}
-      />
+      {!isComponentSurface && (
+        <div
+          className="fb-artboard-resize-handle"
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            onSelectArtboard(bp.id);
+            onStartArtboardResize(e, bp.id);
+          }}
+        />
+      )}
     </div>
   );
 }

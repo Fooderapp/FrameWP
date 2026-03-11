@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
+import { UIIcons } from '../components/UIIcons';
 
 const Icons = {
   frame: (
@@ -65,6 +66,7 @@ const Icons = {
 };
 
 function getIconForElement(el, bpId) {
+  if (el.componentInstance) return UIIcons.component;
   if (el.type !== 'frame') return Icons[el.type] ?? Icons.frame;
   const resolved = resolveElement(el, bpId || 'desktop');
   if (resolved.styles?.display === 'flex') {
@@ -89,6 +91,9 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
   const setHoveredId      = useEditorStore(s => s.setHoveredId);
   const toggleVisibility  = useEditorStore(s => s.toggleElementVisibility);
   const updateElementBase = useEditorStore(s => s.updateElementBase);
+  const openComponentEditor = useEditorStore(s => s.openComponentEditor);
+  const activeSurface       = useEditorStore(s => s.activeSurface);
+  const components          = useEditorStore(s => s.components);
   const children          = useEditorStore(s => s.getChildElements(el.id));
   const [expanded, setExpanded] = useState(true);
   const [renaming, setRenaming] = useState(false);
@@ -99,6 +104,14 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
   const isSel = selection?.elementId === el.id;
   const isHov = hoveredId === el.id;
   const resolved = resolveElement(el, bpId || 'desktop');
+  const isMainSurfaceComponent = activeSurface === 'page' && !!el.componentInstance;
+  const componentMeta = el.componentInstance?.componentId
+    ? components.find((component) => component.id === el.componentInstance.componentId)
+    : null;
+  const displayName = activeSurface === 'component' && el.componentRoot
+    ? 'Primary'
+    : (isMainSurfaceComponent ? (componentMeta?.name || el.base?.name || el.type) : (el.base?.name || el.type));
+  const visibleChildren = isMainSurfaceComponent ? [] : children;
 
   useEffect(() => {
     if (isSel && itemRef.current) {
@@ -154,7 +167,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
     <>
       <div
         ref={itemRef}
-        className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${isHov && !isSel ? ' fb-layer-item--hovered' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}${dragOverPart === 'before' ? ' fb-layer-item--drag-before' : ''}${dragOverPart === 'after' ? ' fb-layer-item--drag-after' : ''}${dragOverPart === 'into' ? ' fb-layer-item--drag-into' : ''}`}
+        className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${isHov && !isSel ? ' fb-layer-item--hovered' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}${el.componentInstance ? ' fb-layer-item--component' : ''}${dragOverPart === 'before' ? ' fb-layer-item--drag-before' : ''}${dragOverPart === 'after' ? ' fb-layer-item--drag-after' : ''}${dragOverPart === 'into' ? ' fb-layer-item--drag-into' : ''}`}
         style={{ paddingLeft: 12 + depth * 16 }}
         draggable
         onClick={() => setSelection({ elementId: el.id, bpId: bpId || 'desktop' })}
@@ -165,7 +178,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {children.length > 0 ? (
+        {visibleChildren.length > 0 ? (
           <span
             style={{ cursor: 'pointer', marginRight: 4, fontSize: 9, color: 'var(--text-muted)' }}
             onClick={(e) => { e.stopPropagation(); setExpanded(v => !v); }}
@@ -175,7 +188,17 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
         ) : (
           <span style={{ display: 'inline-block', width: 13 }} />
         )}
-        <span className="fb-layer-icon">{getIconForElement(el, bpId)}</span>
+        <span
+          className="fb-layer-icon"
+          onDoubleClick={el.componentInstance?.componentId
+            ? (e) => {
+                e.stopPropagation();
+                openComponentEditor(el.componentInstance.componentId);
+              }
+            : undefined}
+        >
+          {getIconForElement(el, bpId)}
+        </span>
         {renaming ? (
           <input
             className="fb-layer-rename"
@@ -196,7 +219,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
             style={{ opacity: resolved.hidden ? 0.4 : 1 }}
             onDoubleClick={startRename}
           >
-            {el.base?.name || el.type}
+            {displayName}
           </span>
         )}
         <span className={`fb-layer-vis${resolved.hidden ? ' fb-layer-vis--visible' : ''}`}
@@ -209,7 +232,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
           {resolved.hidden ? Icons.eyeOff : Icons.eye}
         </span>
       </div>
-      {expanded && children.map(child => (
+      {expanded && visibleChildren.map(child => (
         <LayerItem
           key={child.id}
           el={child}
@@ -226,6 +249,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
 export default function LayersPanel() {
   const allElements     = useEditorStore(s => s.getAllElements());
   const bpDefs          = useEditorStore(s => s.breakpointDefs);
+  const activeSurface   = useEditorStore(s => s.activeSurface);
   const reparentElement        = useEditorStore(s => s.reparentElement);
   const ejectElement           = useEditorStore(s => s.ejectElement);
   const reorderElementInParent = useEditorStore(s => s.reorderElementInParent);
@@ -295,6 +319,17 @@ export default function LayersPanel() {
       onDrop={handleRootDrop}
       style={{ minHeight: '100%' }}
     >
+      {activeSurface === 'component' ? (
+        <>
+          {rootEls.map(el => (
+            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} />
+          ))}
+          {rootEls.length === 0 && (
+            <div className="fb-layers-empty fb-layers-empty--bp">No elements</div>
+          )}
+        </>
+      ) : (
+        <>
       {BP_ORDER.map(bpId => {
         const bp = bpDefs[bpId];
         if (!bp) return null;
@@ -348,6 +383,8 @@ export default function LayersPanel() {
             <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas onReparent={handleReparent} onReorder={handleReorder} />
           ))}
         </div>
+      )}
+        </>
       )}
     </div>
   );

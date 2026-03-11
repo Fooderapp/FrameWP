@@ -29,6 +29,7 @@ export const UIIcons = {
   publish: <Svg><path d="M12 4v11" /><path d="M8 8l4-4 4 4" /><path d="M5 20h14" /></Svg>,
   layers: <Svg><path d="M12 4l8 4-8 4-8-4 8-4z" /><path d="M4 12l8 4 8-4" /><path d="M4 16l8 4 8-4" /></Svg>,
   elements: <Svg><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></Svg>,
+  component: <Svg><rect x="4" y="6" width="8" height="8" rx="2" /><path d="M14 9h6M17 6v6" /></Svg>,
   close: <Svg><path d="M6 6l12 12M18 6L6 18" /></Svg>,
   trash: <Svg><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 12h10l1-12" /><path d="M9 7V4h6v3" /></Svg>,
   image: <Svg><rect x="4" y="5" width="16" height="14" rx="2" /><circle cx="9" cy="10" r="1.5" /><path d="M5 17l5-5 3 3 3-4 3 6" /></Svg>,

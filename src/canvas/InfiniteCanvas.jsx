@@ -123,6 +123,44 @@ function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onPaste, onDel
       >
         Delete
       </button>
+      <button
+        type="button"
+        className="fb-context-menu__item"
+        onClick={() => { menu.onCreateComponent?.(); onClose(); }}
+        disabled={!menu.elementId}
+      >
+        Create Component
+      </button>
+    </div>
+  );
+}
+
+function ComponentCreateModal({ defaultName, onCancel, onSubmit }) {
+  const [name, setName] = useState(defaultName || 'Component');
+
+  return (
+    <div className="fb-overlay-modal" onMouseDown={(e) => e.target === e.currentTarget && onCancel()}>
+      <div className="fb-overlay-modal__card" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="fb-overlay-modal__head">Create component</div>
+        <div className="fb-overlay-modal__body">
+          <label className="fb-overlay-modal__label">Component name</label>
+          <input
+            className="fb-prop-input"
+            autoFocus
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onSubmit(name);
+              if (e.key === 'Escape') onCancel();
+            }}
+          />
+        </div>
+        <div className="fb-overlay-modal__actions">
+          <button type="button" className="fb-secondary-btn" onClick={onCancel}>Cancel</button>
+          <button type="button" className="fb-primary-btn" onClick={() => onSubmit(name)}>Create</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -159,7 +197,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const selection              = useEditorStore(s => s.selection);
   const bpDefs                 = useEditorStore(s => s.breakpointDefs);
   const allElements            = useEditorStore(s => s.getAllElements());
-  const page                   = useEditorStore(s => s.pages?.find(p => p.id === s.currentPageId));
+  const page                   = useEditorStore(s => s.getCurrentPage());
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const setSelection           = useEditorStore(s => s.setSelection);
   const viewport               = useEditorStore(s => s.viewport);
@@ -291,7 +329,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
         />
       ))}
       <div
-        className="fb-sel-overlay"
+        className={`fb-sel-overlay${el.componentInstance ? ' fb-sel-overlay--component' : ''}`}
         style={{
           left: worldX, top: worldY, width: overlayW, height: overlayH,
           transform: rotation ? `rotate(${rotation}deg)` : undefined,
@@ -373,6 +411,7 @@ export default function InfiniteCanvas() {
 
   const viewport      = useEditorStore(s => s.viewport);
   const setViewport   = useEditorStore(s => s.setViewport);
+  const activeSurface = useEditorStore(s => s.activeSurface);
   const bpDefs        = useEditorStore(s => s.breakpointDefs);
   const setSelection  = useEditorStore(s => s.setSelection);
   const setArtboardSel = useEditorStore(s => s.setArtboardSel);
@@ -380,6 +419,9 @@ export default function InfiniteCanvas() {
   const setDrilled     = useEditorStore(s => s.setDrilledContainerId);
   const addElement          = useEditorStore(s => s.addElement);
   const addElements         = useEditorStore(s => s.addElements);
+  const createComponentFromElement = useEditorStore(s => s.createComponentFromElement);
+  const insertComponentInstance = useEditorStore(s => s.insertComponentInstance);
+  const openComponentEditor = useEditorStore(s => s.openComponentEditor);
   const deleteElement       = useEditorStore(s => s.deleteElement);
   const reparentElement      = useEditorStore(s => s.reparentElement);
   const pushHistory          = useEditorStore(s => s.pushHistory);
@@ -409,6 +451,7 @@ export default function InfiniteCanvas() {
   const [alignmentGuides,  setAlignmentGuides]  = useState([]); // [{ orientation, x?, y?, start, end }]
   const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
   const [contextMenu,      setContextMenu]      = useState(null);
+  const [componentModal,   setComponentModal]   = useState(null);
   const clipboard = useRef(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
@@ -846,7 +889,7 @@ export default function InfiniteCanvas() {
     const elementNode = e.target.closest('[data-id]');
     const elementId = elementNode?.dataset.id ?? null;
     const bp = useEditorStore.getState().breakpointDefs[bpId];
-    const page = useEditorStore.getState().pages?.find(p => p.id === useEditorStore.getState().currentPageId);
+    const page = useEditorStore.getState().getCurrentPage();
     const pad = resolvePagePadding(page?.padding, bpId);
     const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
     const worldX = (e.clientX - containerRect.left - panX) / scale;
@@ -866,6 +909,14 @@ export default function InfiniteCanvas() {
       elementId,
       localX,
       localY,
+      onCreateComponent: () => {
+        if (!elementId) return;
+        const element = useEditorStore.getState().getAllElements().find(el => el.id === elementId);
+        setComponentModal({
+          elementId,
+          defaultName: element?.name || 'Component',
+        });
+      },
     });
   }, [setArtboardSel, setSelection]);
 
@@ -1547,6 +1598,31 @@ export default function InfiniteCanvas() {
   const onDrop = useCallback((e) => {
     e.preventDefault();
     const type = e.dataTransfer.getData('fb-element-type');
+    const componentId = e.dataTransfer.getData('fb-component-id');
+    if (componentId) {
+      const rect  = containerRef.current.getBoundingClientRect();
+      const mx    = e.clientX - rect.left;
+      const my    = e.clientY - rect.top;
+      const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
+      const worldX = (mx - panX) / scale;
+      const worldY = (my - panY) / scale;
+      let targetBpId = 'desktop';
+      let elX = 80;
+      let elY = 80;
+      for (const bp of Object.values(bpDefs)) {
+        if (worldX >= bp.x && worldX <= bp.x + bp.width && worldY >= bp.y && worldY <= bp.y + bp.height) {
+          targetBpId = bp.id;
+          const dropPage = useEditorStore.getState().getCurrentPage();
+          const dropPad = resolvePagePadding(dropPage?.padding, targetBpId);
+          elX = Math.max(0, Math.round(worldX - bp.x - (dropPad?.left ?? 0)));
+          elY = Math.max(0, Math.round(worldY - bp.y - (dropPad?.top ?? 0)));
+          break;
+        }
+      }
+      const rootId = insertComponentInstance(componentId, { bpId: targetBpId, x: elX, y: elY });
+      if (rootId) pushHistory();
+      return;
+    }
     if (!type) return;
 
     const rect  = containerRef.current.getBoundingClientRect();
@@ -1589,12 +1665,18 @@ export default function InfiniteCanvas() {
       addElement(el, null, targetBpId);
       pushHistory();
     }
-  }, [bpDefs, addElement, pushHistory]);
+  }, [bpDefs, addElement, insertComponentInstance, pushHistory]);
 
   // ── Drop onto element for nesting ─────────────────────────
   const onDropOntoElement = useCallback((e, targetElementId) => {
     const type = e.dataTransfer.getData('fb-element-type');
     const draggedId = e.dataTransfer.getData('fb-element-id');
+    const componentId = e.dataTransfer.getData('fb-component-id');
+    if (componentId) {
+      const rootId = insertComponentInstance(componentId, { parentId: targetElementId, x: 20, y: 20 });
+      if (rootId) pushHistory();
+      return;
+    }
     if (type === 'frame') {
       const el = createFrame(20, 20);
       addElement(el, targetElementId);
@@ -1611,7 +1693,7 @@ export default function InfiniteCanvas() {
       reparentElement(draggedId, targetElementId);
       pushHistory();
     }
-  }, [addElement, reparentElement, pushHistory]);
+  }, [addElement, insertComponentInstance, reparentElement, pushHistory]);
 
   const onDragOver = (e) => e.preventDefault();
 
@@ -1647,6 +1729,7 @@ export default function InfiniteCanvas() {
           <Artboard
             key={bp.id}
             bp={bp}
+            surfaceMode={activeSurface === 'component' ? 'component' : 'artboard'}
             onStartElementDrag={startElementDrag}
             onStartResize={startResize}
             onStartRotate={startResize}
@@ -1663,7 +1746,7 @@ export default function InfiniteCanvas() {
             dropTargetId={dropTargetId}
           />
         ))}
-        <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} />
+        {activeSurface !== 'component' ? <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} /> : null}
         <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} dragOverlay={dragOverlay} />
         {alignmentGuides.map((guide, index) => (
           <div
@@ -1708,7 +1791,7 @@ export default function InfiniteCanvas() {
           gap: {gapDragInfo.value}px
         </div>
       )}
-      {foldDragInfo && (
+      {activeSurface !== 'component' && foldDragInfo && (
         <div className="fb-radius-tooltip" style={{ position: 'fixed', left: foldDragInfo.clientX + 14, top: foldDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
           viewport fold: {foldDragInfo.value}px
         </div>
@@ -1748,6 +1831,20 @@ export default function InfiniteCanvas() {
           pushHistory();
         }}
       />
+      {componentModal && (
+        <ComponentCreateModal
+          defaultName={componentModal.defaultName}
+          onCancel={() => setComponentModal(null)}
+          onSubmit={(name) => {
+            const result = createComponentFromElement(componentModal.elementId, name);
+            setComponentModal(null);
+            if (result?.componentId) {
+              pushHistory();
+              openComponentEditor(result.componentId);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

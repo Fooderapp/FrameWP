@@ -23,6 +23,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const drilledContainerId     = useEditorStore(s => s.drilledContainerId);
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const pendingDraw            = useEditorStore(s => s.pendingDraw);
+  const openComponentEditor    = useEditorStore(s => s.openComponentEditor);
+  const activeSurface          = useEditorStore(s => s.activeSurface);
 
   const parentEl               = el?.parentId ? allElements.find(e => e.id === el.parentId) : null;
   const resolved               = el ? resolveElement(el, bpId) : null;
@@ -39,6 +41,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const widthMode              = resolved?.widthMode ?? 'fixed';
   const heightMode             = resolved?.heightMode ?? 'fixed';
   const elType                 = el?.type ?? null;
+  const readOnlyComponentRoot  = activeSurface === 'component' && !!el?.componentRoot;
+  const interactionLocked      = locked || readOnlyComponentRoot;
 
   const isRelative = positionType === 'relative';
   const isFixed    = positionType === 'fixed';
@@ -122,15 +126,15 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   }, [el?.type, isEditingText, resolved?.text]);
 
   useEffect(() => {
-    if (!el || el.type !== 'text') return undefined;
+    if (!el) return undefined;
     if (widthMode !== 'hug' && heightMode !== 'hug') return undefined;
     const node = elementRef.current;
     if (!node || typeof ResizeObserver === 'undefined') return undefined;
 
     const syncSize = () => {
       const next = {};
-      const measuredW = Math.ceil(node.scrollWidth);
-      const measuredH = Math.ceil(node.scrollHeight);
+      const measuredW = Math.ceil(Math.max(node.scrollWidth, node.offsetWidth));
+      const measuredH = Math.ceil(Math.max(node.scrollHeight, node.offsetHeight));
       if (widthMode === 'hug' && Math.abs((resolved.width ?? 0) - measuredW) > 1) next.width = measuredW;
       if (heightMode === 'hug' && Math.abs((resolved.height ?? 0) - measuredH) > 1) next.height = measuredH;
       if (Object.keys(next).length) updateElementLayout(id, bpId, next);
@@ -140,7 +144,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     const observer = new ResizeObserver(syncSize);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [bpId, el?.type, heightMode, id, resolved?.height, resolved?.width, resolved?.text, styles?.fontFamily, styles?.fontSize, styles?.fontWeight, styles?.letterSpacing, styles?.lineHeight, updateElementLayout, widthMode]);
+  }, [bpId, el, heightMode, id, resolved?.height, resolved?.width, resolved?.text, styles?.fontFamily, styles?.fontSize, styles?.fontWeight, styles?.letterSpacing, styles?.lineHeight, updateElementLayout, widthMode]);
 
   if (!el || hidden) return null;
 
@@ -171,7 +175,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     if (isRootLevel && drilledContainerId !== null) {
       setDrilledContainerId(null);
     }
-    if (locked) {
+    if (interactionLocked) {
       setSelection({ elementId: id, bpId });
       return;
     }
@@ -179,6 +183,17 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   };
 
   const handleDoubleClick = (e) => {
+    if (el.componentInstance?.componentId) {
+      e.stopPropagation();
+      setSelection({ elementId: id, bpId });
+      openComponentEditor(el.componentInstance.componentId);
+      return;
+    }
+    if (readOnlyComponentRoot) {
+      e.stopPropagation();
+      setSelection({ elementId: id, bpId });
+      return;
+    }
     if (el.type === 'text') {
       e.stopPropagation();
       setSelection({ elementId: id, bpId });
@@ -358,7 +373,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     backgroundPosition: styles?.backgroundImage ? (styles?.backgroundPosition ?? 'center center') : undefined,
     backgroundRepeat:   styles?.backgroundImage && styles?.backgroundSize === 'repeat' ? 'repeat' : (styles?.backgroundImage ? 'no-repeat' : undefined),
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
-    cursor:  pendingDraw ? 'crosshair' : locked ? 'not-allowed' : 'move',
+    cursor:  pendingDraw ? 'crosshair' : interactionLocked ? 'not-allowed' : 'move',
     boxSizing: 'border-box',
   };
 
@@ -387,7 +402,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   return (
     <div
       ref={elementRef}
-      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${locked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}`}
+      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${interactionLocked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}${el.componentInstance ? ' fb-el--component' : ''}${el.componentRoot ? ' fb-el--component-root' : ''}`}
       style={inlineStyle}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
@@ -400,6 +415,18 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       tabIndex={isSelected ? 0 : -1}
       data-id={id}
     >
+      {el.componentRoot && activeSurface === 'component' ? (
+        <button
+          type="button"
+          className="fb-component-root-label"
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            setSelection({ elementId: id, bpId });
+          }}
+        >
+          Primary
+        </button>
+      ) : null}
       {/* Image element content */}
       {el.type === 'image' && (() => {
         const src = resolved.src ?? '';
@@ -470,7 +497,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         </div>
       )}
       {/* Padding handles — shaded zones + drag lines (when selected and padding > 0) */}
-      {isSelected && !locked && onStartPaddingDrag && (() => {
+      {isSelected && !interactionLocked && onStartPaddingDrag && (() => {
         const toNum = v => typeof v === 'number' ? v : parseFloat(v) || 0;
         const pt = toNum(styles?.paddingTop);
         const pr = toNum(styles?.paddingRight);
@@ -491,7 +518,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         );
       })()}
       {/* Inline resize handles for relative-positioned selected elements */}
-      {(effectiveRelative) && isSelected && !locked && (
+      {(effectiveRelative) && isSelected && !interactionLocked && (
         <div className="fb-el-handles-wrap">
           {inlineRotateHandles.map(h => (
             <div
