@@ -535,12 +535,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       })()}
       {/* Child elements — rendered relative to this element */}
       {children.map(child => {
-        const showBefore = reorderTarget?.bpId === bpId
-          && reorderTarget?.parentId === id
-          && reorderTarget?.insertBeforeId === child.id;
         return (
           <React.Fragment key={child.id}>
-            {showBefore && <div className="fb-reorder-indicator" />}
             <CanvasElement
               elementId={child.id}
               bpId={bpId}
@@ -560,9 +556,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           </React.Fragment>
         );
       })}
-      {reorderTarget?.bpId === bpId && reorderTarget?.parentId === id && !reorderTarget?.insertBeforeId && (
-        <div className="fb-reorder-indicator" />
-      )}
     </div>
   );
 }

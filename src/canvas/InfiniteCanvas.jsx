@@ -1744,8 +1744,9 @@ export default function InfiniteCanvas() {
           const st = useEditorStore.getState();
           const dragEl = st.getAllElements().find(el => el.id === session.elementId);
           if (drop && dragEl) {
-            const fixedWidth = session.ghostW ?? resolveElement(dragEl, session.bpId).width ?? 100;
-            const fixedHeight = session.ghostH ?? resolveElement(dragEl, session.bpId).height ?? 40;
+            const resolvedDragEl = resolveElement(dragEl, session.bpId);
+            const fixedWidth = session.layoutW ?? resolvedDragEl.width ?? 100;
+            const fixedHeight = session.layoutH ?? resolvedDragEl.height ?? 40;
             const moveToParent = (nextParentId) => {
               const currentEl = st.getAllElements().find(el => el.id === session.elementId);
               if ((currentEl?.parentId ?? null) !== (nextParentId ?? null)) {
@@ -1928,6 +1929,8 @@ export default function InfiniteCanvas() {
       rotation: rotationDegrees,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
+      layoutW: resolved.width ?? el.base?.width ?? 100,
+      layoutH: resolved.height ?? el.base?.height ?? 40,
       origParentId: el.parentId ?? null,
       origPositionType: resolved.positionType ?? 'absolute',
       origWasFlow: false,
@@ -2156,6 +2159,8 @@ export default function InfiniteCanvas() {
       rotation: rotationDegrees,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
+      layoutW: resolved.width ?? el.base?.width ?? 100,
+      layoutH: resolved.height ?? el.base?.height ?? 40,
       origPositionType,
       origParentId: el.parentId ?? null,
       origWasFlow: isFlowCtx,

@@ -212,12 +212,8 @@ export default function Artboard({
           onClick={handleContentClick}
         >
           {onCanvasEls.map(el => {
-            const showInsertBefore = reorderTarget?.bpId === bp.id
-              && reorderTarget?.parentId === null
-              && reorderTarget?.insertBeforeId === el.id;
             return (
               <React.Fragment key={el.id}>
-                {showInsertBefore && <div className="fb-reorder-indicator" />}
                 <CanvasElement
                   elementId={el.id}
                   bpId={bp.id}
@@ -239,9 +235,6 @@ export default function Artboard({
               </React.Fragment>
             );
           })}
-          {reorderTarget?.bpId === bp.id && reorderTarget?.parentId === null && !reorderTarget?.insertBeforeId && (
-            <div className="fb-reorder-indicator" />
-          )}
         </div>
         {/* Artboard padding visual handles — shaded zones + pink drag lines */}
         {!isComponentSurface && isArtboardSelected && onStartArtboardPaddingDrag && (
