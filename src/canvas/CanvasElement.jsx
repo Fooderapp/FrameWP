@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useEditorStore, resolveElement } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 
-export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir }) {
+export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, dragPreview = null }) {
   const [dropOver, setDropOver] = useState(false);
   const elementRef = useRef(null);
   const textEditorRef = useRef(null);
@@ -13,7 +13,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const el                     = allElements.find(e => e.id === elementId);
   const children               = useEditorStore(s => s.getChildElements(elementId));
   const setSelection           = useEditorStore(s => s.setSelection);
-  const setHoveredId           = useEditorStore(s => s.setHoveredId);
   const deleteElement          = useEditorStore(s => s.deleteElement);
   const updateElementLayout    = useEditorStore(s => s.updateElementLayout);
   const pushHistory            = useEditorStore(s => s.pushHistory);
@@ -28,6 +27,17 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const setComponentEditorActiveVariant = useEditorStore(s => s.setComponentEditorActiveVariant);
 
   const parentEl               = el?.parentId ? allElements.find(e => e.id === el.parentId) : null;
+  let componentInstanceAncestor = null;
+  if (activeSurface === 'page' && el?.parentId) {
+    let cursor = parentEl;
+    while (cursor) {
+      if (cursor.componentInstance) {
+        componentInstanceAncestor = cursor;
+        break;
+      }
+      cursor = cursor.parentId ? allElements.find((candidate) => candidate.id === cursor.parentId) : null;
+    }
+  }
   const resolved               = el ? resolveElement(el, bpId) : null;
   const id                     = el?.id ?? elementId;
   const locked                 = el?.locked ?? false;
@@ -44,6 +54,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const elType                 = el?.type ?? null;
   const readOnlyComponentRoot  = activeSurface === 'component' && !!el?.componentRoot;
   const interactionLocked      = locked || readOnlyComponentRoot;
+  const insideComponentInstanceOnPage = !!componentInstanceAncestor;
 
   const isRelative = positionType === 'relative';
   const isFixed    = positionType === 'fixed';
@@ -118,13 +129,18 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     const node = textEditorRef.current;
     if (!node) return;
     node.textContent = resolved?.text || 'Text';
-    node.focus();
+    node.focus({ preventScroll: true });
     const range = document.createRange();
     range.selectNodeContents(node);
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
   }, [el?.type, isEditingText, resolved?.text]);
+
+  useEffect(() => {
+    if (!isSelected || isEditingText) return;
+    elementRef.current?.focus({ preventScroll: true });
+  }, [isEditingText, isSelected]);
 
   useEffect(() => {
     if (!el) return undefined;
@@ -161,23 +177,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       e.stopPropagation();
       return;
     }
-    // Figma-style drill model:
-    // Root-level elements are always accessible (exit drill mode if needed).
-    // Nested elements are only accessible when their direct parent is the drilled container.
-    const isRootLevel = !el.parentId;
-    const isAtDrilledLevel = (el.parentId ?? null) === (drilledContainerId ?? null);
-    const isAccessible = isRootLevel || isAtDrilledLevel;
-    if (!isAccessible) {
-      // Let event bubble so a shallower ancestor can handle it
-      return;
-    }
     e.stopPropagation();
     if (activeSurface === 'component' && el?.componentEditorVariantId) {
       setComponentEditorActiveVariant(el.componentEditorVariantId);
-    }
-    // Clicking a root-level element while drilled into a nested frame exits drill mode
-    if (isRootLevel && drilledContainerId !== null) {
-      setDrilledContainerId(null);
     }
     if (interactionLocked) {
       setSelection({ elementId: id, bpId });
@@ -202,16 +204,13 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       e.stopPropagation();
       setSelection({ elementId: id, bpId });
       setIsEditingText(true);
+      requestAnimationFrame(() => textEditorRef.current?.focus({ preventScroll: true }));
       return;
     }
-    const isRootLevel2 = !el.parentId;
-    const isAtDrilledLevel2 = (el.parentId ?? null) === (drilledContainerId ?? null);
-    if (!isRootLevel2 && !isAtDrilledLevel2) return; // not accessible — let bubble
     e.stopPropagation();
-    // Drill into this element — its direct children become single-click accessible
     if (children.length > 0) {
       setDrilledContainerId(id);
-      setSelection(null);
+      setSelection({ elementId: id, bpId });
     }
   };
 
@@ -315,6 +314,16 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const fillAlignSelf   = (wFill && parentDir === 'column') ? 'stretch'
                         : (hFill && parentDir === 'row')    ? 'stretch'
                         : undefined;
+  const isDragPreviewActive = dragPreview?.elementId === id;
+  const previewDx = isDragPreviewActive ? (dragPreview.dx ?? 0) : 0;
+  const previewDy = isDragPreviewActive ? (dragPreview.dy ?? 0) : 0;
+  const absoluteLeft = !effectiveRelative ? x + previewDx : x;
+  const absoluteTop = !effectiveRelative ? y + previewDy : y;
+  const previewTransform = effectiveRelative && isDragPreviewActive
+    ? `translate(${previewDx}px, ${previewDy}px)`
+    : '';
+  const rotationTransform = rotation ? `rotate(${rotation}deg)` : '';
+  const composedTransform = [previewTransform, rotationTransform].filter(Boolean).join(' ') || undefined;
 
   const inlineStyle = {
     position: effectiveRelative ? 'relative' : 'absolute',
@@ -326,13 +335,13 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           flexBasis:  fillFlexBasis,
           alignSelf:  fillAlignSelf,
         }
-      : { left: x, top: y, width: csW, height: csH }
+      : { left: absoluteLeft, top: absoluteTop, width: csW, height: csH }
     ),
     minWidth:  minW,
     maxWidth:  maxW,
     minHeight: minH,
     maxHeight: maxH,
-    transform: rotation ? `rotate(${rotation}deg)` : undefined,
+    transform: composedTransform,
     // backgroundColor can hold a CSS gradient string — route accordingly
     backgroundColor: styles?.backgroundColor && !styles.backgroundColor.includes('gradient(')
       ? styles.backgroundColor
@@ -369,7 +378,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     alignItems:       styles?.alignItems,
     justifyContent:   styles?.justifyContent,
     boxShadow:        styles?.boxShadow || undefined,
-    zIndex:           isSelected ? 9999 : (styles?.zIndex ?? undefined),
+    zIndex:           isDragPreviewActive ? 10001 : (isSelected ? 9999 : (styles?.zIndex ?? undefined)),
     // Background size/position/repeat for image fills
     backgroundSize:     (styles?.backgroundImage || styles?.backgroundColor?.includes('gradient('))
       ? (styles?.backgroundSize ?? (styles?.backgroundImage ? 'cover' : undefined))
@@ -379,6 +388,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
     cursor:  pendingDraw ? 'crosshair' : interactionLocked ? 'not-allowed' : 'move',
     boxSizing: 'border-box',
+    pointerEvents: insideComponentInstanceOnPage ? 'none' : undefined,
   };
 
   const textStyle = el.type === 'text' ? {
@@ -410,8 +420,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       style={inlineStyle}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
-      onMouseEnter={(e) => { e.stopPropagation(); setHoveredId(id); }}
-      onMouseLeave={() => setHoveredId(null)}
       onKeyDown={handleKeyDown}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -522,52 +530,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           </>
         );
       })()}
-      {/* Inline resize handles for relative-positioned selected elements */}
-      {(effectiveRelative) && isSelected && !interactionLocked && (
-        <div className="fb-el-handles-wrap">
-          {inlineRotateHandles.map(h => (
-            <div
-              key={`rotate-${h}`}
-              className={`fb-sel-overlay__rotate-handle fb-sel-overlay__rotate-handle--${h}`}
-              onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onStartElementRotate && onStartElementRotate(e, bpId, { id }, `rotate-${h}`); }}
-            />
-          ))}
-          {inlineResizeHandles.map(h => (
-            <div
-              key={h}
-              className={`fb-sel-overlay__handle fb-sel-overlay__handle--${h}`}
-              onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); onStartElementResize && onStartElementResize(e, bpId, { id }, h); }}
-            />
-          ))}
-          {onStartRadiusDrag && (() => {
-            const isIndep = resolved.styles?.borderRadiusMode === 'independent';
-            const corners = isIndep
-              ? [
-                  { corner: 'TL', style: { top: 'calc(10px * var(--inv-scale,1))',    left:  'calc(10px * var(--inv-scale,1))' } },
-                  { corner: 'TR', style: { top: 'calc(10px * var(--inv-scale,1))',    right: 'calc(10px * var(--inv-scale,1))' } },
-                  { corner: 'BL', style: { bottom: 'calc(10px * var(--inv-scale,1))', left:  'calc(10px * var(--inv-scale,1))' } },
-                  { corner: 'BR', style: { bottom: 'calc(10px * var(--inv-scale,1))', right: 'calc(10px * var(--inv-scale,1))' } },
-                ]
-              : [{ corner: null, style: { top: 'calc(10px * var(--inv-scale,1))', left: 'calc(10px * var(--inv-scale,1))' } }];
-            return corners.map(({ corner, style }) => (
-              <div
-                key={corner ?? 'all'}
-                className="fb-radius-handle"
-                style={style}
-                onMouseDown={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  const sk   = corner ? `borderRadius${corner}` : 'borderRadius';
-                  const rv   = resolved.styles?.[sk] ?? resolved.styles?.borderRadius;
-                  const startR = typeof rv === 'number' ? rv : parseFloat(rv) || 0;
-                  onStartRadiusDrag(e, id, startR, corner);
-                }}
-              />
-            ));
-          })()}
-        </div>
-      )}
-
       {/* Child elements — rendered relative to this element */}
       {children.map(child => {
         const showBefore = reorderTarget?.bpId === bpId
@@ -589,6 +551,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               onStartRadiusDrag={onStartRadiusDrag}
               onStartPaddingDrag={onStartPaddingDrag}
               reorderTarget={reorderTarget}
+              dragPreview={dragPreview}
             />
           </React.Fragment>
         );

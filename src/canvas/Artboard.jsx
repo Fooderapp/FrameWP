@@ -52,11 +52,13 @@ export default function Artboard({
   reorderTarget,
   dropTargetId,
   surfaceMode = 'artboard',
+  dragPreview = null,
 }) {
   const allElements      = useEditorStore(s => s.getAllElements());
   const breakpointDefs   = useEditorStore(s => s.breakpointDefs);
   const selection        = useEditorStore(s => s.selection);
   const setSelection     = useEditorStore(s => s.setSelection);
+  const setDrilledContainerId = useEditorStore(s => s.setDrilledContainerId);
   const updateBreakpointDef = useEditorStore(s => s.updateBreakpointDef);
   const page             = useEditorStore(s => s.getCurrentPage());
   const background       = resolveBackground(page?.background, bp.id);
@@ -103,7 +105,7 @@ export default function Artboard({
   const handleBoardClick = (e) => {
     if (e.target === e.currentTarget) {
       setSelection(null);
-      if (!isComponentSurface) onSelectArtboard(bp.id);
+      setDrilledContainerId(null);
     }
   };
   const handleContentClick = handleBoardClick;
@@ -230,6 +232,7 @@ export default function Artboard({
                   onStartRadiusDrag={(e, elementId, startRadius, corner) => onStartRadiusDrag && onStartRadiusDrag(e, bp.id, elementId, startRadius, corner)}
                   onStartPaddingDrag={(e, elementId, side) => onStartPaddingDrag && onStartPaddingDrag(e, bp.id, elementId, side)}
                   reorderTarget={reorderTarget}
+                  dragPreview={dragPreview}
                 />
               </React.Fragment>
             );

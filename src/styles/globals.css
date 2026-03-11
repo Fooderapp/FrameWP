@@ -984,7 +984,7 @@ html, body, #framebuilder-root {
 /* Rendered as absolute sibling of the artboard so it ignores overflow:hidden */
 .fb-sel-overlay {
   position: absolute;
-  pointer-events: all;
+  pointer-events: none;
   cursor: move;
   border: calc(2px * var(--inv-scale, 1)) solid var(--accent-light);
   box-sizing: border-box;

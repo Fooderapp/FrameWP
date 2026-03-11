@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useLayoutEffect, useState } from 'react';
 import { useEditorStore, createFrame, createImage, createText, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 import Artboard from './Artboard';
 
@@ -90,7 +90,170 @@ function getNodeWorldRect(node, boardDom, bp, scale) {
   };
 }
 
-function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onPaste, onDelete }) {
+function getElementWorldMetrics({ el, bpId, bp, page, boardDom, scale }) {
+  if (!el || !bp) return null;
+
+  const resolved = resolveElement(el, bpId);
+  const pageLayout = resolvePageLayout(page?.layout, bpId);
+  const pad = resolvePagePadding(page?.padding, bpId);
+  const width = resolved.width ?? 100;
+  const height = resolved.height ?? 100;
+  const selectedDom = boardDom?.querySelector(`[data-id="${el.id}"]`) ?? null;
+  const selectedRect = selectedDom?.getBoundingClientRect() ?? null;
+  const boardRect = boardDom?.getBoundingClientRect() ?? null;
+  const isFixed = resolved.positionType === 'fixed';
+  const isFlowInLayout = pageLayout !== null && !resolved.absoluteInLayout && !el.parentId && resolved.positionType !== 'fixed';
+
+  let modelWorldX = bp.x;
+  let modelWorldY = bp.y;
+
+  if (el.parentId) {
+    const parentDom = boardDom?.querySelector(`[data-id="${el.parentId}"]`) ?? null;
+    if (parentDom && boardRect) {
+      const parentRect = parentDom.getBoundingClientRect();
+      const parentOffsetX = (parentRect.left - boardRect.left + parentDom.clientLeft) / scale;
+      const parentOffsetY = (parentRect.top - boardRect.top + parentDom.clientTop) / scale;
+      modelWorldX = bp.x + parentOffsetX + (resolved.x ?? 0);
+      modelWorldY = bp.y + parentOffsetY + (resolved.y ?? 0);
+    } else {
+      modelWorldX = bp.x + (resolved.x ?? 0);
+      modelWorldY = bp.y + (resolved.y ?? 0);
+    }
+  } else {
+    const absX = resolved.x ?? 0;
+    const absY = resolved.y ?? 0;
+    const isOffCanvas = absX + width <= 0 || absX >= bp.width || absY + height <= 0 || absY >= bp.height;
+    const isAutoLayoutException = pageLayout !== null && !!resolved.absoluteInLayout;
+    const offsetLeft = isFixed || isOffCanvas || isAutoLayoutException ? 0 : (pad?.left ?? 0);
+    const offsetTop = isFixed || isOffCanvas || isAutoLayoutException ? 0 : (pad?.top ?? 0);
+    modelWorldX = bp.x + offsetLeft + absX;
+    modelWorldY = bp.y + offsetTop + absY;
+  }
+
+  const domWorldX = selectedRect && boardRect ? bp.x + (selectedRect.left - boardRect.left) / scale : modelWorldX;
+  const domWorldY = selectedRect && boardRect ? bp.y + (selectedRect.top - boardRect.top) / scale : modelWorldY;
+
+  return {
+    resolved,
+    selectedRect,
+    modelWorldX,
+    modelWorldY,
+    domWorldX,
+    domWorldY,
+    domWidth: selectedRect ? selectedRect.width / scale : width,
+    domHeight: selectedRect ? selectedRect.height / scale : height,
+    width,
+    height,
+    rotation: parseFloat(resolved.rotation) || 0,
+    isFixed,
+    isFlowInLayout,
+  };
+}
+
+function rotatePointAround(point, center, degrees) {
+  const radians = (degrees * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: center.x + (dx * cos) - (dy * sin),
+    y: center.y + (dx * sin) + (dy * cos),
+  };
+}
+
+function midpoint(a, b) {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+function isFinitePoint(point) {
+  return Number.isFinite(point?.x) && Number.isFinite(point?.y);
+}
+
+function offsetFromCenter(point, center, distance) {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return {
+    x: point.x + (dx / length) * distance,
+    y: point.y + (dy / length) * distance,
+  };
+}
+
+function getDragSessionWorldPosition(session, clientX, clientY, getProjectedWorldPoint) {
+  const pointerWorld = getProjectedWorldPoint(clientX, clientY, 0, 0);
+  let worldX = pointerWorld.worldX - (session.pointerOffsetWorldX ?? 0);
+  let worldY = pointerWorld.worldY - (session.pointerOffsetWorldY ?? 0);
+
+  if (session.hasRotation) {
+    const ghostW = session.ghostW ?? 100;
+    const ghostH = session.ghostH ?? 40;
+    const localAnchorX = session.localAnchorX ?? ghostW / 2;
+    const localAnchorY = session.localAnchorY ?? ghostH / 2;
+    const anchorFromCenterX = localAnchorX - ghostW / 2;
+    const anchorFromCenterY = localAnchorY - ghostH / 2;
+    const radians = ((session.rotation ?? 0) * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const rotatedAnchorX = (anchorFromCenterX * cos) - (anchorFromCenterY * sin);
+    const rotatedAnchorY = (anchorFromCenterX * sin) + (anchorFromCenterY * cos);
+    const centerWorldX = pointerWorld.worldX - rotatedAnchorX;
+    const centerWorldY = pointerWorld.worldY - rotatedAnchorY;
+    worldX = centerWorldX - ghostW / 2;
+    worldY = centerWorldY - ghostH / 2;
+  }
+
+  return { worldX, worldY };
+}
+
+function buildFallbackDragPreview({ session, worldX, worldY, bp, pagePadding, pageLayout, artboardDom, artboardRect }) {
+  return {
+    bp,
+    pagePadding,
+    pageLayout,
+    artboardDom,
+    artboardRect,
+    dropContainer: null,
+    targetParentId: null,
+    mode: session.origPositionType === 'fixed' ? 'fixed-root' : 'root-free',
+    insertBeforeId: null,
+    reorderTarget: null,
+    alignmentGuides: [],
+    dropTargetId: null,
+    hint: 'Free',
+    clientLeft: null,
+    clientTop: null,
+    worldX,
+    worldY,
+    ghost: {
+      worldX,
+      worldY,
+      width: session.ghostW ?? 100,
+      height: session.ghostH ?? 40,
+      bgColor: session.ghostBgColor,
+    },
+  };
+}
+
+function getAxisAlignedBounds(rect) {
+  if (!rect) return null;
+  const left = rect.left;
+  const top = rect.top;
+  const width = rect.width;
+  const height = rect.height;
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    centerX: left + width / 2,
+    centerY: top + height / 2,
+  };
+}
+
+function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onCut, onPaste, onDelete }) {
   if (!menu) return null;
 
   return (
@@ -110,8 +273,16 @@ function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onPaste, onDel
       <button
         type="button"
         className="fb-context-menu__item"
+        onClick={() => { onCut(); onClose(); }}
+        disabled={!menu.elementId}
+      >
+        Cut
+      </button>
+      <button
+        type="button"
+        className="fb-context-menu__item"
         onClick={() => { onPaste(); onClose(); }}
-        disabled={!hasClipboard}
+        disabled={!hasClipboard || !menu.canPasteIntoFrame}
       >
         Paste
       </button>
@@ -201,27 +372,61 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const setSelection           = useEditorStore(s => s.setSelection);
   const viewport               = useEditorStore(s => s.viewport);
+  const [measuredRect, setMeasuredRect] = useState(null);
+
+  const selectedElementId = selection?.elementId ?? null;
+  const selectedBpId = selection?.bpId ?? null;
+  const selectedEl = selectedElementId ? allElements.find(e => e.id === selectedElementId) : null;
+
+  useLayoutEffect(() => {
+    if (!selectedBpId || !selectedEl) {
+      setMeasuredRect(null);
+      return;
+    }
+
+    let frame = 0;
+    const measure = () => {
+      const currentBoard = document.querySelector(`.fb-artboard[data-bp="${selectedBpId}"]`);
+      const currentNode = currentBoard?.querySelector(`[data-id="${selectedEl.id}"]`) ?? null;
+      const currentBoardRect = currentBoard?.getBoundingClientRect() ?? null;
+      const currentRect = currentNode?.getBoundingClientRect() ?? null;
+      if (!currentBoardRect || !currentRect) {
+        setMeasuredRect(null);
+        return;
+      }
+      const currentBp = useEditorStore.getState().breakpointDefs[selectedBpId];
+      const currentScale = useEditorStore.getState().viewport.scale ?? 1;
+      const left = currentBp.x + (currentRect.left - currentBoardRect.left) / currentScale;
+      const top = currentBp.y + (currentRect.top - currentBoardRect.top) / currentScale;
+      const width = currentRect.width / currentScale;
+      const height = currentRect.height / currentScale;
+      setMeasuredRect((prev) => (
+        prev && Math.abs(prev.left - left) < 0.01 && Math.abs(prev.top - top) < 0.01 && Math.abs(prev.width - width) < 0.01 && Math.abs(prev.height - height) < 0.01
+          ? prev
+          : { left, top, width, height }
+      ));
+    };
+
+    frame = window.requestAnimationFrame(measure);
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedBpId, selectedEl, viewport.scale, viewport.x, viewport.y]);
 
   if (!selection) return null;
-  const el = allElements.find(e => e.id === selection.elementId);
+  const el = selectedEl;
   if (!el) return null;
-
-  const resolved = resolveElement(el, selection.bpId);
-  if (resolved.hidden) return null;
-  if (resolved.positionType === 'relative') return null; // handled by inline handles inside CanvasElement
-  const isFixed = resolved.positionType === 'fixed';
-
-  // Elements that flow inside an auto-layout artboard also render inline handles.
-  const pageLayout = resolvePageLayout(page?.layout, selection.bpId);
-  // Match CanvasElement's effectiveRelative: any root element in an auto-layout artboard
-  // without absoluteInLayout is in-flow, regardless of stored positionType (except fixed).
-  // NotE: explicitly 'absolute' elements inside auto-layout also render as flow children.
-  const isFlowInLayout = pageLayout !== null && !resolved.absoluteInLayout && !el.parentId
-    && resolved.positionType !== 'fixed';
-  if (isFlowInLayout) return null;
 
   const bp = bpDefs[selection.bpId];
   if (!bp) return null;
+  const scale = viewport.scale ?? 1;
+  const boardDom = document.querySelector(`.fb-artboard[data-bp="${bp.id}"]`);
+  const metrics = getElementWorldMetrics({ el, bpId: selection.bpId, bp, page, boardDom, scale });
+  const resolved = metrics?.resolved ?? resolveElement(el, selection.bpId);
+  if (resolved.hidden) return null;
+  const pageLayout = resolvePageLayout(page?.layout, selection.bpId);
+  const boardRect = boardDom?.getBoundingClientRect() ?? null;
+  const selectedRect = metrics?.selectedRect ?? null;
+  const isFixed = metrics?.isFixed ?? (resolved.positionType === 'fixed');
+  const isFlowInLayout = metrics?.isFlowInLayout ?? false;
 
   // Viewport fold height based on device aspect ratio (desktop 16:9, others 9:16)
   const viewportFoldH = bp.id === 'desktop'
@@ -234,10 +439,13 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const rotation = resolved.rotation;
   const constraints = { top: true, left: true, right: false, bottom: false, ...(resolved.constraints ?? {}) };
   const isDragging = dragOverlay?.elementId === el.id;
+  const canMoveOverlay = !el.locked && !isDragging && resolved.positionType !== 'relative' && !isFlowInLayout;
   const overlayHandles = isFontResizeTextElement(el, resolved) ? ['se'] : OVERLAY_HANDLES;
   const rotateHandles = ['nw', 'ne', 'se', 'sw'];
+  const overlayCapturesPointer = canMoveOverlay && el.type !== 'text' && Math.abs(parseFloat(rotation) || 0) <= 0.01;
 
-  let worldX, worldY;
+  let worldX = metrics?.modelWorldX ?? bp.x;
+  let worldY = metrics?.modelWorldY ?? bp.y;
   let containerWorldLeft = bp.x;
   let containerWorldTop = bp.y;
   let containerWorldWidth = bp.width;
@@ -247,16 +455,15 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
     // data model. Measure the parent's current screen position and add the element's own
     // x/y from the store. The parent DOM is stable (it's not the one being dragged),
     // and the element x/y in the store is always the latest value — even during drag.
-    const sc       = viewport.scale ?? 1;
-    const boardDom = document.querySelector(`.fb-artboard[data-bp="${bp.id}"]`);
+    const sc       = scale;
     // Scope parent lookup to the correct artboard — querySelector without scope
     // would return the Desktop copy when the same element exists in all artboards.
     const parentDom = boardDom?.querySelector(`[data-id="${el.parentId}"]`);
     if (parentDom && boardDom) {
       const parentRect = parentDom.getBoundingClientRect();
       const boardRect  = boardDom.getBoundingClientRect();
-      const parentOffX = (parentRect.left - boardRect.left) / sc;
-      const parentOffY = (parentRect.top  - boardRect.top)  / sc;
+      const parentOffX = (parentRect.left - boardRect.left + parentDom.clientLeft) / sc;
+      const parentOffY = (parentRect.top  - boardRect.top  + parentDom.clientTop) / sc;
       containerWorldLeft = bp.x + parentOffX;
       containerWorldTop = bp.y + parentOffY;
       containerWorldWidth = parentRect.width / sc;
@@ -296,28 +503,122 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
     worldY = dragOverlay.worldY;
   }
 
-  const overlayW = isDragging ? (dragOverlay.width ?? w) : w;
-  const overlayH = isDragging ? (dragOverlay.height ?? h) : h;
-  const midX = worldX + overlayW / 2;
-  const midY = worldY + overlayH / 2;
-  const guides = [];
-  if (constraints.left) {
-    guides.push({ key: 'left', style: { left: containerWorldLeft, top: midY, width: Math.max(0, worldX - containerWorldLeft), height: 0 } });
+  const hasRotation = Math.abs(parseFloat(rotation) || 0) > 0.01;
+  const visualRect = measuredRect ?? (selectedRect && boardRect
+    ? {
+        left: metrics?.domWorldX ?? (bp.x + (selectedRect.left - boardRect.left) / scale),
+        top: metrics?.domWorldY ?? (bp.y + (selectedRect.top - boardRect.top) / scale),
+        width: metrics?.domWidth ?? (selectedRect.width / scale),
+        height: metrics?.domHeight ?? (selectedRect.height / scale),
+      }
+    : null);
+  const shouldUseVisualPosition = !!visualRect;
+  const shouldUseVisualSize = !!visualRect && (resolved.positionType === 'relative' || isFlowInLayout || resolved.widthMode === 'hug' || resolved.heightMode === 'hug');
+  const overlayW = isDragging
+    ? (dragOverlay.width ?? w)
+    : (hasRotation ? w : (shouldUseVisualSize ? visualRect.width : w));
+  const overlayH = isDragging
+    ? (dragOverlay.height ?? h)
+    : (hasRotation ? h : (shouldUseVisualSize ? visualRect.height : h));
+  if (!isDragging && visualRect) {
+    if (hasRotation) {
+      worldX = visualRect.left + (visualRect.width / 2) - (overlayW / 2);
+      worldY = visualRect.top + (visualRect.height / 2) - (overlayH / 2);
+    } else if (shouldUseVisualPosition) {
+      worldX = visualRect.left;
+      worldY = visualRect.top;
+    }
   }
-  if (constraints.right) {
-    const rightStart = worldX + overlayW;
+  if (![worldX, worldY, overlayW, overlayH].every(Number.isFinite)) return null;
+  const center = { x: worldX + overlayW / 2, y: worldY + overlayH / 2 };
+  const selectionRotation = parseFloat(rotation) || 0;
+  const tl = rotatePointAround({ x: worldX, y: worldY }, center, selectionRotation);
+  const tr = rotatePointAround({ x: worldX + overlayW, y: worldY }, center, selectionRotation);
+  const br = rotatePointAround({ x: worldX + overlayW, y: worldY + overlayH }, center, selectionRotation);
+  const bl = rotatePointAround({ x: worldX, y: worldY + overlayH }, center, selectionRotation);
+  if (![center, tl, tr, br, bl].every(isFinitePoint)) return null;
+  const handlePoints = {
+    nw: tl,
+    n: midpoint(tl, tr),
+    ne: tr,
+    e: midpoint(tr, br),
+    se: br,
+    s: midpoint(bl, br),
+    sw: bl,
+    w: midpoint(tl, bl),
+  };
+  const rotatePoints = {
+    nw: offsetFromCenter(tl, center, 20 / scale),
+    ne: offsetFromCenter(tr, center, 20 / scale),
+    se: offsetFromCenter(br, center, 20 / scale),
+    sw: offsetFromCenter(bl, center, 20 / scale),
+  };
+  const guideBounds = getAxisAlignedBounds(hasRotation && visualRect ? visualRect : {
+    left: worldX,
+    top: worldY,
+    width: overlayW,
+    height: overlayH,
+  });
+  const midX = guideBounds?.centerX ?? center.x;
+  const midY = guideBounds?.centerY ?? center.y;
+  const guides = [];
+  if (canMoveOverlay && constraints.left) {
+    guides.push({ key: 'left', style: { left: containerWorldLeft, top: midY, width: Math.max(0, (guideBounds?.left ?? worldX) - containerWorldLeft), height: 0 } });
+  }
+  if (canMoveOverlay && constraints.right) {
+    const rightStart = guideBounds?.right ?? (worldX + overlayW);
     guides.push({ key: 'right', style: { left: rightStart, top: midY, width: Math.max(0, containerWorldLeft + containerWorldWidth - rightStart), height: 0 } });
   }
-  if (constraints.top) {
-    guides.push({ key: 'top', style: { left: midX, top: containerWorldTop, width: 0, height: Math.max(0, worldY - containerWorldTop) } });
+  if (canMoveOverlay && constraints.top) {
+    guides.push({ key: 'top', style: { left: midX, top: containerWorldTop, width: 0, height: Math.max(0, (guideBounds?.top ?? worldY) - containerWorldTop) } });
   }
-  if (constraints.bottom) {
-    const bottomStart = worldY + overlayH;
+  if (canMoveOverlay && constraints.bottom) {
+    const bottomStart = guideBounds?.bottom ?? (worldY + overlayH);
     guides.push({ key: 'bottom', style: { left: midX, top: bottomStart, width: 0, height: Math.max(0, containerWorldTop + containerWorldHeight - bottomStart) } });
   }
 
   const elChildren = allElements.filter(e => e.parentId === el.id);
   const canDrill   = elChildren.length > 0;
+  const svgWidth = Math.max(...Object.values(bpDefs).map((entry) => entry.x + entry.width), worldX + overlayW) + 400;
+  const svgHeight = Math.max(...Object.values(bpDefs).map((entry) => entry.y + entry.height), worldY + overlayH) + 400;
+  const outlineColor = el.componentInstance ? 'var(--component-accent)' : 'var(--accent-light)';
+  const outlineShadow = el.componentInstance ? 'var(--component-accent-strong)' : 'transparent';
+  const overlayHitRect = hasRotation && visualRect
+    ? visualRect
+    : { left: worldX, top: worldY, width: overlayW, height: overlayH };
+  const overlayBoxStyle = {
+    left: overlayHitRect.left,
+    top: overlayHitRect.top,
+    width: overlayHitRect.width,
+    height: overlayHitRect.height,
+    transform: hasRotation ? undefined : (selectionRotation ? `rotate(${selectionRotation}deg)` : undefined),
+    transformOrigin: '50% 50%',
+    pointerEvents: overlayCapturesPointer ? 'auto' : 'none',
+    borderColor: outlineColor,
+    boxShadow: outlineShadow !== 'transparent'
+      ? `0 0 0 calc(1px * var(--inv-scale, 1)) ${outlineShadow}`
+      : undefined,
+    background: 'rgba(0,0,0,0.001)',
+  };
+  const handleSize = 8 / scale;
+  const rotateHandleSize = 14 / scale;
+  const radiusHandleSize = 8 / scale;
+  const radiusInset = 10 / scale;
+  const radiusAnchorPoints = (() => {
+    const anchors = resolved.styles?.borderRadiusMode === 'independent'
+      ? {
+          TL: { x: worldX + radiusInset, y: worldY + radiusInset },
+          TR: { x: worldX + overlayW - radiusInset, y: worldY + radiusInset },
+          BL: { x: worldX + radiusInset, y: worldY + overlayH - radiusInset },
+          BR: { x: worldX + overlayW - radiusInset, y: worldY + overlayH - radiusInset },
+        }
+      : { all: { x: worldX + radiusInset, y: worldY + radiusInset } };
+    return Object.fromEntries(Object.entries(anchors).map(([key, point]) => [key, rotatePointAround(point, center, selectionRotation)]));
+  })();
+  if (!Object.values(handlePoints).every(isFinitePoint)) return null;
+  if (!Object.values(rotatePoints).every(isFinitePoint)) return null;
+  if (!Object.values(radiusAnchorPoints).every(isFinitePoint)) return null;
+  const polygonPoints = [tl, tr, br, bl].map((point) => `${point.x},${point.y}`).join(' ');
 
   return (
     <>
@@ -330,77 +631,98 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
       ))}
       <div
         className={`fb-sel-overlay${el.componentInstance ? ' fb-sel-overlay--component' : ''}`}
-        style={{
-          left: worldX, top: worldY, width: overlayW, height: overlayH,
-          transform: rotation ? `rotate(${rotation}deg)` : undefined,
-          transformOrigin: '50% 50%',
+        style={overlayBoxStyle}
+        onMouseDown={(e) => {
+          if (!overlayCapturesPointer || e.target !== e.currentTarget) return;
+          e.stopPropagation();
+          e.preventDefault();
+          onStartMove(e, selection.bpId, el);
         }}
-      onMouseDown={(e) => {
-        // Only trigger move on the overlay itself, not on its handle children
-        if (e.target !== e.currentTarget) return;
-        e.stopPropagation();
-        e.preventDefault();
-        if (!el.locked) onStartMove(e, selection.bpId, el);
-      }}
-      onDoubleClick={(e) => {
-        if (e.target !== e.currentTarget) return;
-        e.stopPropagation();
-        // Drill into this element — its children become single-click accessible
-        if (canDrill) {
-          setDrilledContainerId(el.id);
-          setSelection(null);
-        }
-      }}
-    >
-      {!el.locked && !isDragging && overlayHandles.map(handle => (
-        <div
-          key={handle}
-          className={`fb-sel-overlay__handle fb-sel-overlay__handle--${handle}`}
-          onMouseDown={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            onStartResize(e, selection.bpId, el, handle);
-          }}
-        />
-      ))}
-      {!el.locked && !isDragging && rotateHandles.map(handle => (
-        <div
-          key={`rotate-${handle}`}
-          className={`fb-sel-overlay__rotate-handle fb-sel-overlay__rotate-handle--${handle}`}
-          onMouseDown={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            onStartResize(e, selection.bpId, el, `rotate-${handle}`);
-          }}
-        />
-      ))}
-        {!el.locked && !isDragging && onStartRadiusDrag && (() => {
-        const isIndep = resolved.styles?.borderRadiusMode === 'independent';
-        const corners = isIndep
-          ? [
-              { corner: 'TL', style: { top: 'calc(10px * var(--inv-scale,1))',    left:  'calc(10px * var(--inv-scale,1))' } },
-              { corner: 'TR', style: { top: 'calc(10px * var(--inv-scale,1))',    right: 'calc(10px * var(--inv-scale,1))' } },
-              { corner: 'BL', style: { bottom: 'calc(10px * var(--inv-scale,1))', left:  'calc(10px * var(--inv-scale,1))' } },
-              { corner: 'BR', style: { bottom: 'calc(10px * var(--inv-scale,1))', right: 'calc(10px * var(--inv-scale,1))' } },
-            ]
-          : [{ corner: null, style: { top: 'calc(10px * var(--inv-scale,1))', left: 'calc(10px * var(--inv-scale,1))' } }];
-        return corners.map(({ corner, style }) => (
-          <div
-            key={corner ?? 'all'}
-            className="fb-radius-handle"
-            style={style}
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              const sk    = corner ? `borderRadius${corner}` : 'borderRadius';
-              const rv    = resolved.styles?.[sk] ?? resolved.styles?.borderRadius;
-              const startR = typeof rv === 'number' ? rv : parseFloat(rv) || 0;
-              onStartRadiusDrag(e, selection.bpId, el.id, startR, corner);
-            }}
-          />
-        ));
-      })()}
-      </div>
+        onDoubleClick={(e) => {
+          if (e.target !== e.currentTarget) return;
+          e.stopPropagation();
+          if (canDrill) {
+            setDrilledContainerId(el.id);
+            setSelection({ elementId: el.id, bpId: selection.bpId });
+          }
+        }}
+      />
+      <svg
+        className="fb-sel-overlay-svg"
+        width={svgWidth}
+        height={svgHeight}
+        style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 10000 }}
+      >
+        {!el.locked && !isDragging && overlayHandles.map((handle) => {
+          const point = handlePoints[handle];
+          return (
+            <rect
+              key={handle}
+              x={point.x - handleSize / 2}
+              y={point.y - handleSize / 2}
+              width={handleSize}
+              height={handleSize}
+              rx={2 / scale}
+              ry={2 / scale}
+              fill={el.componentInstance ? 'var(--component-accent)' : '#fff'}
+              stroke={outlineColor}
+              strokeWidth={1.5 / scale}
+              vectorEffect="non-scaling-stroke"
+              pointerEvents="all"
+              style={{ cursor: `${handle}-resize` }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onStartResize(e, selection.bpId, el, handle);
+              }}
+            />
+          );
+        })}
+        {!el.locked && !isDragging && rotateHandles.map((handle) => {
+          const point = rotatePoints[handle];
+          return (
+            <rect
+              key={`rotate-${handle}`}
+              x={point.x - rotateHandleSize / 2}
+              y={point.y - rotateHandleSize / 2}
+              width={rotateHandleSize}
+              height={rotateHandleSize}
+              fill="rgba(0,0,0,0.001)"
+              pointerEvents="all"
+              style={{ cursor: 'grab' }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onStartResize(e, selection.bpId, el, `rotate-${handle}`);
+              }}
+            />
+          );
+        })}
+        {!el.locked && !isDragging && onStartRadiusDrag && Object.entries(radiusAnchorPoints).map(([corner, point]) => {
+          const styleKey = corner === 'all' ? 'borderRadius' : `borderRadius${corner}`;
+          const radiusValue = resolved.styles?.[styleKey] ?? resolved.styles?.borderRadius;
+          const startRadius = typeof radiusValue === 'number' ? radiusValue : parseFloat(radiusValue) || 0;
+          return (
+            <circle
+              key={`radius-${corner}`}
+              cx={point.x}
+              cy={point.y}
+              r={radiusHandleSize / 2}
+              fill="#fff"
+              stroke="#3b82f6"
+              strokeWidth={1.5 / scale}
+              vectorEffect="non-scaling-stroke"
+              pointerEvents="all"
+              style={{ cursor: 'crosshair' }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onStartRadiusDrag(e, selection.bpId, el.id, startRadius, corner === 'all' ? null : corner);
+              }}
+            />
+          );
+        })}
+      </svg>
     </>
   );
 }
@@ -408,6 +730,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
 export default function InfiniteCanvas() {
   const containerRef = useRef(null);
   const worldRef     = useRef(null);
+  const lastPointerClientRef = useRef({ x: null, y: null });
 
   const viewport      = useEditorStore(s => s.viewport);
   const setViewport   = useEditorStore(s => s.setViewport);
@@ -426,6 +749,7 @@ export default function InfiniteCanvas() {
   const addComponentVariant = useEditorStore(s => s.addComponentVariant);
   const deleteElement       = useEditorStore(s => s.deleteElement);
   const reparentElement      = useEditorStore(s => s.reparentElement);
+  const setHoveredId         = useEditorStore(s => s.setHoveredId);
   const pushHistory          = useEditorStore(s => s.pushHistory);
   const setInteracting       = useEditorStore(s => s.setInteracting);
   const pendingDraw          = useEditorStore(s => s.pendingDraw);
@@ -457,6 +781,17 @@ export default function InfiniteCanvas() {
   const clipboard = useRef(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const canPasteIntoFrame = useCallback((bpId = null, elementId = null) => {
+    if (!clipboard.current) return false;
+    const st = useEditorStore.getState();
+    const resolvedBpId = bpId || st.selection?.bpId || clipboard.current.bpId || 'desktop';
+    const candidateId = elementId ?? st.selection?.elementId ?? null;
+    if (!candidateId) return false;
+    const candidate = st.getAllElements().find((el) => el.id === candidateId) ?? null;
+    if (!candidate || candidate.type !== 'frame') return false;
+    const resolved = resolveElement(candidate, resolvedBpId);
+    return !resolved.hidden;
+  }, []);
 
   const copyElementToClipboard = useCallback((elementId, bpId) => {
     if (!elementId) return false;
@@ -475,10 +810,90 @@ export default function InfiniteCanvas() {
     return true;
   }, []);
 
-  const pasteClipboardAt = useCallback(({ bpId = 'desktop', x = 80, y = 80 }) => {
+  const cutElementToClipboard = useCallback((elementId, bpId) => {
+    if (!copyElementToClipboard(elementId, bpId)) return false;
+    deleteElement(elementId);
+    pushHistory();
+    return true;
+  }, [copyElementToClipboard, deleteElement, pushHistory]);
+
+  // ── Drag state ─────────────────────────────────────────────
+  const drag = useRef(null);
+  // drag.current shape:
+  // { type:'element-drag'|'resize'|'artboard-move', bpId, elementId?, handle?,
+  //   startMX, startMY, startX?, startY?, startW?, startH?, startBpX?, startBpY? }
+
+  const getProjectedWorldPoint = useCallback((clientX, clientY, grabOffsetWorldX = 0, grabOffsetWorldY = 0) => {
+    const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
+    const containerRect = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    return {
+      worldX: (clientX - containerRect.left - panX) / scale - grabOffsetWorldX,
+      worldY: (clientY - containerRect.top - panY) / scale - grabOffsetWorldY,
+    };
+  }, []);
+
+  const getPlacementFromClient = useCallback((clientX, clientY, bpHint = null) => {
+    if (clientX == null || clientY == null) return null;
+    const st = useEditorStore.getState();
+    const { worldX, worldY } = getProjectedWorldPoint(clientX, clientY, 0, 0);
+    const bpList = Object.values(st.breakpointDefs);
+    const hintedBp = bpHint ? st.breakpointDefs[bpHint] ?? null : null;
+    const containingBp = bpList.find((bp) => (
+      worldX >= bp.x && worldX <= bp.x + bp.width &&
+      worldY >= bp.y && worldY <= bp.y + bp.height
+    )) ?? null;
+    const bp = containingBp ?? hintedBp ?? st.breakpointDefs[st.selection?.bpId ?? ''] ?? st.breakpointDefs.desktop ?? bpList[0] ?? null;
+    if (!bp) return null;
+    const page = st.getCurrentPage?.();
+    const pad = resolvePagePadding(page?.padding, bp.id);
+    return {
+      bpId: bp.id,
+      worldX,
+      worldY,
+      x: Math.round(worldX - bp.x - (pad?.left ?? 0)),
+      y: Math.round(worldY - bp.y - (pad?.top ?? 0)),
+    };
+  }, [getProjectedWorldPoint]);
+
+  const getParentPlacementFromClient = useCallback((clientX, clientY, bpId, parentId) => {
+    if (clientX == null || clientY == null || !bpId || !parentId) return null;
+    const { scale } = useEditorStore.getState().viewport;
+    const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+    const parentDom = boardDom?.querySelector(`[data-id="${parentId}"]`) ?? null;
+    if (!parentDom) return null;
+    const rect = parentDom.getBoundingClientRect();
+    return {
+      x: Math.round((clientX - rect.left - parentDom.clientLeft) / scale),
+      y: Math.round((clientY - rect.top - parentDom.clientTop) / scale),
+    };
+  }, []);
+
+  const pasteClipboardAt = useCallback(({ bpId = null, parentId = null, x = null, y = null, clientX = null, clientY = null }) => {
     if (!clipboard.current) return false;
+    const st = useEditorStore.getState();
     const { subtree, rootId, bpId: copiedBpId } = clipboard.current;
-    const targetBpId = bpId || copiedBpId || 'desktop';
+    const targetBpId = bpId || st.selection?.bpId || copiedBpId || 'desktop';
+    const selectedEl = st.getSelectedElement?.() ?? null;
+    const activeSelectedFrameId = selectedEl && selectedEl.type === 'frame' && st.selection?.bpId === targetBpId
+      ? selectedEl.id
+      : null;
+    const targetParentId = parentId ?? activeSelectedFrameId ?? null;
+    if (!targetParentId) return false;
+    const cursorPlacement = getPlacementFromClient(
+      clientX ?? lastPointerClientRef.current.x,
+      clientY ?? lastPointerClientRef.current.y,
+      targetBpId,
+    );
+    const parentPlacement = targetParentId
+      ? getParentPlacementFromClient(
+          clientX ?? lastPointerClientRef.current.x,
+          clientY ?? lastPointerClientRef.current.y,
+          targetBpId,
+          targetParentId,
+        )
+      : null;
+    const targetX = parentPlacement?.x ?? cursorPlacement?.x ?? x ?? 20;
+    const targetY = parentPlacement?.y ?? cursorPlacement?.y ?? y ?? 20;
     const cloned = cloneSubtree(subtree, rootId).map((el) => {
       if (targetBpId === 'desktop') return el;
       return {
@@ -496,37 +911,40 @@ export default function InfiniteCanvas() {
     const root = cloned[0];
     if (!root) return false;
     if (targetBpId === 'desktop') {
-      root.base = { ...root.base, x, y };
+      root.base = { ...root.base, x: targetX, y: targetY };
     } else {
       root.overrides = {
         ...root.overrides,
         [targetBpId]: {
           ...(root.overrides?.[targetBpId] ?? {}),
-          x,
-          y,
+          x: targetX,
+          y: targetY,
           hidden: false,
         },
       };
     }
     addElements(cloned);
+    if (targetParentId) {
+      st.reparentElement(root.id, targetParentId);
+    }
     useEditorStore.getState().setSelection({ elementId: root.id, bpId: targetBpId });
     pushHistory();
     return true;
-  }, [addElements, pushHistory]);
+  }, [addElements, getParentPlacementFromClient, getPlacementFromClient, pushHistory]);
 
-  // ── Drag state ─────────────────────────────────────────────
-  const drag = useRef(null);
-  // drag.current shape:
-  // { type:'element-drag'|'resize'|'artboard-move', bpId, elementId?, handle?,
-  //   startMX, startMY, startX?, startY?, startW?, startH?, startBpX?, startBpY? }
-
-  const getProjectedWorldPoint = useCallback((clientX, clientY, grabOffsetWorldX = 0, grabOffsetWorldY = 0) => {
-    const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
-    const containerRect = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
-    return {
-      worldX: (clientX - containerRect.left - panX) / scale - grabOffsetWorldX,
-      worldY: (clientY - containerRect.top - panY) / scale - grabOffsetWorldY,
-    };
+  const resolveHoveredElementId = useCallback((clientX, clientY) => {
+    const container = containerRef.current;
+    if (!container) return null;
+    const topNode = document.elementFromPoint(clientX, clientY);
+    if (!topNode || !container.contains(topNode)) return null;
+    for (const node of document.elementsFromPoint(clientX, clientY)) {
+      if (!container.contains(node)) continue;
+      if (node.closest('.fb-context-menu, .fb-right, .fb-left, .fb-topbar, .fb-overlay-modal')) return null;
+      const target = node.closest?.('[data-id]');
+      if (!target || !container.contains(target)) continue;
+      return target.dataset.id ?? null;
+    }
+    return null;
   }, []);
 
   const resolveElementDragDrop = useCallback((session, clientX, clientY) => {
@@ -544,6 +962,7 @@ export default function InfiniteCanvas() {
     const artboardDom = document.querySelector(`.fb-artboard[data-bp="${session.bpId}"]`);
     const artboardRect = artboardDom?.getBoundingClientRect() ?? null;
     const { scale } = st.viewport;
+    const { worldX: projectedWorldX, worldY: projectedWorldY } = getDragSessionWorldPosition(session, clientX, clientY, getProjectedWorldPoint);
 
     const projectedClientW = session.ghostClientW ?? ((session.ghostW ?? 100) * scale);
     const projectedClientH = session.ghostClientH ?? ((session.ghostH ?? 40) * scale);
@@ -551,12 +970,8 @@ export default function InfiniteCanvas() {
     const clientTop = clientY - (session.grabOffsetClientY ?? projectedClientH / 2);
     const clientRight = clientLeft + projectedClientW;
     const clientBottom = clientTop + projectedClientH;
-    const { worldX, worldY } = getProjectedWorldPoint(
-      clientX,
-      clientY,
-      session.grabOffsetWorldX ?? (session.ghostW ?? 100) / 2,
-      session.grabOffsetWorldY ?? (session.ghostH ?? 40) / 2,
-    );
+    let worldX = projectedWorldX;
+    let worldY = projectedWorldY;
 
     const overlapRatioWithRect = (rect) => {
       if (!rect) return 0;
@@ -619,7 +1034,7 @@ export default function InfiniteCanvas() {
         parentId: reorderParentId,
         dragId: session.elementId,
       };
-    } else {
+    } else if (!session.hasRotation) {
       const snapParentId = mode === 'container-free' ? targetParentId : null;
       const snapSiblingIds = getSiblingIds(allEls, snapParentId, session.elementId);
       const snapParentDom = snapParentId ? artboardDom?.querySelector(`[data-id="${snapParentId}"]`) : artboardDom;
@@ -731,6 +1146,7 @@ export default function InfiniteCanvas() {
 
   useEffect(() => {
     const onKeyDown = (e) => {
+      const isEditableTarget = e.target.matches('input,textarea') || e.target.isContentEditable;
       if (e.code === 'Space' && !e.target.matches('input,textarea')) {
         e.preventDefault();
         spaceDown.current = true;
@@ -741,8 +1157,8 @@ export default function InfiniteCanvas() {
         if (e.shiftKey) useEditorStore.getState().redo();
         else useEditorStore.getState().undo();
       }
-      // Escape: cancel draw mode first, then exit drill level, then deselect
-      if (e.key === 'Escape' && !e.target.matches('input,textarea')) {
+      // Escape: cancel draw mode first, then move one level up in drill mode.
+      if (e.key === 'Escape' && !isEditableTarget) {
         const st = useEditorStore.getState();
         if (st.pendingDraw) {
           st.setPendingDraw(null);
@@ -753,13 +1169,20 @@ export default function InfiniteCanvas() {
           const drilledEl = st.getAllElements().find(el => el.id === drilled);
           const parentId = drilledEl?.parentId ?? null;
           st.setDrilledContainerId(parentId);
-          st.setSelection(null);
-        } else if (st.selection) {
-          st.setSelection(null);
         }
       }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditableTarget) {
+        const { selection } = useEditorStore.getState();
+        if (!selection) return;
+        const selectedEl = useEditorStore.getState().getAllElements().find((el) => el.id === selection.elementId);
+        if (!selectedEl || selectedEl.locked) return;
+        e.preventDefault();
+        deleteElement(selection.elementId);
+        pushHistory();
+        return;
+      }
       // Arrow nudge (1px, or 10px with Shift)
-      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && !e.target.matches('input,textarea')) {
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && !isEditableTarget) {
         const { selection } = useEditorStore.getState();
         if (!selection) return;
         e.preventDefault();
@@ -777,21 +1200,26 @@ export default function InfiniteCanvas() {
         useEditorStore.getState().pushHistory();
       }
       // Copy (Cmd/Ctrl+C)
-      if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !e.target.matches('input,textarea')) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !isEditableTarget) {
         const { selection } = useEditorStore.getState();
         if (!selection) return;
         copyElementToClipboard(selection.elementId, selection.bpId);
       }
+      // Cut (Cmd/Ctrl+X)
+      if ((e.metaKey || e.ctrlKey) && e.key === 'x' && !isEditableTarget) {
+        const { selection } = useEditorStore.getState();
+        if (!selection) return;
+        cutElementToClipboard(selection.elementId, selection.bpId);
+      }
       // Paste (Cmd/Ctrl+V)
-      if ((e.metaKey || e.ctrlKey) && e.key === 'v' && !e.target.matches('input,textarea')) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'v' && !isEditableTarget) {
         if (!clipboard.current) return;
         const currentBpId = useEditorStore.getState().selection?.bpId ?? clipboard.current.bpId;
-        const selectedEl = useEditorStore.getState().getSelectedElement();
-        const resolvedSelected = selectedEl ? resolveElement(selectedEl, currentBpId) : null;
+        if (!canPasteIntoFrame(currentBpId)) return;
         pasteClipboardAt({
           bpId: currentBpId,
-          x: (resolvedSelected?.x ?? 60) + 20,
-          y: (resolvedSelected?.y ?? 60) + 20,
+          clientX: lastPointerClientRef.current.x,
+          clientY: lastPointerClientRef.current.y,
         });
       }
     };
@@ -807,7 +1235,7 @@ export default function InfiniteCanvas() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [copyElementToClipboard, pasteClipboardAt]);
+  }, [canPasteIntoFrame, copyElementToClipboard, cutElementToClipboard, deleteElement, pasteClipboardAt, pushHistory]);
 
   // ── Initial fit-to-canvas ─────────────────────────────────
   useEffect(() => {
@@ -863,7 +1291,7 @@ export default function InfiniteCanvas() {
     return () => el.removeEventListener('wheel', onWheel);
   }, [onWheel]);
 
-  // ── Mouse down (pan, draw, or canvas deselect) ─────────────
+  // ── Mouse down (pan only; empty-space clicks keep selection) ─────────────
   const onMouseDown = (e) => {
     if (contextMenu) setContextMenu(null);
     if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
@@ -873,8 +1301,7 @@ export default function InfiniteCanvas() {
       panStart.current  = { x: viewport.x, y: viewport.y };
       return;
     }
-    // Draw mode: start rubber-band on any left-click on the canvas (not on a UI widget)
-    if (e.button === 0 && (e.target === worldRef.current || e.target === containerRef.current)) {
+    if (e.button === 0 && e.target === e.currentTarget) {
       setSelection(null);
       setArtboardSel(null);
       setDrilled(null);
@@ -909,6 +1336,7 @@ export default function InfiniteCanvas() {
       clientY: e.clientY,
       bpId,
       elementId,
+      canPasteIntoFrame: canPasteIntoFrame(bpId, elementId),
       localX,
       localY,
       onCreateComponent: () => {
@@ -920,10 +1348,11 @@ export default function InfiniteCanvas() {
         });
       },
     });
-  }, [setArtboardSel, setSelection]);
+  }, [canPasteIntoFrame, setArtboardSel, setSelection]);
 
   // ── Mouse move (pan + element drag/resize) ─────────────────
   const onMouseMove = useCallback((e) => {
+    lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
     // Pan — read scale from store to avoid stale closure
     if (isPanning.current) {
       const currentScale = useEditorStore.getState().viewport.scale;
@@ -933,8 +1362,14 @@ export default function InfiniteCanvas() {
       return;
     }
 
-    // Element drag / resize
-    if (!drag.current) return;
+    // Element hover
+    if (!drag.current) {
+      const hoveredId = resolveHoveredElementId(e.clientX, e.clientY);
+      if (useEditorStore.getState().hoveredId !== hoveredId) {
+        setHoveredId(hoveredId);
+      }
+      return;
+    }
 
     // ── Draw rubber-band preview ────────────────────────────
     if (drag.current.type === 'draw') {
@@ -966,8 +1401,35 @@ export default function InfiniteCanvas() {
       const hasMoved = Math.abs(e.clientX - drag.current.startMX) > 4 ||
         Math.abs(e.clientY - drag.current.startMY) > 4;
       if (hasMoved) drag.current.hasMoved = true;
-      const preview = resolveElementDragDrop(drag.current, e.clientX, e.clientY);
-      if (!preview) {
+      if (drag.current.hasRotation) {
+        useEditorStore.getState().updateElementLayout(elementId, bpId, {
+          x: drag.current.startX + dxWorld,
+          y: drag.current.startY + dyWorld,
+        });
+        setReorderTarget(null);
+        setDropTargetId(null);
+        setReorderGhost(null);
+        setDragOverlay(null);
+        setAlignmentGuides([]);
+        setDragHint(null);
+        return;
+      }
+      const resolvedPreview = resolveElementDragDrop(drag.current, e.clientX, e.clientY);
+      const fallbackWorld = getDragSessionWorldPosition(drag.current, e.clientX, e.clientY, getProjectedWorldPoint);
+      const fallbackPreview = buildFallbackDragPreview({
+        session: drag.current,
+        worldX: fallbackWorld.worldX,
+        worldY: fallbackWorld.worldY,
+        bp: useEditorStore.getState().breakpointDefs[drag.current.bpId] ?? null,
+        pagePadding: resolvePagePadding(useEditorStore.getState().getCurrentPage?.()?.padding, drag.current.bpId),
+        pageLayout: resolvePageLayout(useEditorStore.getState().getCurrentPage?.()?.layout, drag.current.bpId),
+        artboardDom: document.querySelector(`.fb-artboard[data-bp="${drag.current.bpId}"]`),
+        artboardRect: document.querySelector(`.fb-artboard[data-bp="${drag.current.bpId}"]`)?.getBoundingClientRect?.() ?? null,
+      });
+      const preview = resolvedPreview ?? fallbackPreview;
+      const previewIsValid = preview
+        && [preview.worldX, preview.worldY, preview.ghost?.worldX, preview.ghost?.worldY, preview.ghost?.width, preview.ghost?.height].every(Number.isFinite);
+      if (!previewIsValid) {
         setReorderTarget(null);
         setDropTargetId(null);
         setReorderGhost(null);
@@ -1068,7 +1530,7 @@ export default function InfiniteCanvas() {
       }
       setFoldDragInfo({ value: newFoldH, clientX: e.clientX, clientY: e.clientY });
     }
-  }, [setViewport]);
+  }, [getProjectedWorldPoint, resolveElementDragDrop, resolveHoveredElementId, setHoveredId, setViewport]);
 
   const onMouseUp = useCallback((e) => {
     if (isPanning.current) {
@@ -1162,8 +1624,22 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'element-drag') {
         const session = drag.current;
         shouldPushHistory = !!session.hasMoved;
-        if (session.hasMoved) {
-          const drop = session.preview ?? resolveElementDragDrop(session, e.clientX, e.clientY);
+        if (session.hasRotation) {
+          setReorderTarget(null);
+          setDropTargetId(null);
+        } else if (session.hasMoved) {
+          const fallbackWorld = getDragSessionWorldPosition(session, e.clientX, e.clientY, getProjectedWorldPoint);
+          const fallbackDrop = buildFallbackDragPreview({
+            session,
+            worldX: fallbackWorld.worldX,
+            worldY: fallbackWorld.worldY,
+            bp: useEditorStore.getState().breakpointDefs[session.bpId] ?? null,
+            pagePadding: resolvePagePadding(useEditorStore.getState().getCurrentPage?.()?.padding, session.bpId),
+            pageLayout: resolvePageLayout(useEditorStore.getState().getCurrentPage?.()?.layout, session.bpId),
+            artboardDom: document.querySelector(`.fb-artboard[data-bp="${session.bpId}"]`),
+            artboardRect: document.querySelector(`.fb-artboard[data-bp="${session.bpId}"]`)?.getBoundingClientRect?.() ?? null,
+          });
+          const drop = session.preview ?? resolveElementDragDrop(session, e.clientX, e.clientY) ?? fallbackDrop;
           const st = useEditorStore.getState();
           const dragEl = st.getAllElements().find(el => el.id === session.elementId);
           if (drop && dragEl) {
@@ -1200,11 +1676,12 @@ export default function InfiniteCanvas() {
             } else if (drop.mode === 'container-free') {
               moveToParent(drop.targetParentId);
               st.setDrilledContainerId(drop.targetParentId);
-              const containerRect = drop.dropContainer
-                ? document.querySelector(`.fb-artboard[data-bp="${session.bpId}"]`)?.querySelector(`[data-id="${drop.targetParentId}"]`)?.getBoundingClientRect()
+              const containerNode = drop.dropContainer
+                ? document.querySelector(`.fb-artboard[data-bp="${session.bpId}"]`)?.querySelector(`[data-id="${drop.targetParentId}"]`)
                 : null;
-              const localX = containerRect ? Math.round((drop.clientLeft - containerRect.left) / st.viewport.scale) : 0;
-              const localY = containerRect ? Math.round((drop.clientTop - containerRect.top) / st.viewport.scale) : 0;
+              const containerWorldRect = getNodeWorldRect(containerNode, drop.artboardDom, drop.bp, st.viewport.scale);
+              const localX = containerWorldRect ? Math.round(drop.worldX - containerWorldRect.left - ((containerNode?.clientLeft ?? 0) / st.viewport.scale)) : 0;
+              const localY = containerWorldRect ? Math.round(drop.worldY - containerWorldRect.top - ((containerNode?.clientTop ?? 0) / st.viewport.scale)) : 0;
               st.updateElementLayout(session.elementId, session.bpId, {
                 positionType: 'absolute',
                 absoluteInLayout: false,
@@ -1266,7 +1743,7 @@ export default function InfiniteCanvas() {
       drag.current = null;
       setInteracting(false);
     }
-  }, [pushHistory, setInteracting, setDraggingElementId]);
+  }, [getProjectedWorldPoint, pushHistory, resolveElementDragDrop, setInteracting, setDraggingElementId]);
 
   useEffect(() => {
     window.addEventListener('mousemove', onMouseMove);
@@ -1310,12 +1787,23 @@ export default function InfiniteCanvas() {
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
     const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+    const page = useEditorStore.getState().getCurrentPage();
     const domEl = boardDom?.querySelector(`[data-id="${el.id}"]`);
-    const rect = domEl?.getBoundingClientRect();
+    const rect = domEl?.getBoundingClientRect() ?? e.currentTarget?.getBoundingClientRect?.();
     const scale = useEditorStore.getState().viewport.scale;
     const bpDef = useEditorStore.getState().breakpointDefs[bpId];
+    const metrics = getElementWorldMetrics({ el, bpId, bp: bpDef, page, boardDom, scale });
     const ghostW = resolved.width ?? el.base?.width ?? 100;
     const ghostH = resolved.height ?? el.base?.height ?? 40;
+    const startWorldX = metrics?.modelWorldX ?? (resolved.x ?? el.base?.x ?? 0);
+    const startWorldY = metrics?.modelWorldY ?? (resolved.y ?? el.base?.y ?? 0);
+    const pointerWorld = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+    const rotationValue = Math.abs(parseFloat(resolved.rotation) || 0);
+    const rotationDegrees = parseFloat(resolved.rotation) || 0;
+    const center = { x: startWorldX + ghostW / 2, y: startWorldY + ghostH / 2 };
+    const unrotatedPointer = rotationValue > 0.01
+      ? rotatePointAround(pointerWorld, center, -rotationDegrees)
+      : pointerWorld;
     const isGeomOffCanvas = !el.parentId && bpDef
       ? ((resolved.x ?? 0) + ghostW <= 0 || (resolved.x ?? 0) >= bpDef.width || (resolved.y ?? 0) + ghostH <= 0 || (resolved.y ?? 0) >= bpDef.height)
       : false;
@@ -1327,12 +1815,22 @@ export default function InfiniteCanvas() {
       bpId,
       elementId: el.id,
       startMX: e.clientX, startMY: e.clientY,
+      startWorldX,
+      startWorldY,
+      previewStartWorldX: rotationValue > 0.01 ? startWorldX : (metrics?.domWorldX ?? startWorldX),
+      previewStartWorldY: rotationValue > 0.01 ? startWorldY : (metrics?.domWorldY ?? startWorldY),
+      pointerOffsetWorldX: pointerWorld.worldX - startWorldX,
+      pointerOffsetWorldY: pointerWorld.worldY - startWorldY,
+      localAnchorX: unrotatedPointer.x - startWorldX,
+      localAnchorY: unrotatedPointer.y - startWorldY,
+      rotation: rotationDegrees,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
       origParentId: el.parentId ?? null,
       origPositionType: resolved.positionType ?? 'absolute',
       origWasFlow: false,
       origWasOffCanvas: isGeomOffCanvas,
+      hasRotation: rotationValue > 0.01,
       ghostBgColor: resolved.styles?.backgroundColor ?? null,
       ghostW,
       ghostH,
@@ -1345,7 +1843,7 @@ export default function InfiniteCanvas() {
     };
     setDraggingElementId(el.id);
     setInteracting(true);
-  }, [setInteracting, setDraggingElementId]);
+  }, [getProjectedWorldPoint, setInteracting, setDraggingElementId]);
   // ── Start artboard drag (called from Artboard header) ───────
   const startArtboardDrag = useCallback((e, bpId) => {
     const bp = useEditorStore.getState().breakpointDefs[bpId];
@@ -1468,10 +1966,26 @@ export default function InfiniteCanvas() {
     e.stopPropagation();
     setArtboardSel(null);
     const { getAllElements } = useEditorStore.getState();
-    const el = getAllElements().find(ee => ee.id === element.id) ?? element;
+    const clickedEl = getAllElements().find(ee => ee.id === element.id) ?? element;
+    const activeSelection = useEditorStore.getState().selection;
+    const dragElementId = activeSelection?.elementId === clickedEl.id ? activeSelection.elementId : clickedEl.id;
+    const el = getAllElements().find(ee => ee.id === dragElementId) ?? clickedEl;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
-    setSelection({ elementId: el.id, bpId });
-    const domEl = document.querySelector(`.fb-artboard[data-bp="${bpId}"] [data-id="${el.id}"]`);
+    const page0 = useEditorStore.getState().getCurrentPage();
+    const boardDom0 = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+    const metrics = getElementWorldMetrics({
+      el,
+      bpId,
+      bp: useEditorStore.getState().breakpointDefs[bpId],
+      page: page0,
+      boardDom: boardDom0,
+      scale: useEditorStore.getState().viewport.scale,
+    });
+    const pointerWorld = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+    if (dragElementId !== activeSelection?.elementId || activeSelection?.bpId !== bpId) {
+      setSelection({ elementId: dragElementId, bpId });
+    }
+    const domEl = document.querySelector(`.fb-artboard[data-bp="${bpId}"] [data-id="${dragElementId}"]`) ?? e.currentTarget;
     const computedPosition = domEl ? window.getComputedStyle(domEl).position : null;
     const bpDef0 = useEditorStore.getState().breakpointDefs[bpId];
     const elX0 = resolved.x ?? el.base?.x ?? 0;
@@ -1484,7 +1998,6 @@ export default function InfiniteCanvas() {
     // Flow context: explicitly relative, OR root-level element in auto-layout artboard
     // that hasn't been pinned as absoluteInLayout (matches CanvasElement's effectiveRelative logic).
     // Root auto-layout exceptions that are geometrically off-canvas are not flow items.
-    const page0 = useEditorStore.getState().getCurrentPage();
     const pgLayout = resolvePageLayout(page0?.layout, bpId);
     const heuristicFlowCtx = (resolved.positionType ?? 'absolute') === 'relative'
       || (!el.parentId && pgLayout !== null && !resolved.absoluteInLayout
@@ -1500,6 +2013,7 @@ export default function InfiniteCanvas() {
     let ghostClientH = ghostH * useEditorStore.getState().viewport.scale;
     let grabOffsetClientX = ghostClientW / 2;
     let grabOffsetClientY = ghostClientH / 2;
+    const rotationValue = Math.abs(parseFloat(resolved.rotation) || 0);
     if (domEl) {
       const dr = domEl.getBoundingClientRect();
       const sc0 = useEditorStore.getState().viewport.scale;
@@ -1507,10 +2021,19 @@ export default function InfiniteCanvas() {
       ghostClientH = dr.height;
       grabOffsetClientX = e.clientX - dr.left;
       grabOffsetClientY = e.clientY - dr.top;
-      ghostW = Math.round(dr.width  / sc0);
-      ghostH = Math.round(dr.height / sc0);
+      if (rotationValue < 0.01) {
+        ghostW = Math.round(dr.width  / sc0);
+        ghostH = Math.round(dr.height / sc0);
+      }
     }
     const scale0 = useEditorStore.getState().viewport.scale;
+    const startWorldX = metrics?.modelWorldX ?? 0;
+    const startWorldY = metrics?.modelWorldY ?? 0;
+    const rotationDegrees = parseFloat(resolved.rotation) || 0;
+    const center = { x: startWorldX + ghostW / 2, y: startWorldY + ghostH / 2 };
+    const unrotatedPointer = rotationValue > 0.01
+      ? rotatePointAround(pointerWorld, center, -rotationDegrees)
+      : pointerWorld;
     // Detect if element currently lives off the artboard (x/y outside bp bounds).
     // IMPORTANT: relative/flow elements are NEVER off-canvas (x/y are meaningless for flow).
     // Used at drop time: off-canvas elements dropped on auto-layout artboard become flow.
@@ -1519,14 +2042,24 @@ export default function InfiniteCanvas() {
       type: 'element-drag',
       dragMode: isFlowCtx ? 'flow' : 'free',
       bpId,
-      elementId: el.id,
+      elementId: dragElementId,
       startMX: e.clientX, startMY: e.clientY,
+      startWorldX,
+      startWorldY,
+      previewStartWorldX: rotationValue > 0.01 ? startWorldX : (metrics?.domWorldX ?? startWorldX),
+      previewStartWorldY: rotationValue > 0.01 ? startWorldY : (metrics?.domWorldY ?? startWorldY),
+      pointerOffsetWorldX: pointerWorld.worldX - startWorldX,
+      pointerOffsetWorldY: pointerWorld.worldY - startWorldY,
+      localAnchorX: unrotatedPointer.x - startWorldX,
+      localAnchorY: unrotatedPointer.y - startWorldY,
+      rotation: rotationDegrees,
       startX: resolved.x ?? el.base?.x ?? 0,
       startY: resolved.y ?? el.base?.y ?? 0,
       origPositionType,
       origParentId: el.parentId ?? null,
       origWasFlow: isFlowCtx,
       origWasOffCanvas,
+      hasRotation: rotationValue > 0.01,
       ghostBgColor: resolved.styles?.backgroundColor ?? null,
       ghostW, ghostH,
       ghostClientW, ghostClientH,
@@ -1535,9 +2068,9 @@ export default function InfiniteCanvas() {
       grabOffsetWorldX: grabOffsetClientX / scale0,
       grabOffsetWorldY: grabOffsetClientY / scale0,
     };
-    setDraggingElementId(el.id);
+    setDraggingElementId(dragElementId);
     setInteracting(true);
-  }, [setSelection, setArtboardSel, setInteracting, setDraggingElementId]);
+  }, [getProjectedWorldPoint, setSelection, setArtboardSel, setInteracting, setDraggingElementId]);
 
   // ── Start resize (called from child) ──────────────────────
   const startResize = useCallback((e, bpId, element, handle) => {
@@ -1601,58 +2134,20 @@ export default function InfiniteCanvas() {
     e.preventDefault();
     const type = e.dataTransfer.getData('fb-element-type');
     const componentId = e.dataTransfer.getData('fb-component-id');
+    const placement = getPlacementFromClient(e.clientX, e.clientY, useEditorStore.getState().selection?.bpId ?? null);
     if (componentId) {
-      const rect  = containerRef.current.getBoundingClientRect();
-      const mx    = e.clientX - rect.left;
-      const my    = e.clientY - rect.top;
-      const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
-      const worldX = (mx - panX) / scale;
-      const worldY = (my - panY) / scale;
-      let targetBpId = 'desktop';
-      let elX = 80;
-      let elY = 80;
-      for (const bp of Object.values(bpDefs)) {
-        if (worldX >= bp.x && worldX <= bp.x + bp.width && worldY >= bp.y && worldY <= bp.y + bp.height) {
-          targetBpId = bp.id;
-          const dropPage = useEditorStore.getState().getCurrentPage();
-          const dropPad = resolvePagePadding(dropPage?.padding, targetBpId);
-          elX = Math.max(0, Math.round(worldX - bp.x - (dropPad?.left ?? 0)));
-          elY = Math.max(0, Math.round(worldY - bp.y - (dropPad?.top ?? 0)));
-          break;
-        }
-      }
-      const rootId = insertComponentInstance(componentId, { bpId: targetBpId, x: elX, y: elY });
+      const rootId = insertComponentInstance(componentId, {
+        bpId: placement?.bpId ?? 'desktop',
+        x: placement?.x ?? 80,
+        y: placement?.y ?? 80,
+      });
       if (rootId) pushHistory();
       return;
     }
     if (!type) return;
-
-    const rect  = containerRef.current.getBoundingClientRect();
-    const mx    = e.clientX - rect.left;
-    const my    = e.clientY - rect.top;
-    const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
-    const worldX = (mx - panX) / scale;
-    const worldY = (my - panY) / scale;
-
-    // Detect which artboard the drop landed in
-    let targetBpId = null;
-    let elX = 80, elY = 80;
-    for (const bp of Object.values(bpDefs)) {
-      if (
-        worldX >= bp.x && worldX <= bp.x + bp.width &&
-        worldY >= bp.y && worldY <= bp.y + bp.height
-      ) {
-        targetBpId = bp.id;
-        elX = Math.max(0, worldX - bp.x - 120);
-        elY = Math.max(0, worldY - bp.y - 80);
-        const dropPage = useEditorStore.getState().getCurrentPage();
-        const dropPad  = resolvePagePadding(dropPage?.padding, targetBpId);
-        elX = Math.max(0, elX - (dropPad?.left ?? 0));
-        elY = Math.max(0, elY - (dropPad?.top  ?? 0));
-        break;
-      }
-    }
-    if (!targetBpId) targetBpId = 'desktop'; // fallback
+    const targetBpId = placement?.bpId ?? 'desktop';
+    const elX = placement?.x ?? 80;
+    const elY = placement?.y ?? 80;
 
     if (type === 'frame') {
       const el = createFrame(elX, elY);
@@ -1667,35 +2162,39 @@ export default function InfiniteCanvas() {
       addElement(el, null, targetBpId);
       pushHistory();
     }
-  }, [bpDefs, addElement, insertComponentInstance, pushHistory]);
+  }, [addElement, getPlacementFromClient, insertComponentInstance, pushHistory]);
 
   // ── Drop onto element for nesting ─────────────────────────
   const onDropOntoElement = useCallback((e, targetElementId) => {
     const type = e.dataTransfer.getData('fb-element-type');
     const draggedId = e.dataTransfer.getData('fb-element-id');
     const componentId = e.dataTransfer.getData('fb-component-id');
+    const targetBpId = e.target.closest('.fb-artboard[data-bp]')?.dataset.bp ?? useEditorStore.getState().selection?.bpId ?? 'desktop';
+    const localPlacement = getParentPlacementFromClient(e.clientX, e.clientY, targetBpId, targetElementId);
+    const localX = localPlacement?.x ?? 20;
+    const localY = localPlacement?.y ?? 20;
     if (componentId) {
-      const rootId = insertComponentInstance(componentId, { parentId: targetElementId, x: 20, y: 20 });
+      const rootId = insertComponentInstance(componentId, { parentId: targetElementId, x: localX, y: localY });
       if (rootId) pushHistory();
       return;
     }
     if (type === 'frame') {
-      const el = createFrame(20, 20);
-      addElement(el, targetElementId);
+      const el = createFrame(localX, localY);
+      addElement(el, targetElementId, targetBpId);
       pushHistory();
     } else if (type === 'image') {
-      const el = createImage(20, 20);
-      addElement(el, targetElementId);
+      const el = createImage(localX, localY);
+      addElement(el, targetElementId, targetBpId);
       pushHistory();
     } else if (type === 'text') {
-      const el = createText(20, 20);
-      addElement(el, targetElementId);
+      const el = createText(localX, localY);
+      addElement(el, targetElementId, targetBpId);
       pushHistory();
     } else if (draggedId && draggedId !== targetElementId) {
       reparentElement(draggedId, targetElementId);
       pushHistory();
     }
-  }, [addElement, insertComponentInstance, reparentElement, pushHistory]);
+  }, [addElement, getParentPlacementFromClient, insertComponentInstance, reparentElement, pushHistory]);
 
   const onDragOver = (e) => e.preventDefault();
 
@@ -1720,6 +2219,13 @@ export default function InfiniteCanvas() {
         top: bpDefs.desktop.y + (lastVariantRoot.base?.y ?? 0) + Math.max(24, ((lastVariantRoot.base?.height ?? 160) * 0.5) - 18),
       }
     : null;
+  const activeDragPreview = dragOverlay && drag.current?.type === 'element-drag'
+    ? {
+        elementId: dragOverlay.elementId,
+        dx: dragOverlay.worldX - (drag.current?.previewStartWorldX ?? drag.current?.startWorldX ?? dragOverlay.worldX),
+        dy: dragOverlay.worldY - (drag.current?.previewStartWorldY ?? drag.current?.startWorldY ?? dragOverlay.worldY),
+      }
+    : null;
 
   return (
     <div
@@ -1727,6 +2233,7 @@ export default function InfiniteCanvas() {
       className="fb-canvas-container"
       style={{ cursor }}
       onMouseDown={onMouseDown}
+      onMouseLeave={() => setHoveredId(null)}
       onContextMenu={onContextMenu}
       onDrop={onDrop}
       onDragOver={onDragOver}
@@ -1758,6 +2265,7 @@ export default function InfiniteCanvas() {
             onStartPaddingDrag={startElementPaddingDrag}
             reorderTarget={reorderTarget}
             dropTargetId={dropTargetId}
+            dragPreview={activeDragPreview}
           />
         ))}
         {activeSurface !== 'component' ? <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} /> : null}
@@ -1785,9 +2293,6 @@ export default function InfiniteCanvas() {
               background: reorderGhost.bgColor || undefined,
             }}
           />
-        )}
-        {draggingElementId && (
-          <style>{`.fb-canvas-world [data-id="${draggingElementId.replace(/[^a-zA-Z0-9_-]/g, '')}"] { opacity: 0.4 !important; }`}</style>
         )}
         {canvasAddVariantPos ? (
           <button
@@ -1849,7 +2354,8 @@ export default function InfiniteCanvas() {
         hasClipboard={!!clipboard.current}
         onClose={closeContextMenu}
         onCopy={() => contextMenu?.elementId && copyElementToClipboard(contextMenu.elementId, contextMenu.bpId)}
-        onPaste={() => contextMenu && pasteClipboardAt({ bpId: contextMenu.bpId, x: contextMenu.localX, y: contextMenu.localY })}
+        onCut={() => contextMenu?.elementId && cutElementToClipboard(contextMenu.elementId, contextMenu.bpId)}
+        onPaste={() => contextMenu?.canPasteIntoFrame && pasteClipboardAt({ bpId: contextMenu.bpId, parentId: contextMenu.elementId, clientX: contextMenu.clientX, clientY: contextMenu.clientY })}
         onDelete={() => {
           if (!contextMenu?.elementId) return;
           deleteElement(contextMenu.elementId);

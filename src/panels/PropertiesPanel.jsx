@@ -20,16 +20,24 @@ function Section({ title, children, defaultOpen = true, action }) {
   );
 }
 
-function NumberInput({ value, onChange, label, unit = 'px', min, max, step = 1 }) {
-  const ext = typeof value === 'number' ? value : (parseFloat(value) || 0);
-  const fmt = v => String(Math.round(v * 10) / 10);
+function normalizeFiniteNumber(value, fallback = 0) {
+  const numericValue = typeof value === 'number' ? value : parseFloat(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
 
-  const [draft, setDraft] = React.useState(fmt(ext));
+function formatNumericInputValue(value, fallback = 0) {
+  return String(Math.round(normalizeFiniteNumber(value, fallback) * 10) / 10);
+}
+
+function NumberInput({ value, onChange, label, unit = 'px', min, max, step = 1 }) {
+  const ext = normalizeFiniteNumber(value, 0);
+
+  const [draft, setDraft] = React.useState(formatNumericInputValue(ext));
   const [focused, setFocused] = React.useState(false);
 
   // Sync external value changes while not focused (e.g., canvas drag)
   React.useEffect(() => {
-    if (!focused) setDraft(fmt(ext));
+    if (!focused) setDraft(formatNumericInputValue(ext));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, focused]);
 
@@ -38,16 +46,16 @@ function NumberInput({ value, onChange, label, unit = 'px', min, max, step = 1 }
       <input
         className="fb-prop-input"
         type="number"
-        value={focused ? draft : fmt(ext)}
+        value={focused ? draft : formatNumericInputValue(ext)}
         min={min}
         max={max}
         step={step}
-        onFocus={e => { setFocused(true); setDraft(fmt(ext)); e.target.select(); }}
+        onFocus={e => { setFocused(true); setDraft(formatNumericInputValue(ext)); e.target.select(); }}
         onBlur={() => {
           setFocused(false);
           const num = parseFloat(draft);
           if (!isNaN(num)) onChange(num);
-          else setDraft(fmt(ext));
+          else setDraft(formatNumericInputValue(ext));
         }}
         onChange={e => {
           const raw = e.target.value;
@@ -64,24 +72,25 @@ function NumberInput({ value, onChange, label, unit = 'px', min, max, step = 1 }
 
 /** Like NumberInput but shows blank when value is null/0/undefined */
 function NullableNumberInput({ value, onChange, label, placeholder = '', min, step = 1 }) {
-  const hasValue = value != null && value !== 0;
-  const [draft, setDraft] = React.useState(hasValue ? String(value) : '');
+  const numericValue = value == null ? null : normalizeFiniteNumber(value, null);
+  const hasValue = numericValue != null && numericValue !== 0;
+  const [draft, setDraft] = React.useState(hasValue ? formatNumericInputValue(numericValue) : '');
   const [focused, setFocused] = React.useState(false);
   React.useEffect(() => {
-    if (!focused) setDraft(value != null && value !== 0 ? String(Math.round(value * 10) / 10) : '');
+    if (!focused) setDraft(hasValue ? formatNumericInputValue(numericValue) : '');
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, focused]);
+  }, [focused, hasValue, numericValue, value]);
 
   return (
     <div className="fb-prop-mini">
       <input
         className="fb-prop-input"
         type="number"
-        value={focused ? draft : (value != null && value !== 0 ? String(Math.round(value * 10) / 10) : '')}
+        value={focused ? draft : (hasValue ? formatNumericInputValue(numericValue) : '')}
         placeholder={placeholder}
         min={min}
         step={step}
-        onFocus={e => { setFocused(true); setDraft(value != null && value !== 0 ? String(Math.round(value * 10) / 10) : ''); e.target.select(); }}
+        onFocus={e => { setFocused(true); setDraft(hasValue ? formatNumericInputValue(numericValue) : ''); e.target.select(); }}
         onBlur={() => {
           setFocused(false);
           if (draft === '' || draft === null) { onChange(null); return; }
@@ -465,6 +474,22 @@ export default function PropertiesPanel() {
   const savedLayoutRef          = useRef({});
   const removeOverrideFn        = useEditorStore(s => s.removeOverride);
   const removeStyleOverrideFn   = useEditorStore(s => s.removeStyleOverride);
+  const selectedComponentMeta = activeSurface === 'page' && element?.componentInstance?.componentId
+    ? components.find((component) => component.id === element.componentInstance?.componentId)
+    : null;
+  const selectedComponentVariants = selectedComponentMeta?.variants ?? [];
+  const hasSelectedComponentInstance = !!element?.componentInstance;
+  const selectedElementId = element?.id ?? null;
+  const selectedInstanceVariantId = element?.componentInstance?.variantId ?? null;
+  const normalizedSelectedVariantId = selectedComponentVariants.some((variant) => variant.id === element?.componentInstance?.variantId)
+    ? element?.componentInstance?.variantId
+    : selectedComponentMeta?.defaultVariantId ?? selectedComponentVariants[0]?.id ?? '';
+
+  useEffect(() => {
+    if (activeSurface !== 'page' || !hasSelectedComponentInstance || !selectedElementId || !selectedComponentMeta || !normalizedSelectedVariantId) return;
+    if (selectedInstanceVariantId === normalizedSelectedVariantId) return;
+    changeComponentInstanceVariant(selectedElementId, normalizedSelectedVariantId);
+  }, [activeSurface, changeComponentInstanceVariant, hasSelectedComponentInstance, normalizedSelectedVariantId, selectedComponentMeta, selectedElementId, selectedInstanceVariantId]);
 
   // Show artboard panel when artboard is selected and no element is selected
   if (activeSurface !== 'component' && !element && artboardSel && bpDefs[artboardSel]) {
@@ -662,10 +687,11 @@ export default function PropertiesPanel() {
   const isFlowInLayout = inAutoLayout && !resolved.absoluteInLayout;
   const isComponentRoot = activeSurface === 'component' && !element.parentId;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!element.componentInstance;
-  const componentMeta = isComponentInstanceOnPage
-    ? components.find((component) => component.id === element.componentInstance?.componentId)
-    : null;
-  const componentVariantId = element.componentInstance?.variantId ?? componentMeta?.defaultVariantId ?? componentMeta?.variants?.[0]?.id ?? '';
+  const componentMeta = isComponentInstanceOnPage ? selectedComponentMeta : null;
+  const componentVariants = isComponentInstanceOnPage ? selectedComponentVariants : [];
+  const componentVariantId = componentVariants.some((variant) => variant.id === element.componentInstance?.variantId)
+    ? element.componentInstance?.variantId
+    : componentMeta?.defaultVariantId ?? componentVariants[0]?.id ?? '';
   const selectedEditorVariant = activeSurface === 'component' && element.componentRoot
     ? (componentEditor.variants ?? []).find((variant) => variant.id === element.componentEditorVariantId)
     : null;
@@ -741,7 +767,7 @@ export default function PropertiesPanel() {
                   commit();
                 }}
               >
-                {(componentMeta.variants ?? []).map((variant) => (
+                {componentVariants.map((variant) => (
                   <option key={variant.id} value={variant.id}>{variant.name}</option>
                 ))}
               </select>

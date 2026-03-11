@@ -15,6 +15,24 @@ function pick(obj, keys) {
   }, {});
 }
 
+const LAYOUT_NUMERIC_KEYS = new Set([
+  'x', 'y', 'width', 'height', 'rotation',
+  'minW', 'maxW', 'minH', 'maxH',
+  'widthPct', 'heightPct', 'widthFr', 'heightFr',
+]);
+
+function sanitizeLayoutUpdates(updates) {
+  if (!updates || typeof updates !== 'object') return updates;
+
+  return Object.fromEntries(
+    Object.entries(updates).flatMap(([key, value]) => {
+      if (!LAYOUT_NUMERIC_KEYS.has(key) || value == null) return [[key, value]];
+      const numericValue = typeof value === 'number' ? value : parseFloat(value);
+      return Number.isFinite(numericValue) ? [[key, numericValue]] : [];
+    })
+  );
+}
+
 // ── Breakpoint definitions ────────────────────────────────────
 
 const BREAKPOINTS = {
@@ -396,14 +414,18 @@ function extractVariantOverrides(primarySnapshot, variantSnapshot) {
 function syncComponentEditorVariants(componentEditor) {
   const currentVariants = componentEditor?.variants ?? [];
   if (!currentVariants.length) return [];
-  const primarySnapshot = extractEditorVariantSnapshot(componentEditor.page?.elements ?? [], currentVariants[0].id);
+  const pageElements = componentEditor.page?.elements ?? [];
+  const presentVariants = currentVariants.filter((variant) => !!getEditorVariantRoot(pageElements, variant.id));
+  if (!presentVariants.length) return currentVariants;
+
+  const primarySnapshot = extractEditorVariantSnapshot(pageElements, presentVariants[0].id);
   if (!primarySnapshot.length) return currentVariants;
 
-  return currentVariants.map((variant, index) => {
+  return presentVariants.map((variant, index) => {
     if (index === 0) {
       return { ...variant, name: 'Primary', snapshot: primarySnapshot };
     }
-    const fullVariantSnapshot = extractEditorVariantSnapshot(componentEditor.page?.elements ?? [], variant.id);
+    const fullVariantSnapshot = extractEditorVariantSnapshot(pageElements, variant.id);
     return {
       ...variant,
       snapshot: extractVariantOverrides(primarySnapshot, fullVariantSnapshot),
@@ -696,7 +718,9 @@ function preserveComponentRootPlacement(nextRoot, currentRoot) {
     ...nextRoot,
     parentId: currentRoot.parentId ?? null,
     base: { ...nextRoot.base, ...pick(currentRoot.base ?? {}, layoutKeys) },
-    componentInstance: currentRoot.componentInstance ? { ...currentRoot.componentInstance } : nextRoot.componentInstance,
+    componentInstance: nextRoot.componentInstance
+      ? { ...(currentRoot.componentInstance ?? {}), ...(nextRoot.componentInstance ?? {}) }
+      : (currentRoot.componentInstance ? { ...currentRoot.componentInstance } : nextRoot.componentInstance),
     overrides: deepClone(nextRoot.overrides ?? { tablet: {}, mobile: {} }),
   };
 
@@ -1298,13 +1322,15 @@ export const useEditorStore = create((set, get) => {
     /** Update layout props (x,y,w,h,rotation,hidden,locked) for a breakpoint.
      *  Desktop → base. Tablet/Mobile → overrides[bpId]. */
     updateElementLayout(elementId, bpId, updates) {
+      const safeUpdates = sanitizeLayoutUpdates(updates);
+      if (!safeUpdates || !Object.keys(safeUpdates).length) return;
       withPage(els => els.map(el => {
         if (el.id !== elementId) return el;
-        if (bpId === 'desktop') return { ...el, base: { ...el.base, ...updates } };
+        if (bpId === 'desktop') return { ...el, base: { ...el.base, ...safeUpdates } };
         const ov = el.overrides?.[bpId] ?? {};
-        return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...updates } } };
+        return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } };
       }));
-      if (updates?.hidden === true) {
+      if (safeUpdates?.hidden === true) {
         const currentDrilled = get().drilledContainerId;
         const nextUiState = {};
         if (currentDrilled === elementId) {
