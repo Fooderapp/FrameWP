@@ -594,8 +594,8 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
     transform: hasRotation ? undefined : (selectionRotation ? `rotate(${selectionRotation}deg)` : undefined),
     transformOrigin: '50% 50%',
     pointerEvents: overlayCapturesPointer ? 'auto' : 'none',
-    borderColor: outlineColor,
-    boxShadow: outlineShadow !== 'transparent'
+    borderColor: hasRotation ? 'transparent' : outlineColor,
+    boxShadow: !hasRotation && outlineShadow !== 'transparent'
       ? `0 0 0 calc(1px * var(--inv-scale, 1)) ${outlineShadow}`
       : undefined,
     background: 'rgba(0,0,0,0.001)',
@@ -653,6 +653,14 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
         height={svgHeight}
         style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 10000 }}
       >
+        <polygon
+          points={polygonPoints}
+          fill="none"
+          stroke={outlineColor}
+          strokeWidth={2 / scale}
+          vectorEffect="non-scaling-stroke"
+          style={{ filter: outlineShadow !== 'transparent' ? `drop-shadow(0 0 ${1 / scale}px ${outlineShadow})` : undefined }}
+        />
         {!el.locked && !isDragging && overlayHandles.map((handle) => {
           const point = handlePoints[handle];
           return (
