@@ -90,6 +90,43 @@ function getNodeWorldRect(node, boardDom, bp, scale) {
   };
 }
 
+function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onPaste, onDelete }) {
+  if (!menu) return null;
+
+  return (
+    <div
+      className="fb-context-menu"
+      style={{ left: menu.clientX, top: menu.clientY }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        className="fb-context-menu__item"
+        onClick={() => { onCopy(); onClose(); }}
+        disabled={!menu.elementId}
+      >
+        Copy
+      </button>
+      <button
+        type="button"
+        className="fb-context-menu__item"
+        onClick={() => { onPaste(); onClose(); }}
+        disabled={!hasClipboard}
+      >
+        Paste
+      </button>
+      <button
+        type="button"
+        className="fb-context-menu__item"
+        onClick={() => { onDelete(); onClose(); }}
+        disabled={!menu.elementId}
+      >
+        Delete
+      </button>
+    </div>
+  );
+}
+
 /** Draggable viewport-fold line, rendered at world-space for every breakpoint. */
 function ViewportFoldOverlay({ onStartFoldDrag }) {
   const bpDefs = useEditorStore(s => s.breakpointDefs);
@@ -342,6 +379,8 @@ export default function InfiniteCanvas() {
   const artboardSel    = useEditorStore(s => s.artboardSel);
   const setDrilled     = useEditorStore(s => s.setDrilledContainerId);
   const addElement          = useEditorStore(s => s.addElement);
+  const addElements         = useEditorStore(s => s.addElements);
+  const deleteElement       = useEditorStore(s => s.deleteElement);
   const reparentElement      = useEditorStore(s => s.reparentElement);
   const pushHistory          = useEditorStore(s => s.pushHistory);
   const setInteracting       = useEditorStore(s => s.setInteracting);
@@ -369,7 +408,66 @@ export default function InfiniteCanvas() {
   const [dragOverlay,      setDragOverlay]      = useState(null); // { elementId, worldX, worldY, width, height }
   const [alignmentGuides,  setAlignmentGuides]  = useState([]); // [{ orientation, x?, y?, start, end }]
   const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
+  const [contextMenu,      setContextMenu]      = useState(null);
   const clipboard = useRef(null);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const copyElementToClipboard = useCallback((elementId, bpId) => {
+    if (!elementId) return false;
+    const allEls = useEditorStore.getState().getAllElements();
+    const rootEl = allEls.find(el => el.id === elementId);
+    if (!rootEl) return false;
+    const subtree = [];
+    const collectSubtree = (id) => {
+      const elem = allEls.find(el => el.id === id);
+      if (!elem) return;
+      subtree.push(elem);
+      (elem.children ?? []).forEach(collectSubtree);
+    };
+    collectSubtree(rootEl.id);
+    clipboard.current = { subtree, rootId: rootEl.id, bpId };
+    return true;
+  }, []);
+
+  const pasteClipboardAt = useCallback(({ bpId = 'desktop', x = 80, y = 80 }) => {
+    if (!clipboard.current) return false;
+    const { subtree, rootId, bpId: copiedBpId } = clipboard.current;
+    const targetBpId = bpId || copiedBpId || 'desktop';
+    const cloned = cloneSubtree(subtree, rootId).map((el) => {
+      if (targetBpId === 'desktop') return el;
+      return {
+        ...el,
+        base: { ...el.base, hidden: true },
+        overrides: {
+          ...el.overrides,
+          [targetBpId]: {
+            ...(el.overrides?.[targetBpId] ?? {}),
+            hidden: false,
+          },
+        },
+      };
+    });
+    const root = cloned[0];
+    if (!root) return false;
+    if (targetBpId === 'desktop') {
+      root.base = { ...root.base, x, y };
+    } else {
+      root.overrides = {
+        ...root.overrides,
+        [targetBpId]: {
+          ...(root.overrides?.[targetBpId] ?? {}),
+          x,
+          y,
+          hidden: false,
+        },
+      };
+    }
+    addElements(cloned);
+    useEditorStore.getState().setSelection({ elementId: root.id, bpId: targetBpId });
+    pushHistory();
+    return true;
+  }, [addElements, pushHistory]);
 
   // ── Drag state ─────────────────────────────────────────────
   const drag = useRef(null);
@@ -581,6 +679,12 @@ export default function InfiniteCanvas() {
 
   // ── Keyboard ───────────────────────────────────────────────
   useEffect(() => {
+    const handlePointerDown = () => setContextMenu(null);
+    window.addEventListener('mousedown', handlePointerDown);
+    return () => window.removeEventListener('mousedown', handlePointerDown);
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (e) => {
       if (e.code === 'Space' && !e.target.matches('input,textarea')) {
         e.preventDefault();
@@ -631,28 +735,19 @@ export default function InfiniteCanvas() {
       if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !e.target.matches('input,textarea')) {
         const { selection } = useEditorStore.getState();
         if (!selection) return;
-        const allEls = useEditorStore.getState().getAllElements();
-        const rootEl = allEls.find(el => el.id === selection.elementId);
-        if (!rootEl) return;
-        const subtree = [];
-        const collectSubtree = (id) => {
-          const elem = allEls.find(el => el.id === id);
-          if (!elem) return;
-          subtree.push(elem);
-          (elem.children ?? []).forEach(collectSubtree);
-        };
-        collectSubtree(rootEl.id);
-        clipboard.current = { subtree, rootId: rootEl.id, bpId: selection.bpId };
+        copyElementToClipboard(selection.elementId, selection.bpId);
       }
       // Paste (Cmd/Ctrl+V)
       if ((e.metaKey || e.ctrlKey) && e.key === 'v' && !e.target.matches('input,textarea')) {
         if (!clipboard.current) return;
-        const { subtree, rootId, bpId: copiedBpId } = clipboard.current;
-        const currentBpId = useEditorStore.getState().selection?.bpId ?? copiedBpId;
-        const cloned = cloneSubtree(subtree, rootId);
-        useEditorStore.getState().addElements(cloned);
-        useEditorStore.getState().setSelection({ elementId: cloned[0].id, bpId: currentBpId });
-        useEditorStore.getState().pushHistory();
+        const currentBpId = useEditorStore.getState().selection?.bpId ?? clipboard.current.bpId;
+        const selectedEl = useEditorStore.getState().getSelectedElement();
+        const resolvedSelected = selectedEl ? resolveElement(selectedEl, currentBpId) : null;
+        pasteClipboardAt({
+          bpId: currentBpId,
+          x: (resolvedSelected?.x ?? 60) + 20,
+          y: (resolvedSelected?.y ?? 60) + 20,
+        });
       }
     };
     const onKeyUp = (e) => {
@@ -667,7 +762,7 @@ export default function InfiniteCanvas() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, []);
+  }, [copyElementToClipboard, pasteClipboardAt]);
 
   // ── Initial fit-to-canvas ─────────────────────────────────
   useEffect(() => {
@@ -725,6 +820,7 @@ export default function InfiniteCanvas() {
 
   // ── Mouse down (pan, draw, or canvas deselect) ─────────────
   const onMouseDown = (e) => {
+    if (contextMenu) setContextMenu(null);
     if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
       e.preventDefault();
       isPanning.current = true;
@@ -739,6 +835,39 @@ export default function InfiniteCanvas() {
       setDrilled(null);
     }
   };
+
+  const onContextMenu = useCallback((e) => {
+    e.preventDefault();
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    if (!containerRect) return;
+
+    const artboardNode = e.target.closest('.fb-artboard[data-bp]');
+    const bpId = artboardNode?.dataset.bp ?? useEditorStore.getState().selection?.bpId ?? 'desktop';
+    const elementNode = e.target.closest('[data-id]');
+    const elementId = elementNode?.dataset.id ?? null;
+    const bp = useEditorStore.getState().breakpointDefs[bpId];
+    const page = useEditorStore.getState().pages?.find(p => p.id === useEditorStore.getState().currentPageId);
+    const pad = resolvePagePadding(page?.padding, bpId);
+    const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
+    const worldX = (e.clientX - containerRect.left - panX) / scale;
+    const worldY = (e.clientY - containerRect.top - panY) / scale;
+    const localX = bp ? Math.max(0, Math.round(worldX - bp.x - (pad?.left ?? 0))) : 80;
+    const localY = bp ? Math.max(0, Math.round(worldY - bp.y - (pad?.top ?? 0))) : 80;
+
+    if (elementId) {
+      setSelection({ elementId, bpId });
+      setArtboardSel(null);
+    }
+
+    setContextMenu({
+      clientX: e.clientX,
+      clientY: e.clientY,
+      bpId,
+      elementId,
+      localX,
+      localY,
+    });
+  }, [setArtboardSel, setSelection]);
 
   // ── Mouse move (pan + element drag/resize) ─────────────────
   const onMouseMove = useCallback((e) => {
@@ -1502,6 +1631,7 @@ export default function InfiniteCanvas() {
       className="fb-canvas-container"
       style={{ cursor }}
       onMouseDown={onMouseDown}
+      onContextMenu={onContextMenu}
       onDrop={onDrop}
       onDragOver={onDragOver}
     >
@@ -1606,6 +1736,18 @@ export default function InfiniteCanvas() {
           zIndex: 99999,
         }} />
       )}
+      <CanvasContextMenu
+        menu={contextMenu}
+        hasClipboard={!!clipboard.current}
+        onClose={closeContextMenu}
+        onCopy={() => contextMenu?.elementId && copyElementToClipboard(contextMenu.elementId, contextMenu.bpId)}
+        onPaste={() => contextMenu && pasteClipboardAt({ bpId: contextMenu.bpId, x: contextMenu.localX, y: contextMenu.localY })}
+        onDelete={() => {
+          if (!contextMenu?.elementId) return;
+          deleteElement(contextMenu.elementId);
+          pushHistory();
+        }}
+      />
     </div>
   );
 }
