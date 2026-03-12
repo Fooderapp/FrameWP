@@ -895,6 +895,49 @@ html, body, #framebuilder-root {
   cursor: pointer;
 }
 
+.fb-component-variant-state-controls {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10004;
+}
+
+.fb-component-variant-state-controls__btn {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px dashed rgba(139, 92, 246, 0.42);
+  background: rgba(17, 13, 28, 0.94);
+  color: #ddd6fe;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fb-component-variant-state-controls__btn:hover {
+  background: rgba(35, 24, 56, 0.96);
+  border-color: rgba(139, 92, 246, 0.75);
+}
+
+.fb-component-variant-state-controls__btn.is-created {
+  border-style: solid;
+  background: rgba(39, 25, 63, 0.96);
+}
+
+.fb-component-variant-state-controls__btn.is-active {
+  background: rgba(139, 92, 246, 0.24);
+  border-color: rgba(196, 181, 253, 0.9);
+  color: #f5f3ff;
+}
+
+.fb-component-variant-state-controls__btn--add {
+  border-style: solid;
+  background: rgba(139, 92, 246, 0.18);
+}
+
 .fb-component-canvas-add-variant {
   position: absolute;
   min-height: 36px;
@@ -1716,6 +1759,11 @@ html, body, #framebuilder-root {
 
 .fb-component-editor-overlay__chip-add:hover {
   background: rgba(139, 92, 246, 0.22);
+}
+
+.fb-component-editor-overlay__chip-add:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .fb-component-editor-overlay__body {

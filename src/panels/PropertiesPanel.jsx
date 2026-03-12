@@ -451,6 +451,18 @@ function getTransitionSummary(interaction) {
     : `Realistic · ${Math.round((transition.duration ?? 0.3) * 10) / 10}s`;
 }
 
+function isDefaultVariant(variant) {
+  return (variant?.mode ?? 'default') === 'default';
+}
+
+function getVariantLabel(variants, variant) {
+  if (!variant) return 'Primary';
+  if (isDefaultVariant(variant)) return variant.name || 'Primary';
+  const parent = (variants ?? []).find((entry) => entry.id === variant.parentVariantId) ?? null;
+  const stateName = variant.mode === 'hover' ? 'Hover' : 'Pressed';
+  return `${parent?.name || 'Variant'} · ${stateName}`;
+}
+
 // ── Reset override button ───────────────────────────────────────
 function ResetBtn({ show, onReset }) {
   if (!show) return null;
@@ -714,6 +726,7 @@ export default function PropertiesPanel() {
   const selectedEditorVariant = activeSurface === 'component' && element.componentRoot
     ? (componentEditor.variants ?? []).find((variant) => variant.id === element.componentEditorVariantId)
     : null;
+  const selectedEditorVariantLabel = getVariantLabel(componentEditor.variants ?? [], selectedEditorVariant);
   const selectedEditorTransitionTarget = selectedEditorVariant?.interaction?.targetVariantId
     ? (componentEditor.variants ?? []).find((variant) => variant.id === selectedEditorVariant.interaction.targetVariantId) ?? null
     : null;
@@ -722,7 +735,7 @@ export default function PropertiesPanel() {
     return (
       <>
         <aside className="fb-right">
-          <div className="fb-right__header">{selectedEditorVariant?.name || element.componentVariantName || 'Primary'}</div>
+          <div className="fb-right__header">{selectedEditorVariantLabel}</div>
           <div className="fb-panel-body">
             <Section title="Size">
               <div className="fb-quad" style={{ marginBottom: 6 }}>
@@ -740,34 +753,38 @@ export default function PropertiesPanel() {
                 />
               </div>
               <div className="fb-artboard-bp-note">
-                {selectedEditorVariant?.name === 'Primary'
-                  ? 'Primary defines the base component size. Other variants inherit from it unless they override width or height.'
-                  : 'This variant inherits from Primary until you override its size here. Instances on the main canvas can still be resized independently.'}
+                {selectedEditorVariant?.mode === 'hover' || selectedEditorVariant?.mode === 'pressed'
+                  ? 'This state inherits from its parent variant. Only the properties you override here stay different.'
+                  : selectedEditorVariant?.name === 'Primary'
+                    ? 'Primary defines the base component size. Other variants inherit from it unless they override width or height.'
+                    : 'This variant inherits from Primary until you override its size here. Instances on the main canvas can still be resized independently.'}
               </div>
             </Section>
-            <Section title="Transition">
-              {selectedEditorTransitionTarget ? (
-                <>
-                  <div className="fb-prop-row">
-                    <span className="fb-prop-label">Type</span>
-                    <button
-                      type="button"
-                      className="fb-secondary-btn fb-prop-action-btn"
-                      onClick={() => setTransitionModalState({ variantId: selectedEditorVariant.id })}
-                    >
-                      {getTransitionSummary(selectedEditorVariant?.interaction)}
-                    </button>
-                  </div>
+            {isDefaultVariant(selectedEditorVariant) ? (
+              <Section title="Transition">
+                {selectedEditorTransitionTarget ? (
+                  <>
+                    <div className="fb-prop-row">
+                      <span className="fb-prop-label">Type</span>
+                      <button
+                        type="button"
+                        className="fb-secondary-btn fb-prop-action-btn"
+                        onClick={() => setTransitionModalState({ variantId: selectedEditorVariant.id })}
+                      >
+                        {getTransitionSummary(selectedEditorVariant?.interaction)}
+                      </button>
+                    </div>
+                    <div className="fb-artboard-bp-note">
+                      Animates {selectedEditorVariant?.name || 'this variant'} to {selectedEditorTransitionTarget.name || 'the target variant'} on component change.
+                    </div>
+                  </>
+                ) : (
                   <div className="fb-artboard-bp-note">
-                    Animates {selectedEditorVariant?.name || 'this variant'} to {selectedEditorTransitionTarget.name || 'the target variant'} on component change.
+                    Connect this variant to another variant first. Then you can edit how the change animates here.
                   </div>
-                </>
-              ) : (
-                <div className="fb-artboard-bp-note">
-                  Connect this variant to another variant first. Then you can edit how the change animates here.
-                </div>
-              )}
-            </Section>
+                )}
+              </Section>
+            ) : null}
           </div>
         </aside>
         {transitionModalState && selectedEditorVariant && selectedEditorTransitionTarget ? (

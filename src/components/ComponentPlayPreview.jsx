@@ -59,13 +59,49 @@ function applyVariantOverrides(primarySnapshot = [], overrideSnapshot = []) {
   return Array.from(nextMap.values());
 }
 
+function isDefaultVariant(variant) {
+  return (variant?.mode ?? 'default') === 'default';
+}
+
+function getBaseVariantId(variants = [], variantId = null) {
+  const current = variants.find((variant) => variant.id === variantId) ?? null;
+  if (!current) return getPrimaryVariant(variants)?.id ?? null;
+  return isDefaultVariant(current) ? current.id : (current.parentVariantId ?? getPrimaryVariant(variants)?.id ?? null);
+}
+
+function findStateVariant(variants = [], baseVariantId, mode) {
+  return variants.find((variant) => variant.mode === mode && variant.parentVariantId === baseVariantId) ?? null;
+}
+
+function getStateTransition() {
+  return {
+    type: 'ease',
+    duration: 0.18,
+    easePreset: 'easeInOut',
+    springMode: 'time',
+    bounce: 0,
+    stiffness: 500,
+    damping: 24,
+    mass: 1,
+    bezier: { x1: 0.4, y1: 0, x2: 0.2, y2: 1 },
+  };
+}
+
+function getPrimaryVariant(variants = []) {
+  return variants.find(isDefaultVariant) ?? variants[0] ?? null;
+}
+
 function composeVariantSnapshot(variants = [], activeVariantId = null) {
-  const primary = variants[0] ?? null;
+  const primary = getPrimaryVariant(variants);
   if (!primary) return [];
   if (!activeVariantId || activeVariantId === primary.id) return structuredClone(primary.snapshot ?? []);
   const variant = variants.find((item) => item.id === activeVariantId) ?? primary;
   if (variant.id === primary.id) return structuredClone(primary.snapshot ?? []);
-  return applyVariantOverrides(structuredClone(primary.snapshot ?? []), structuredClone(variant.snapshot ?? []));
+  if (isDefaultVariant(variant)) {
+    return applyVariantOverrides(structuredClone(primary.snapshot ?? []), structuredClone(variant.snapshot ?? []));
+  }
+  const parent = variants.find((item) => item.id === variant.parentVariantId) ?? primary;
+  return applyVariantOverrides(composeVariantSnapshot(variants, parent.id), structuredClone(variant.snapshot ?? []));
 }
 
 function normalizeTransition(transition) {
@@ -523,13 +559,19 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
 }
 
 export default function ComponentPlayPreview({ componentName, variants, initialVariantId, onClose }) {
-  const [activeVariantId, setActiveVariantId] = useState(initialVariantId ?? variants?.[0]?.id ?? null);
+  const defaultVariants = useMemo(() => (variants ?? []).filter(isDefaultVariant), [variants]);
+  const initialBaseVariantId = useMemo(() => {
+    const selected = (variants ?? []).find((variant) => variant.id === initialVariantId) ?? null;
+    if (!selected) return defaultVariants[0]?.id ?? null;
+    return isDefaultVariant(selected) ? selected.id : (selected.parentVariantId ?? defaultVariants[0]?.id ?? null);
+  }, [defaultVariants, initialVariantId, variants]);
+  const [activeVariantId, setActiveVariantId] = useState(initialBaseVariantId);
   const stageRef = useRef(null);
   const timerRef = useRef(null);
 
   useEffect(() => {
-    setActiveVariantId(initialVariantId ?? variants?.[0]?.id ?? null);
-  }, [initialVariantId, variants]);
+    setActiveVariantId(initialBaseVariantId);
+  }, [initialBaseVariantId]);
 
   useEffect(() => () => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
@@ -551,6 +593,8 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
   );
 
   const activeVariant = activeVariantId ? (variantStateMap.get(activeVariantId)?.variant ?? null) : null;
+  const activeBaseVariantId = useMemo(() => getBaseVariantId(variants ?? [], activeVariantId), [activeVariantId, variants]);
+  const activeBaseVariant = activeBaseVariantId ? (variantStateMap.get(activeBaseVariantId)?.variant ?? null) : null;
   const stageSize = useMemo(() => variantStates.reduce((acc, entry) => {
     const resolvedRoot = resolveElement(entry.root, 'desktop');
     return {
@@ -559,7 +603,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
     };
   }, { width: 320, height: 220 }), [variantStates]);
 
-  const switchVariant = useCallback((targetVariantId, interaction) => {
+  const switchVariant = useCallback((targetVariantId, interaction, options = {}) => {
     if (!targetVariantId || targetVariantId === activeVariantId) return;
     const stage = stageRef.current;
     const next = stage?.querySelector(`[data-variant-id="${targetVariantId}"]`);
@@ -639,18 +683,28 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
     });
   }, [activeVariantId]);
 
+  const applyVisualState = useCallback((mode) => {
+    const baseVariantId = getBaseVariantId(variants ?? [], activeVariantId);
+    if (!baseVariantId) return;
+    const targetVariantId = mode
+      ? (findStateVariant(variants ?? [], baseVariantId, mode)?.id ?? baseVariantId)
+      : baseVariantId;
+    if (!targetVariantId || targetVariantId === activeVariantId) return;
+    switchVariant(targetVariantId, { transition: getStateTransition() }, { transient: true });
+  }, [activeVariantId, switchVariant, variants]);
+
   const runInteraction = useCallback((expectedTrigger) => {
-    const interaction = activeVariant?.interaction;
+    const interaction = activeBaseVariant?.interaction;
     if (!interaction?.targetVariantId || interaction.trigger !== expectedTrigger) return;
     if (timerRef.current) window.clearTimeout(timerRef.current);
     const delay = Math.max(0, Number(interaction.delay) || 0) * 1000;
     timerRef.current = window.setTimeout(() => {
       switchVariant(interaction.targetVariantId, interaction);
     }, delay);
-  }, [activeVariant, switchVariant]);
+  }, [activeBaseVariant, switchVariant]);
 
   useEffect(() => {
-    const interaction = activeVariant?.interaction;
+    const interaction = activeBaseVariant?.interaction;
     if (!interaction?.targetVariantId || interaction.trigger !== 'appear') return undefined;
     if (timerRef.current) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
@@ -659,7 +713,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
     return () => {
       if (timerRef.current) window.clearTimeout(timerRef.current);
     };
-  }, [activeVariant, switchVariant]);
+  }, [activeBaseVariant, switchVariant]);
 
   if (!variantStates.length) return null;
 
@@ -674,16 +728,16 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
           <button type="button" className="fb-secondary-btn" onClick={onClose}>Close</button>
         </div>
         <div className="fb-component-play-preview__toolbar">
-          {variantStates.map(({ variant }) => (
+          {defaultVariants.map((variant) => (
             <button
               key={variant.id}
               type="button"
-              className={`fb-component-play-preview__chip${variant.id === activeVariantId ? ' fb-component-play-preview__chip--active' : ''}`}
+              className={`fb-component-play-preview__chip${variant.id === activeBaseVariantId ? ' fb-component-play-preview__chip--active' : ''}`}
               onClick={() => switchVariant(
                 variant.id,
-                activeVariant?.interaction?.targetVariantId === variant.id
-                  ? activeVariant.interaction
-                  : { transition: activeVariant?.interaction?.transition ?? variant.interaction?.transition ?? null },
+                activeBaseVariant?.interaction?.targetVariantId === variant.id
+                  ? activeBaseVariant.interaction
+                  : { transition: activeBaseVariant?.interaction?.transition ?? variant.interaction?.transition ?? null },
               )}
             >
               {variant.name}
@@ -694,9 +748,23 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
           <div
             className="fb-component-play-preview__stage"
             onClick={() => runInteraction('click')}
-            onPointerDown={() => runInteraction('click-start')}
-            onMouseEnter={() => runInteraction('mouse-enter')}
-            onMouseLeave={() => runInteraction('mouse-leave')}
+            onPointerDown={() => {
+              applyVisualState('pressed');
+              runInteraction('click-start');
+            }}
+            onPointerUp={(event) => {
+              if (event.currentTarget.matches(':hover')) applyVisualState('hover');
+              else applyVisualState(null);
+            }}
+            onPointerCancel={() => applyVisualState(null)}
+            onMouseEnter={() => {
+              applyVisualState('hover');
+              runInteraction('mouse-enter');
+            }}
+            onMouseLeave={() => {
+              applyVisualState(null);
+              runInteraction('mouse-leave');
+            }}
           >
             <div ref={stageRef} className="fb-component-play-preview__surface" style={stageSize}>
               {variantStates.map(({ variant, root, indexById }) => (

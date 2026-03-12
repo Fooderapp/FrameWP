@@ -6,6 +6,16 @@ import { useEditorStore } from '../store/editorStore';
 import ComponentPlayPreview from './ComponentPlayPreview';
 import { IconButton, UIIcons } from './UIIcons';
 
+function isDefaultVariant(variant) {
+  return (variant?.mode ?? 'default') === 'default';
+}
+
+function getBaseVariantId(variants, variantId) {
+  const current = (variants ?? []).find((variant) => variant.id === variantId) ?? null;
+  if (!current) return (variants ?? []).find(isDefaultVariant)?.id ?? null;
+  return isDefaultVariant(current) ? current.id : (current.parentVariantId ?? null);
+}
+
 export default function ComponentEditorOverlay() {
   const [playModeOpen, setPlayModeOpen] = useState(false);
   const componentEditor = useEditorStore(s => s.componentEditor);
@@ -16,6 +26,8 @@ export default function ComponentEditorOverlay() {
 
   const component = components.find(item => item.id === componentEditor.componentId);
   const activeVariantId = componentEditor.activeVariantId;
+  const defaultVariants = (componentEditor.variants ?? []).filter(isDefaultVariant);
+  const activeBaseVariantId = getBaseVariantId(componentEditor.variants ?? [], activeVariantId);
 
   if (!componentEditor.isOpen || !component) return null;
 
@@ -26,24 +38,26 @@ export default function ComponentEditorOverlay() {
           <div className="fb-component-editor-overlay__eyebrow">Component</div>
           <div className="fb-component-editor-overlay__title">{component.name}</div>
           <div className="fb-component-editor-overlay__variants">
-            {(componentEditor.variants ?? []).map((variant) => (
+            {defaultVariants.map((variant) => (
               <button
                 key={variant.id}
                 type="button"
-                className={`fb-component-editor-overlay__chip${variant.id === activeVariantId ? ' fb-component-editor-overlay__chip--active' : ''}`}
+                className={`fb-component-editor-overlay__chip${variant.id === activeBaseVariantId ? ' fb-component-editor-overlay__chip--active' : ''}`}
                 onClick={() => selectComponentEditorVariant(variant.id)}
               >
                 {variant.name}
               </button>
             ))}
-            <button
-              type="button"
-              className="fb-component-editor-overlay__chip-add"
-              title="Add variant"
-              onClick={addComponentVariant}
-            >
-              +
-            </button>
+            {activeVariantId ? (
+              <button
+                type="button"
+                className="fb-component-editor-overlay__chip-add"
+                title="Add variant from selection"
+                onClick={addComponentVariant}
+              >
+                +
+              </button>
+            ) : null}
           </div>
         </div>
         <div className="fb-component-editor-overlay__actions">

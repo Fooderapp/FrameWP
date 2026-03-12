@@ -159,6 +159,68 @@ function ensureComponentPrimaryRoot(snapshot = []) {
 
 const COMPONENT_TRANSITION_TYPES = new Set(['instant', 'ease', 'realistic']);
 const COMPONENT_EASE_PRESETS = new Set(['easeInOut', 'easeOut', 'easeIn', 'linear', 'custom']);
+const COMPONENT_VARIANT_MODES = new Set(['default', 'hover', 'pressed']);
+const COMPONENT_VARIANT_STATE_ORDER = ['hover', 'pressed'];
+const COMPONENT_VARIANT_STATE_LABELS = {
+  default: 'Default',
+  hover: 'Hover',
+  pressed: 'Pressed',
+};
+
+function getComponentVariantStateLabel(mode) {
+  return COMPONENT_VARIANT_STATE_LABELS[mode] ?? 'State';
+}
+
+function isDefaultComponentVariant(variant) {
+  return (variant?.mode ?? 'default') === 'default';
+}
+
+function getDefaultComponentVariants(component) {
+  return (component?.variants ?? []).filter(isDefaultComponentVariant);
+}
+
+function getPrimaryComponentVariant(component) {
+  return getDefaultComponentVariants(component)[0] ?? component?.variants?.[0] ?? null;
+}
+
+function getBaseComponentVariantId(variants, variantId = null) {
+  const selected = (variants ?? []).find((variant) => variant.id === variantId) ?? null;
+  if (!selected) return getDefaultComponentVariants({ variants })[0]?.id ?? null;
+  return isDefaultComponentVariant(selected) ? selected.id : (selected.parentVariantId ?? null);
+}
+
+function insertVariantAfterFamily(variants, baseVariantId, nextVariant) {
+  const existing = variants ?? [];
+  const baseId = getBaseComponentVariantId(existing, baseVariantId) ?? baseVariantId;
+  const familyIndexes = existing.reduce((acc, variant, index) => {
+    if (variant.id === baseId || variant.parentVariantId === baseId) acc.push(index);
+    return acc;
+  }, []);
+  const insertIndex = familyIndexes.length ? (familyIndexes[familyIndexes.length - 1] + 1) : existing.length;
+  return [
+    ...existing.slice(0, insertIndex),
+    nextVariant,
+    ...existing.slice(insertIndex),
+  ];
+}
+
+function insertStateVariant(variants, baseVariantId, stateVariant) {
+  const existing = variants ?? [];
+  const family = existing.filter((variant) => variant.id === baseVariantId || variant.parentVariantId === baseVariantId);
+  const stateOrderIndex = COMPONENT_VARIANT_STATE_ORDER.indexOf(stateVariant.mode);
+  const sameFamilyInsertIndex = family.findIndex((variant) => {
+    if (isDefaultComponentVariant(variant)) return false;
+    return COMPONENT_VARIANT_STATE_ORDER.indexOf(variant.mode) > stateOrderIndex;
+  });
+  if (sameFamilyInsertIndex === -1) return insertVariantAfterFamily(existing, baseVariantId, stateVariant);
+  const familyVariant = family[sameFamilyInsertIndex];
+  const insertIndex = existing.findIndex((variant) => variant.id === familyVariant.id);
+  return [
+    ...existing.slice(0, insertIndex),
+    stateVariant,
+    ...existing.slice(insertIndex),
+  ];
+}
 
 function clampFinite(value, fallback, min = -Infinity, max = Infinity) {
   const numericValue = typeof value === 'number' ? value : parseFloat(value);
@@ -206,13 +268,23 @@ function normalizeComponentInteraction(interaction) {
 }
 
 function normalizeComponentVariant(variant, fallbackName = 'Variant', { primary = false } = {}) {
+  const mode = primary
+    ? 'default'
+    : (COMPONENT_VARIANT_MODES.has(variant?.mode) ? variant.mode : 'default');
+  const parentVariantId = mode === 'default'
+    ? null
+    : (typeof variant?.parentVariantId === 'string' && variant.parentVariantId ? variant.parentVariantId : null);
   return {
     id: variant?.id ?? makeId('cmp-var'),
-    name: primary ? 'Primary' : (variant?.name || fallbackName).trim(),
+    name: primary
+      ? 'Primary'
+      : (mode === 'default' ? (variant?.name || fallbackName).trim() : getComponentVariantStateLabel(mode)),
+    mode,
+    parentVariantId,
     snapshot: primary
       ? ensureComponentPrimaryRoot(variant?.snapshot ?? [])
       : deepClone(Array.isArray(variant?.snapshot) ? variant.snapshot : []),
-    interaction: normalizeComponentInteraction(variant?.interaction),
+    interaction: mode === 'default' ? normalizeComponentInteraction(variant?.interaction) : null,
   };
 }
 
@@ -225,20 +297,34 @@ function normalizeStoredComponent(component) {
         snapshot: component?.snapshot ?? [],
       }, 'Primary', { primary: true })];
 
-  const normalizedVariants = variants.map((variant, index) => (
-    index === 0 ? { ...variant, name: 'Primary' } : variant
-  ));
-  const variantIds = new Set(normalizedVariants.map((variant) => variant.id));
-  const sanitizedVariants = normalizedVariants.map((variant) => {
-    const interaction = variant.interaction;
-    if (!interaction?.targetVariantId || !variantIds.has(interaction.targetVariantId) || interaction.targetVariantId === variant.id) {
-      return { ...variant, interaction: null };
-    }
+  const normalizedVariants = variants.map((variant, index) => {
+    if (index === 0) return { ...variant, name: 'Primary', mode: 'default', parentVariantId: null };
+    if (!isDefaultComponentVariant(variant)) return { ...variant, name: getComponentVariantStateLabel(variant.mode) };
     return variant;
   });
-  const defaultVariantId = sanitizedVariants.some((variant) => variant.id === component?.defaultVariantId)
+  const variantIds = new Set(normalizedVariants.map((variant) => variant.id));
+  const defaultVariantIds = new Set(normalizedVariants.filter(isDefaultComponentVariant).map((variant) => variant.id));
+  const sanitizedVariants = normalizedVariants.map((variant) => {
+    if (!isDefaultComponentVariant(variant)) {
+      const nextParentVariantId = defaultVariantIds.has(variant.parentVariantId)
+        ? variant.parentVariantId
+        : normalizedVariants[0]?.id ?? null;
+      return {
+        ...variant,
+        parentVariantId: nextParentVariantId,
+        interaction: null,
+        name: getComponentVariantStateLabel(variant.mode),
+      };
+    }
+    const interaction = variant.interaction;
+    if (!interaction?.targetVariantId || !variantIds.has(interaction.targetVariantId) || interaction.targetVariantId === variant.id) {
+      return { ...variant, mode: 'default', parentVariantId: null, interaction: null };
+    }
+    return { ...variant, mode: 'default', parentVariantId: null };
+  });
+  const defaultVariantId = sanitizedVariants.some((variant) => variant.id === component?.defaultVariantId && isDefaultComponentVariant(variant))
     ? component.defaultVariantId
-    : sanitizedVariants[0]?.id ?? null;
+    : sanitizedVariants.find(isDefaultComponentVariant)?.id ?? sanitizedVariants[0]?.id ?? null;
 
   return {
     ...component,
@@ -334,12 +420,21 @@ function applyVariantOverrides(primarySnapshot, overrideSnapshot = []) {
 }
 
 function composeVariantSnapshot(component, variantId = null) {
-  const primaryVariant = component?.variants?.[0] ?? null;
+  const primaryVariant = getPrimaryComponentVariant(component);
   if (!primaryVariant) return [];
   const primarySnapshot = ensureComponentPrimaryRoot(primaryVariant.snapshot ?? []);
   const variant = getComponentVariant(component, variantId ?? primaryVariant.id);
   if (!variant || variant.id === primaryVariant.id) return primarySnapshot;
-  return applyVariantOverrides(primarySnapshot, variant.snapshot ?? []);
+  if (isDefaultComponentVariant(variant)) {
+    return applyVariantOverrides(primarySnapshot, variant.snapshot ?? []);
+  }
+  const visited = new Set([variant.id]);
+  let parentVariantId = variant.parentVariantId;
+  while (parentVariantId && visited.has(parentVariantId)) parentVariantId = null;
+  const parentSnapshot = parentVariantId
+    ? composeVariantSnapshot(component, parentVariantId)
+    : primarySnapshot;
+  return applyVariantOverrides(parentSnapshot, variant.snapshot ?? []);
 }
 
 function stripComponentEditorMeta(element) {
@@ -349,6 +444,8 @@ function stripComponentEditorMeta(element) {
   delete next.componentVariantName;
   delete next.componentVariantOrder;
   delete next.componentVariantPrimary;
+  delete next.componentVariantMode;
+  delete next.componentVariantParentId;
   return next;
 }
 
@@ -373,6 +470,8 @@ function instantiateEditorVariantSnapshot(snapshot, variant, order, rootX, rootY
       componentVariantName: variant.name,
       componentVariantOrder: order,
       componentVariantPrimary: order === 0,
+      componentVariantMode: variant.mode ?? 'default',
+      componentVariantParentId: variant.parentVariantId ?? null,
       base: isRoot
         ? { ...el.base, x: rootX, y: rootY }
         : el.base,
@@ -381,19 +480,30 @@ function instantiateEditorVariantSnapshot(snapshot, variant, order, rootX, rootY
 }
 
 function buildComponentEditorElements(component) {
-  const variants = component?.variants ?? [];
+  const defaultVariants = getDefaultComponentVariants(component);
   let cursorX = COMPONENT_EDITOR_VARIANT_SIDE_PAD;
   let maxBottom = COMPONENT_EDITOR_VARIANT_TOP + 320;
   const elements = [];
 
-  variants.forEach((variant, index) => {
-    const snapshot = composeVariantSnapshot(component, variant.id);
-    const root = getSnapshotRoot(snapshot);
-    if (!root) return;
-    const runtimeSnapshot = instantiateEditorVariantSnapshot(snapshot, variant, index, cursorX, COMPONENT_EDITOR_VARIANT_TOP);
-    elements.push(...runtimeSnapshot);
-    cursorX += (root.base?.width ?? 240) + COMPONENT_EDITOR_VARIANT_GAP;
-    maxBottom = Math.max(maxBottom, COMPONENT_EDITOR_VARIANT_TOP + (root.base?.height ?? 160));
+  defaultVariants.forEach((variant, index) => {
+    const family = [variant, ...(component?.variants ?? []).filter((entry) => !isDefaultComponentVariant(entry) && entry.parentVariantId === variant.id)];
+    let familyMaxWidth = 240;
+    let familyBottom = COMPONENT_EDITOR_VARIANT_TOP;
+    let cursorY = COMPONENT_EDITOR_VARIANT_TOP;
+
+    family.forEach((entry) => {
+      const snapshot = composeVariantSnapshot(component, entry.id);
+      const root = getSnapshotRoot(snapshot);
+      if (!root) return;
+      const runtimeSnapshot = instantiateEditorVariantSnapshot(snapshot, entry, index, cursorX, cursorY);
+      elements.push(...runtimeSnapshot);
+      familyMaxWidth = Math.max(familyMaxWidth, root.base?.width ?? 240);
+      familyBottom = Math.max(familyBottom, cursorY + (root.base?.height ?? 160));
+      cursorY = familyBottom + 120;
+    });
+
+    cursorX += familyMaxWidth + COMPONENT_EDITOR_VARIANT_GAP;
+    maxBottom = Math.max(maxBottom, familyBottom);
   });
 
   return {
@@ -475,17 +585,27 @@ function syncComponentEditorVariants(componentEditor) {
   const presentVariants = currentVariants.filter((variant) => !!getEditorVariantRoot(pageElements, variant.id));
   if (!presentVariants.length) return currentVariants;
 
-  const primarySnapshot = extractEditorVariantSnapshot(pageElements, presentVariants[0].id);
+  const primaryVariant = getPrimaryComponentVariant({ variants: presentVariants });
+  const primarySnapshot = extractEditorVariantSnapshot(pageElements, primaryVariant?.id);
   if (!primarySnapshot.length) return currentVariants;
 
-  return presentVariants.map((variant, index) => {
-    if (index === 0) {
-      return { ...variant, name: 'Primary', snapshot: primarySnapshot };
+  const fullSnapshotsById = new Map();
+  fullSnapshotsById.set(primaryVariant.id, primarySnapshot);
+
+  return presentVariants.map((variant) => {
+    if (variant.id === primaryVariant.id) {
+      return { ...variant, name: 'Primary', mode: 'default', parentVariantId: null, snapshot: primarySnapshot, interaction: normalizeComponentInteraction(variant.interaction) };
     }
     const fullVariantSnapshot = extractEditorVariantSnapshot(pageElements, variant.id);
+    fullSnapshotsById.set(variant.id, fullVariantSnapshot);
+    const parentSnapshot = isDefaultComponentVariant(variant)
+      ? primarySnapshot
+      : (fullSnapshotsById.get(variant.parentVariantId) ?? extractEditorVariantSnapshot(pageElements, variant.parentVariantId) ?? primarySnapshot);
     return {
       ...variant,
-      snapshot: extractVariantOverrides(primarySnapshot, fullVariantSnapshot),
+      name: isDefaultComponentVariant(variant) ? variant.name : getComponentVariantStateLabel(variant.mode),
+      interaction: isDefaultComponentVariant(variant) ? normalizeComponentInteraction(variant.interaction) : null,
+      snapshot: extractVariantOverrides(parentSnapshot, fullVariantSnapshot),
     };
   });
 }
@@ -1162,6 +1282,8 @@ export const useEditorStore = create((set, get) => {
       const normalizedComponent = normalizeStoredComponent(component);
       const editorCanvas = buildComponentEditorElements(normalizedComponent);
       const componentBreakpoints = makeComponentEditorBreakpoints(editorCanvas.elements);
+      const initialVariantId = normalizedComponent.variants?.[0]?.id ?? null;
+      const initialRoot = initialVariantId ? getEditorVariantRoot(editorCanvas.elements, initialVariantId) : null;
 
       const state = get();
       const uiRestore = {
@@ -1178,7 +1300,7 @@ export const useEditorStore = create((set, get) => {
         activeSurface: 'component',
         breakpointDefs: deepClone(componentBreakpoints),
         leftTab: 'layers',
-        selection: null,
+        selection: initialRoot ? { elementId: initialRoot.id, bpId: 'desktop' } : null,
         artboardSel: null,
         hoveredId: null,
         drilledContainerId: null,
@@ -1186,7 +1308,7 @@ export const useEditorStore = create((set, get) => {
         componentEditor: {
           isOpen: true,
           componentId,
-          activeVariantId: normalizedComponent.variants?.[0]?.id ?? null,
+          activeVariantId: initialVariantId,
           variants: deepClone(normalizedComponent.variants ?? []),
           page: {
             ...makeComponentEditorPage(),
@@ -1221,6 +1343,7 @@ export const useEditorStore = create((set, get) => {
             ...state.componentEditor,
             variants: (state.componentEditor.variants ?? []).map((variant) => {
               if (variant.id !== variantId) return variant;
+              if (!isDefaultComponentVariant(variant)) return { ...variant, interaction: null };
               if (!interaction?.targetVariantId) return { ...variant, interaction: null };
               const nextInteraction = normalizeComponentInteraction({
                 ...variant.interaction,
@@ -1240,11 +1363,20 @@ export const useEditorStore = create((set, get) => {
       set((state) => {
         if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
         const syncedVariants = syncComponentEditorVariants(state.componentEditor);
+        const componentLike = {
+          variants: syncedVariants,
+          defaultVariantId: syncedVariants.find(isDefaultComponentVariant)?.id ?? null,
+        };
+        const sourceVariantId = state.componentEditor.activeVariantId ?? componentLike.defaultVariantId;
+        if (!sourceVariantId) return state;
+        const primarySnapshot = composeVariantSnapshot(componentLike, componentLike.defaultVariantId);
+        const sourceSnapshot = composeVariantSnapshot(componentLike, sourceVariantId);
         const newVariant = normalizeComponentVariant({
-          name: `Variant ${syncedVariants.length + 1}`,
-          snapshot: [],
-        }, `Variant ${syncedVariants.length + 1}`);
-        const nextVariants = [...syncedVariants, newVariant];
+          name: `Variant ${getDefaultComponentVariants(componentLike).length + 1}`,
+          mode: 'default',
+          snapshot: extractVariantOverrides(primarySnapshot, sourceSnapshot),
+        }, `Variant ${getDefaultComponentVariants(componentLike).length + 1}`);
+        const nextVariants = insertVariantAfterFamily(syncedVariants, sourceVariantId, newVariant);
         const editorCanvas = buildComponentEditorElements({ variants: nextVariants });
         const nextBreakpoints = makeComponentEditorBreakpoints(editorCanvas.elements);
         const newRoot = getEditorVariantRoot(editorCanvas.elements, newVariant.id);
@@ -1254,6 +1386,60 @@ export const useEditorStore = create((set, get) => {
           componentEditor: {
             ...state.componentEditor,
             activeVariantId: newVariant.id,
+            variants: nextVariants,
+            page: {
+              ...state.componentEditor.page,
+              elements: editorCanvas.elements,
+            },
+            breakpointDefs: deepClone(nextBreakpoints),
+          },
+        };
+      });
+    },
+
+    ensureComponentEditorVariantState(stateMode, sourceVariantId = null) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        if (!COMPONENT_VARIANT_STATE_ORDER.includes(stateMode)) return state;
+
+        const syncedVariants = syncComponentEditorVariants(state.componentEditor);
+        const baseVariantId = getBaseComponentVariantId(syncedVariants, sourceVariantId ?? state.componentEditor.activeVariantId);
+        if (!baseVariantId) return state;
+
+        const existingState = syncedVariants.find((variant) => variant.mode === stateMode && variant.parentVariantId === baseVariantId) ?? null;
+        const componentLike = {
+          variants: syncedVariants,
+          defaultVariantId: syncedVariants.find(isDefaultComponentVariant)?.id ?? null,
+        };
+
+        if (existingState) {
+          const existingRoot = getEditorVariantRoot(state.componentEditor.page?.elements ?? [], existingState.id);
+          return {
+            selection: existingRoot ? { elementId: existingRoot.id, bpId: 'desktop' } : state.selection,
+            componentEditor: {
+              ...state.componentEditor,
+              activeVariantId: existingState.id,
+              variants: syncedVariants,
+            },
+          };
+        }
+
+        const nextStateVariant = normalizeComponentVariant({
+          mode: stateMode,
+          parentVariantId: baseVariantId,
+          snapshot: [],
+        }, getComponentVariantStateLabel(stateMode));
+        const nextVariants = insertStateVariant(syncedVariants, baseVariantId, nextStateVariant);
+        const editorCanvas = buildComponentEditorElements({ variants: nextVariants, defaultVariantId: componentLike.defaultVariantId });
+        const nextBreakpoints = makeComponentEditorBreakpoints(editorCanvas.elements);
+        const nextRoot = getEditorVariantRoot(editorCanvas.elements, nextStateVariant.id);
+
+        return {
+          breakpointDefs: deepClone(nextBreakpoints),
+          selection: nextRoot ? { elementId: nextRoot.id, bpId: 'desktop' } : state.selection,
+          componentEditor: {
+            ...state.componentEditor,
+            activeVariantId: nextStateVariant.id,
             variants: nextVariants,
             page: {
               ...state.componentEditor.page,

@@ -833,7 +833,14 @@ class FrameBuilder_Exporter {
 		$variants = is_array( $component['variants'] ?? null ) ? $component['variants'] : [];
 		if ( empty( $variants ) ) return [];
 
-		$primary_variant = $variants[0] ?? null;
+		$primary_variant = null;
+		foreach ( $variants as $candidate ) {
+			if ( ! is_array( $candidate ) || empty( $candidate['id'] ) ) continue;
+			$mode = sanitize_text_field( $candidate['mode'] ?? 'default' );
+			if ( 'default' !== $mode ) continue;
+			$primary_variant = $candidate;
+			break;
+		}
 		if ( ! is_array( $primary_variant ) ) return [];
 
 		$target_variant = null;
@@ -861,8 +868,21 @@ class FrameBuilder_Exporter {
 			return $primary_snapshot;
 		}
 
+		$target_mode = sanitize_text_field( $target_variant['mode'] ?? 'default' );
+		if ( 'default' === $target_mode ) {
+			return $this->apply_component_variant_overrides(
+				$primary_snapshot,
+				is_array( $target_variant['snapshot'] ?? null ) ? $target_variant['snapshot'] : []
+			);
+		}
+
+		$parent_variant_id = sanitize_text_field( $target_variant['parentVariantId'] ?? '' );
+		$parent_snapshot = $parent_variant_id
+			? $this->compose_component_variant_snapshot( $component, $parent_variant_id )
+			: $primary_snapshot;
+
 		return $this->apply_component_variant_overrides(
-			$primary_snapshot,
+			$parent_snapshot,
 			is_array( $target_variant['snapshot'] ?? null ) ? $target_variant['snapshot'] : []
 		);
 	}
@@ -912,6 +932,9 @@ class FrameBuilder_Exporter {
 		foreach ( $variants as $variant ) {
 			if ( ! is_array( $variant ) || empty( $variant['id'] ) ) continue;
 			$variant_id = sanitize_text_field( $variant['id'] );
+			$variant_mode = sanitize_text_field( $variant['mode'] ?? 'default' );
+			if ( ! in_array( $variant_mode, [ 'default', 'hover', 'pressed' ], true ) ) $variant_mode = 'default';
+			$parent_variant_id = sanitize_text_field( $variant['parentVariantId'] ?? '' );
 			$snapshot = $this->prepare_component_variant_snapshot_for_render( $this->compose_component_variant_snapshot( $component, $variant_id ) );
 			$root = $this->get_snapshot_root( $snapshot );
 			if ( ! $root ) continue;
@@ -934,6 +957,8 @@ class FrameBuilder_Exporter {
 			$delay = isset( $interaction['delay'] ) ? max( 0, (float) $interaction['delay'] ) : 0;
 			$transition = $this->normalize_component_transition( is_array( $interaction['transition'] ?? null ) ? $interaction['transition'] : null );
 			$attrs = ' data-fb-variant-id="' . esc_attr( $variant_id ) . '"';
+			$attrs .= ' data-fb-variant-mode="' . esc_attr( $variant_mode ) . '"';
+			$attrs .= ' data-fb-parent-variant-id="' . esc_attr( $parent_variant_id ) . '"';
 			$attrs .= ' data-fb-transition-type="' . esc_attr( $transition['type'] ) . '"';
 			$attrs .= ' data-fb-transition-duration="' . esc_attr( (string) $transition['duration'] ) . '"';
 			$attrs .= ' data-fb-transition-ease="' . esc_attr( $transition['easePreset'] ) . '"';
@@ -946,7 +971,7 @@ class FrameBuilder_Exporter {
 			$attrs .= ' data-fb-transition-bezier-y1="' . esc_attr( (string) $transition['bezier']['y1'] ) . '"';
 			$attrs .= ' data-fb-transition-bezier-x2="' . esc_attr( (string) $transition['bezier']['x2'] ) . '"';
 			$attrs .= ' data-fb-transition-bezier-y2="' . esc_attr( (string) $transition['bezier']['y2'] ) . '"';
-			if ( $target_variant_id !== '' && $target_variant_id !== $variant_id ) {
+			if ( 'default' === $variant_mode && $target_variant_id !== '' && $target_variant_id !== $variant_id ) {
 				$attrs .= ' data-fb-trigger="' . esc_attr( $trigger ?: 'click' ) . '"';
 				$attrs .= ' data-fb-target-variant-id="' . esc_attr( $target_variant_id ) . '"';
 				$attrs .= ' data-fb-delay="' . esc_attr( (string) $delay ) . '"';
@@ -1451,21 +1476,64 @@ class FrameBuilder_Exporter {
 			window.clearTimeout(timer);
 			timer = null;
 		};
+		var isDefaultVariantNode = function(node) {
+			return (node && node.dataset ? (node.dataset.fbVariantMode || 'default') : 'default') === 'default';
+		};
+		var getBaseVariantId = function(variantId) {
+			var node = findVariant(instance, variantId);
+			if (!node) return instance.dataset.fbBaseVariant || variantId || '';
+			if (isDefaultVariantNode(node)) return node.dataset.fbVariantId || variantId || '';
+			return node.dataset.fbParentVariantId || instance.dataset.fbBaseVariant || variantId || '';
+		};
+		var getBaseVariantNode = function() {
+			var baseId = instance.dataset.fbBaseVariant || getBaseVariantId(instance.dataset.fbActiveVariant || '');
+			return findVariant(instance, baseId) || getActive();
+		};
+		var findStateVariant = function(baseVariantId, mode) {
+			return Array.prototype.find.call(instance.querySelectorAll('.fb-component-variant'), function(node) {
+				return (node.dataset.fbVariantMode || 'default') === mode && (node.dataset.fbParentVariantId || '') === baseVariantId;
+			}) || null;
+		};
 		var getActive = function() {
 			return instance.querySelector('.fb-component-variant.is-active') || instance.querySelector('.fb-component-variant');
 		};
-		var showVariant = function(variantId, transition) {
+		var showVariant = function(variantId, transition, options) {
 			var current = getActive();
 			var next = findVariant(instance, variantId);
 			if (!next) return;
+			var setBase = options && Object.prototype.hasOwnProperty.call(options, 'setBase')
+				? !!options.setBase
+				: isDefaultVariantNode(next);
+			var queueAfter = options && Object.prototype.hasOwnProperty.call(options, 'queueAppear')
+				? !!options.queueAppear
+				: setBase;
 			animateVariantSwitch(instance, current, next, transition || parseTransition(current || next), function() {
 				instance.dataset.fbActiveVariant = variantId;
-				queueAppear();
+				if (setBase) instance.dataset.fbBaseVariant = getBaseVariantId(variantId);
+				if (queueAfter) queueAppear();
 			});
+		};
+		var applyVisualState = function(mode) {
+			var baseId = instance.dataset.fbBaseVariant || getBaseVariantId(instance.dataset.fbActiveVariant || '');
+			if (!baseId) return;
+			var targetNode = mode ? findStateVariant(baseId, mode) : findVariant(instance, baseId);
+			var targetId = targetNode ? targetNode.dataset.fbVariantId : baseId;
+			if (!targetId || targetId === instance.dataset.fbActiveVariant) return;
+			showVariant(targetId, {
+				type: 'ease',
+				duration: 0.18,
+				easePreset: 'easeInOut',
+				springMode: 'time',
+				bounce: 0,
+				stiffness: 500,
+				damping: 24,
+				mass: 1,
+				bezier: { x1: 0.4, y1: 0, x2: 0.2, y2: 1 }
+			}, { setBase: false, queueAppear: false });
 		};
 		var queueAppear = function() {
 			clearTimer();
-			var active = getActive();
+			var active = getBaseVariantNode();
 			if (!active || active.dataset.fbTrigger !== 'appear') return;
 			var target = active.dataset.fbTargetVariantId;
 			if (!target) return;
@@ -1476,7 +1544,7 @@ class FrameBuilder_Exporter {
 			}, delay);
 		};
 		var runTrigger = function(expected) {
-			var active = getActive();
+			var active = getBaseVariantNode();
 			if (!active || active.dataset.fbTrigger !== expected) return;
 			var target = active.dataset.fbTargetVariantId;
 			if (!target) return;
@@ -1492,9 +1560,24 @@ class FrameBuilder_Exporter {
 			showVariant(target, transition);
 		};
 		instance.addEventListener('click', function() { runTrigger('click'); });
-		instance.addEventListener('pointerdown', function() { runTrigger('click-start'); });
-		instance.addEventListener('mouseenter', function() { runTrigger('mouse-enter'); });
-		instance.addEventListener('mouseleave', function() { runTrigger('mouse-leave'); });
+		instance.addEventListener('pointerdown', function() {
+			applyVisualState('pressed');
+			runTrigger('click-start');
+		});
+		instance.addEventListener('pointerup', function() {
+			if (instance.matches(':hover')) applyVisualState('hover');
+			else applyVisualState(null);
+		});
+		instance.addEventListener('pointercancel', function() { applyVisualState(null); });
+		instance.addEventListener('mouseenter', function() {
+			applyVisualState('hover');
+			runTrigger('mouse-enter');
+		});
+		instance.addEventListener('mouseleave', function() {
+			applyVisualState(null);
+			runTrigger('mouse-leave');
+		});
+		instance.dataset.fbBaseVariant = getBaseVariantId(instance.dataset.fbActiveVariant || '');
 		queueAppear();
 	});
 })();

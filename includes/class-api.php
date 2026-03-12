@@ -195,8 +195,11 @@ class FrameBuilder_API {
 			if ( is_array( $component['variants'] ?? null ) ) {
 				foreach ( $component['variants'] as $variant ) {
 					if ( ! is_array( $variant ) || empty( $variant['id'] ) ) continue;
+					$mode = sanitize_text_field( $variant['mode'] ?? 'default' );
+					if ( ! in_array( $mode, [ 'default', 'hover', 'pressed' ], true ) ) $mode = 'default';
+					$parent_variant_id = $mode === 'default' ? '' : sanitize_text_field( $variant['parentVariantId'] ?? '' );
 					$interaction = null;
-					if ( is_array( $variant['interaction'] ?? null ) && ! empty( $variant['interaction']['targetVariantId'] ) ) {
+					if ( 'default' === $mode && is_array( $variant['interaction'] ?? null ) && ! empty( $variant['interaction']['targetVariantId'] ) ) {
 						$bezier = is_array( $variant['interaction']['transition']['bezier'] ?? null )
 							? [
 								'x1' => isset( $variant['interaction']['transition']['bezier']['x1'] ) ? max( 0, min( 1, (float) $variant['interaction']['transition']['bezier']['x1'] ) ) : 0.44,
@@ -227,7 +230,9 @@ class FrameBuilder_API {
 					}
 					$clean_variants[] = [
 						'id'          => sanitize_text_field( $variant['id'] ),
-						'name'        => sanitize_text_field( $variant['name'] ?? 'Variant' ),
+						'name'        => sanitize_text_field( $variant['name'] ?? ( 'default' === $mode ? 'Variant' : ucfirst( $mode ) ) ),
+						'mode'        => $mode,
+						'parentVariantId' => $parent_variant_id,
 						'snapshot'    => is_array( $variant['snapshot'] ?? null ) ? $variant['snapshot'] : [],
 						'interaction' => $interaction,
 					];

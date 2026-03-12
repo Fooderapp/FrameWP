@@ -107,6 +107,16 @@ function buildConnectorPath(start, end) {
   return `M ${start.x} ${start.y} C ${start.x + deltaX} ${start.y}, ${end.x - deltaX} ${end.y}, ${end.x} ${end.y}`;
 }
 
+function isDefaultVariant(variant) {
+  return (variant?.mode ?? 'default') === 'default';
+}
+
+function getBaseVariantId(variants, variantId) {
+  const current = (variants ?? []).find((variant) => variant.id === variantId) ?? null;
+  if (!current) return (variants ?? []).find(isDefaultVariant)?.id ?? null;
+  return isDefaultVariant(current) ? current.id : (current.parentVariantId ?? null);
+}
+
 function toContainerPoint(rect, point) {
   if (!point) return null;
   return {
@@ -837,6 +847,7 @@ export default function InfiniteCanvas() {
   const insertComponentInstance = useEditorStore(s => s.insertComponentInstance);
   const openComponentEditor = useEditorStore(s => s.openComponentEditor);
   const addComponentVariant = useEditorStore(s => s.addComponentVariant);
+  const ensureComponentEditorVariantState = useEditorStore(s => s.ensureComponentEditorVariantState);
   const updateComponentEditorVariantInteraction = useEditorStore(s => s.updateComponentEditorVariantInteraction);
   const deleteElement       = useEditorStore(s => s.deleteElement);
   const reparentElement      = useEditorStore(s => s.reparentElement);
@@ -896,7 +907,7 @@ export default function InfiniteCanvas() {
       if (cursor.componentEditorVariantId === excludeVariantId) continue;
 
       const layout = variantRootLayout[cursor.componentEditorVariantId] ?? null;
-      if (!layout) continue;
+      if (!layout || layout.mode !== 'default') continue;
       return layout;
     }
 
@@ -1009,6 +1020,7 @@ export default function InfiniteCanvas() {
     }
 
     const nextLayout = {};
+    const variantIndex = new Map((componentEditor.variants ?? []).map((variant) => [variant.id, variant]));
     roots.forEach((root) => {
       const node = boardDom.querySelector(`[data-id="${root.id}"]`);
       if (!node) return;
@@ -1024,10 +1036,13 @@ export default function InfiniteCanvas() {
       const connectorX = left + width;
       const from = { x: connectorX, y: centerY };
       const to = { x: left, y: centerY };
+      const variantMeta = variantIndex.get(root.componentEditorVariantId) ?? null;
       nextLayout[root.componentEditorVariantId] = {
         variantId: root.componentEditorVariantId,
         rootId: root.id,
         name: root.componentVariantName || 'Primary',
+        mode: variantMeta?.mode ?? root.componentVariantMode ?? 'default',
+        parentVariantId: variantMeta?.parentVariantId ?? root.componentVariantParentId ?? null,
         rect,
         worldRect: {
           left,
@@ -1041,7 +1056,7 @@ export default function InfiniteCanvas() {
       };
     });
     setVariantRootLayout(nextLayout);
-  }, [activeSurface, componentEditor?.isOpen, componentEditor?.page?.elements, viewport.x, viewport.y, viewport.scale, componentEditor?.activeVariantId]);
+  }, [activeSurface, componentEditor?.isOpen, componentEditor?.page?.elements, componentEditor?.variants, viewport.x, viewport.y, viewport.scale, componentEditor?.activeVariantId]);
 
   useEffect(() => {
     if (!variantConnectionDraft) return undefined;
@@ -2517,18 +2532,33 @@ export default function InfiniteCanvas() {
     : 'default';
 
   const { x: panX, y: panY, scale } = viewport;
-  const componentVariantRoots = activeSurface === 'component'
-    ? (componentEditor.page?.elements ?? [])
-        .filter((el) => !el.parentId && el.componentRoot)
-        .sort((left, right) => (left.base?.x ?? 0) - (right.base?.x ?? 0))
-    : [];
-  const lastVariantRoot = componentVariantRoots[componentVariantRoots.length - 1] ?? null;
-  const canvasAddVariantPos = activeSurface === 'component' && lastVariantRoot && bpDefs.desktop
-    ? {
-        left: bpDefs.desktop.x + (lastVariantRoot.base?.x ?? 0) + (lastVariantRoot.base?.width ?? 240) + (44 / Math.max(0.001, scale)),
-        top: bpDefs.desktop.y + (lastVariantRoot.base?.y ?? 0) + ((lastVariantRoot.base?.height ?? 160) * 0.5),
-      }
+  const baseVariantId = activeSurface === 'component'
+    ? getBaseVariantId(componentEditor.variants ?? [], componentEditor.activeVariantId)
     : null;
+  const variantStateControlGroups = activeSurface === 'component'
+    ? (componentEditor.variants ?? [])
+        .filter(isDefaultVariant)
+        .map((variant) => {
+          const layout = variantRootLayout[variant.id] ?? null;
+          if (!layout?.worldRect) return null;
+          return {
+            variantId: variant.id,
+            name: variant.name,
+            isSelectedFamily: baseVariantId === variant.id,
+            worldRect: layout.worldRect,
+            states: ['hover', 'pressed'].map((mode) => {
+              const existing = (componentEditor.variants ?? []).find((entry) => entry.mode === mode && entry.parentVariantId === variant.id) ?? null;
+              return {
+                mode,
+                variantId: existing?.id ?? null,
+                label: existing ? (mode === 'hover' ? 'Hover' : 'Pressed') : `+ ${mode === 'hover' ? 'Hover' : 'Pressed'}`,
+                isActive: existing?.id === componentEditor.activeVariantId,
+              };
+            }),
+          };
+        })
+        .filter(Boolean)
+    : [];
   const activeDragPreview = dragOverlay && drag.current?.type === 'element-drag'
     ? {
         elementId: dragOverlay.elementId,
@@ -2547,7 +2577,10 @@ export default function InfiniteCanvas() {
       }
     : null;
   const activeVariantConnector = activeSurface === 'component'
-    ? (variantRootLayout[componentEditor.activeVariantId] ?? null)
+    ? (() => {
+        const entry = variantRootLayout[componentEditor.activeVariantId] ?? null;
+        return entry?.mode === 'default' ? entry : null;
+      })()
     : null;
   const connectorContainerRect = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
   const connectorWorldBounds = {
@@ -2556,6 +2589,7 @@ export default function InfiniteCanvas() {
   };
   const variantConnectionLines = activeSurface === 'component'
     ? (componentEditor.variants ?? []).flatMap((variant) => {
+        if (!isDefaultVariant(variant)) return [];
         if (variant.id !== componentEditor.activeVariantId) return [];
         const source = variantRootLayout[variant.id];
         const target = variant.interaction?.targetVariantId ? variantRootLayout[variant.interaction.targetVariantId] : null;
@@ -2671,22 +2705,39 @@ export default function InfiniteCanvas() {
             }}
           />
         )}
-        {canvasAddVariantPos ? (
-          <button
-            type="button"
-            className="fb-component-canvas-add-variant"
+        {variantStateControlGroups.map((group) => (
+          <div
+            key={group.variantId}
+            className="fb-component-variant-state-controls"
             style={{
-              left: canvasAddVariantPos.left,
-              top: canvasAddVariantPos.top,
-              transform: `translateY(-50%) scale(${1 / Math.max(0.001, scale)})`,
-              transformOrigin: 'left center',
+              left: group.worldRect.left + (group.worldRect.width / 2),
+              top: group.worldRect.top + group.worldRect.height + (18 / Math.max(0.001, scale)),
+              transform: `translateX(-50%) scale(${1 / Math.max(0.001, scale)})`,
+              transformOrigin: 'top center',
             }}
             onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => addComponentVariant()}
           >
-            + Variant
-          </button>
-        ) : null}
+            {group.states.map((stateButton) => (
+              <button
+                key={`${group.variantId}-${stateButton.mode}`}
+                type="button"
+                className={`fb-component-variant-state-controls__btn${stateButton.variantId ? ' is-created' : ''}${stateButton.isActive ? ' is-active' : ''}`}
+                onClick={() => ensureComponentEditorVariantState(stateButton.mode, group.variantId)}
+              >
+                {stateButton.label}
+              </button>
+            ))}
+            {group.isSelectedFamily ? (
+              <button
+                type="button"
+                className="fb-component-variant-state-controls__btn fb-component-variant-state-controls__btn--add"
+                onClick={() => addComponentVariant()}
+              >
+                + Variant
+              </button>
+            ) : null}
+          </div>
+        ))}
         {activeSurface === 'component' && (variantConnectionLines.length || variantDraftPath) ? (
           <svg
             className="fb-variant-connector-layer"
