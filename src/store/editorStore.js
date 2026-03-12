@@ -157,23 +157,62 @@ function ensureComponentPrimaryRoot(snapshot = []) {
   return [wrapper, ...normalized];
 }
 
-function normalizeComponentVariant(variant, fallbackName = 'Variant', { primary = false } = {}) {
-  const trigger = typeof variant?.interaction?.trigger === 'string'
-    ? variant.interaction.trigger
-    : 'click';
-  const delay = Number.isFinite(variant?.interaction?.delay)
-    ? Math.max(0, variant.interaction.delay)
-    : 0;
-  const targetVariantId = typeof variant?.interaction?.targetVariantId === 'string' && variant.interaction.targetVariantId
-    ? variant.interaction.targetVariantId
+const COMPONENT_TRANSITION_TYPES = new Set(['instant', 'ease', 'realistic']);
+const COMPONENT_EASE_PRESETS = new Set(['easeInOut', 'easeOut', 'easeIn', 'linear', 'custom']);
+
+function clampFinite(value, fallback, min = -Infinity, max = Infinity) {
+  const numericValue = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(numericValue)) return fallback;
+  return Math.min(max, Math.max(min, numericValue));
+}
+
+function normalizeComponentBezier(bezier) {
+  return {
+    x1: clampFinite(bezier?.x1, 0.44, 0, 1),
+    y1: clampFinite(bezier?.y1, 0, 0, 1),
+    x2: clampFinite(bezier?.x2, 0.56, 0, 1),
+    y2: clampFinite(bezier?.y2, 1, 0, 1),
+  };
+}
+
+function normalizeComponentTransition(transition) {
+  const type = COMPONENT_TRANSITION_TYPES.has(transition?.type) ? transition.type : 'instant';
+  const easePreset = COMPONENT_EASE_PRESETS.has(transition?.easePreset) ? transition.easePreset : 'easeInOut';
+  const springMode = transition?.springMode === 'physics' ? 'physics' : 'time';
+  return {
+    type,
+    duration: clampFinite(transition?.duration, 0.3, 0, 20),
+    easePreset,
+    springMode,
+    bounce: clampFinite(transition?.bounce, 0.2, 0, 1),
+    stiffness: clampFinite(transition?.stiffness, 500, 1, 2000),
+    damping: clampFinite(transition?.damping, 24, 1, 300),
+    mass: clampFinite(transition?.mass, 1, 0.1, 20),
+    bezier: normalizeComponentBezier(transition?.bezier),
+  };
+}
+
+function normalizeComponentInteraction(interaction) {
+  const targetVariantId = typeof interaction?.targetVariantId === 'string' && interaction.targetVariantId
+    ? interaction.targetVariantId
     : null;
+  if (!targetVariantId) return null;
+  return {
+    targetVariantId,
+    trigger: typeof interaction?.trigger === 'string' ? interaction.trigger : 'click',
+    delay: clampFinite(interaction?.delay, 0, 0, 60),
+    transition: normalizeComponentTransition(interaction?.transition),
+  };
+}
+
+function normalizeComponentVariant(variant, fallbackName = 'Variant', { primary = false } = {}) {
   return {
     id: variant?.id ?? makeId('cmp-var'),
     name: primary ? 'Primary' : (variant?.name || fallbackName).trim(),
     snapshot: primary
       ? ensureComponentPrimaryRoot(variant?.snapshot ?? [])
       : deepClone(Array.isArray(variant?.snapshot) ? variant.snapshot : []),
-    interaction: targetVariantId ? { targetVariantId, trigger, delay } : null,
+    interaction: normalizeComponentInteraction(variant?.interaction),
   };
 }
 
@@ -1183,13 +1222,13 @@ export const useEditorStore = create((set, get) => {
             variants: (state.componentEditor.variants ?? []).map((variant) => {
               if (variant.id !== variantId) return variant;
               if (!interaction?.targetVariantId) return { ...variant, interaction: null };
+              const nextInteraction = normalizeComponentInteraction({
+                ...variant.interaction,
+                ...interaction,
+              });
               return {
                 ...variant,
-                interaction: {
-                  targetVariantId: interaction.targetVariantId,
-                  trigger: interaction.trigger || 'click',
-                  delay: Number.isFinite(interaction.delay) ? Math.max(0, interaction.delay) : 0,
-                },
+                interaction: nextInteraction,
               };
             }),
           },

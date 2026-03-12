@@ -1,14 +1,17 @@
 {
   "name": "framebuilder",
-  "version": "0.7.6",
+  "version": "0.8.0",
   "private": true,
   "scripts": {
     "dev": "vite",
-    "build": "vite build && npm run deploy:php",
+    "build": "vite build && npm run deploy:vendor && npm run deploy:php",
     "preview": "vite preview",
+    "deploy:vendor": "DEST='/Users/nagybertalan/Local Sites/canvaswp/app/public/wp-content/plugins/framebuilder/assets' && mkdir -p \"$DEST\" && cp node_modules/gsap/dist/gsap.min.js \"$DEST/\" && cp node_modules/gsap/dist/Flip.min.js \"$DEST/\"",
     "deploy:php": "DEST='/Users/nagybertalan/Local Sites/canvaswp/app/public/wp-content/plugins/framebuilder' && mkdir -p \"$DEST/includes\" \"$DEST/templates\" && cp framebuilder.php \"$DEST/\" && cp includes/*.php \"$DEST/includes/\" && cp templates/*.php \"$DEST/templates/\""
   },
   "dependencies": {
+    "@gsap/react": "^2.1.2",
+    "gsap": "^3.14.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "zustand": "^4.5.0"

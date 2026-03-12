@@ -113,6 +113,13 @@ class FrameBuilder_Plugin {
 			return;
 		}
 
+		wp_deregister_script( 'svg-painter' );
+		wp_deregister_script( 'heartbeat' );
+		wp_deregister_script( 'wp-auth-check' );
+		wp_dequeue_script( 'svg-painter' );
+		wp_dequeue_script( 'heartbeat' );
+		wp_dequeue_script( 'wp-auth-check' );
+
 		// Hide default WP admin chrome when builder is open
 		echo '<style>#wpcontent,#wpbody{padding:0!important;margin:0!important;}
 		      #adminmenuwrap,#adminmenuback,#wpadminbar{display:none!important;}
@@ -166,6 +173,15 @@ class FrameBuilder_Plugin {
 		$css = get_post_meta( $post->ID, '_fb_published_css', true );
 		if ( ! $css ) return;
 
+		$assets_url = FB_URL . 'assets/';
+		$assets_dir = FB_DIR . 'assets/';
+		if ( file_exists( $assets_dir . 'gsap.min.js' ) ) {
+			wp_enqueue_script( 'framebuilder-gsap', $assets_url . 'gsap.min.js', [], FB_VERSION, false );
+		}
+		if ( file_exists( $assets_dir . 'Flip.min.js' ) ) {
+			wp_enqueue_script( 'framebuilder-gsap-flip', $assets_url . 'Flip.min.js', [ 'framebuilder-gsap' ], FB_VERSION, false );
+		}
+
 		// Register a dedicated handle so inline style is always output,
 		// regardless of whether the theme enqueues wp-block-library.
 		wp_register_style( 'framebuilder-frontend', false, [], FB_VERSION );
@@ -189,6 +205,15 @@ class FrameBuilder_Plugin {
 		wp_dequeue_script( 'heartbeat' );
 		wp_dequeue_script( 'svg-painter' );
 		wp_dequeue_script( 'wp-auth-check' );
+
+		global $wp_scripts;
+		if ( $wp_scripts instanceof WP_Scripts ) {
+			foreach ( array_keys( $wp_scripts->registered ) as $handle ) {
+				if ( strpos( $handle, 'wc-' ) !== 0 ) continue;
+				wp_dequeue_script( $handle );
+				wp_deregister_script( $handle );
+			}
+		}
 	}
 
 	public static function frontend_content( $content ) {

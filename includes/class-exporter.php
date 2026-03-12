@@ -349,13 +349,13 @@ class FrameBuilder_Exporter {
 		$component_instance = is_array( $el['componentInstance'] ?? null ) ? $el['componentInstance'] : null;
 		$component_id = sanitize_text_field( $component_instance['componentId'] ?? '' );
 		if ( $component_id && $this->get_component_definition( $component_id ) ) {
-			$html = '<div class="' . esc_attr( $class . ' fb-component-instance' ) . '" style="' . esc_attr( $layout_inline ) . '" data-fb-component-id="' . esc_attr( $component_id ) . '" data-fb-active-variant="' . esc_attr( sanitize_text_field( $component_instance['variantId'] ?? '' ) ) . '">';
+			$html = '<div class="' . esc_attr( $class . ' fb-component-instance' ) . '" style="' . esc_attr( $layout_inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '" data-fb-component-id="' . esc_attr( $component_id ) . '" data-fb-active-variant="' . esc_attr( sanitize_text_field( $component_instance['variantId'] ?? '' ) ) . '">';
 			$html .= $this->render_component_instance_variants( $el, $resolved, $bpId );
 			$html .= '</div>';
 			return $html;
 		}
 		// Emit the div with all accumulated inline styles
-		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '">';
+		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '">';
 
 		// Image element: render <img> tag filling the div (added after div opening)
 		if ( ( $el['type'] ?? '' ) === 'image' ) {
@@ -392,7 +392,7 @@ class FrameBuilder_Exporter {
 			$text_style .= 'white-space:' . $white_space . ';';
 			$text_style .= 'word-break:break-word;';
 			$text_value = nl2br( esc_html( (string) ( $resolved['text'] ?? 'Text' ) ) );
-			$html .= '<div class="fb-text-content" style="' . esc_attr( $text_style ) . '">' . $text_value . '</div>';
+			$html .= '<div class="fb-text-content" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="' . esc_attr( $text_style ) . '">' . $text_value . '</div>';
 		}
 
 		// Compute flex direction this element provides to its own children
@@ -867,6 +867,28 @@ class FrameBuilder_Exporter {
 		);
 	}
 
+	private function prepare_component_variant_snapshot_for_render( array $snapshot ): array {
+		return array_map( function( $entry ) {
+			if ( ! is_array( $entry ) ) return $entry;
+			$next = $entry;
+			$base_hidden = ! empty( $next['base']['hidden'] );
+			if ( $base_hidden ) {
+				$next['base']['hidden'] = false;
+				$next['base']['styles'] = is_array( $next['base']['styles'] ?? null ) ? $next['base']['styles'] : [];
+				$next['base']['styles']['opacity'] = 0;
+			}
+			if ( is_array( $next['overrides'] ?? null ) ) {
+				foreach ( $next['overrides'] as $bp_key => $override ) {
+					if ( ! is_array( $override ) || empty( $override['hidden'] ) ) continue;
+					$next['overrides'][ $bp_key ]['hidden'] = false;
+					$next['overrides'][ $bp_key ]['styles'] = is_array( $next['overrides'][ $bp_key ]['styles'] ?? null ) ? $next['overrides'][ $bp_key ]['styles'] : [];
+					$next['overrides'][ $bp_key ]['styles']['opacity'] = 0;
+				}
+			}
+			return $next;
+		}, $snapshot );
+	}
+
 	private function render_snapshot_element( array $el, array $snapshot_index, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): string {
 		$previous_index = $this->el_index;
 		$this->el_index = $snapshot_index;
@@ -890,7 +912,7 @@ class FrameBuilder_Exporter {
 		foreach ( $variants as $variant ) {
 			if ( ! is_array( $variant ) || empty( $variant['id'] ) ) continue;
 			$variant_id = sanitize_text_field( $variant['id'] );
-			$snapshot = $this->compose_component_variant_snapshot( $component, $variant_id );
+			$snapshot = $this->prepare_component_variant_snapshot_for_render( $this->compose_component_variant_snapshot( $component, $variant_id ) );
 			$root = $this->get_snapshot_root( $snapshot );
 			if ( ! $root ) continue;
 
@@ -910,7 +932,20 @@ class FrameBuilder_Exporter {
 			$target_variant_id = sanitize_text_field( $interaction['targetVariantId'] ?? '' );
 			$trigger = sanitize_text_field( $interaction['trigger'] ?? '' );
 			$delay = isset( $interaction['delay'] ) ? max( 0, (float) $interaction['delay'] ) : 0;
+			$transition = $this->normalize_component_transition( is_array( $interaction['transition'] ?? null ) ? $interaction['transition'] : null );
 			$attrs = ' data-fb-variant-id="' . esc_attr( $variant_id ) . '"';
+			$attrs .= ' data-fb-transition-type="' . esc_attr( $transition['type'] ) . '"';
+			$attrs .= ' data-fb-transition-duration="' . esc_attr( (string) $transition['duration'] ) . '"';
+			$attrs .= ' data-fb-transition-ease="' . esc_attr( $transition['easePreset'] ) . '"';
+			$attrs .= ' data-fb-transition-spring-mode="' . esc_attr( $transition['springMode'] ) . '"';
+			$attrs .= ' data-fb-transition-bounce="' . esc_attr( (string) $transition['bounce'] ) . '"';
+			$attrs .= ' data-fb-transition-stiffness="' . esc_attr( (string) $transition['stiffness'] ) . '"';
+			$attrs .= ' data-fb-transition-damping="' . esc_attr( (string) $transition['damping'] ) . '"';
+			$attrs .= ' data-fb-transition-mass="' . esc_attr( (string) $transition['mass'] ) . '"';
+			$attrs .= ' data-fb-transition-bezier-x1="' . esc_attr( (string) $transition['bezier']['x1'] ) . '"';
+			$attrs .= ' data-fb-transition-bezier-y1="' . esc_attr( (string) $transition['bezier']['y1'] ) . '"';
+			$attrs .= ' data-fb-transition-bezier-x2="' . esc_attr( (string) $transition['bezier']['x2'] ) . '"';
+			$attrs .= ' data-fb-transition-bezier-y2="' . esc_attr( (string) $transition['bezier']['y2'] ) . '"';
 			if ( $target_variant_id !== '' && $target_variant_id !== $variant_id ) {
 				$attrs .= ' data-fb-trigger="' . esc_attr( $trigger ?: 'click' ) . '"';
 				$attrs .= ' data-fb-target-variant-id="' . esc_attr( $target_variant_id ) . '"';
@@ -925,31 +960,546 @@ class FrameBuilder_Exporter {
 		return $html;
 	}
 
+	private function normalize_component_transition( ?array $transition ): array {
+		$type = sanitize_text_field( $transition['type'] ?? 'instant' );
+		if ( ! in_array( $type, [ 'instant', 'ease', 'realistic' ], true ) ) $type = 'instant';
+		$ease_preset = sanitize_text_field( $transition['easePreset'] ?? 'easeInOut' );
+		if ( ! in_array( $ease_preset, [ 'easeInOut', 'easeOut', 'easeIn', 'linear', 'custom' ], true ) ) $ease_preset = 'easeInOut';
+		$spring_mode = sanitize_text_field( $transition['springMode'] ?? 'time' );
+		if ( ! in_array( $spring_mode, [ 'time', 'physics' ], true ) ) $spring_mode = 'time';
+		$bezier = is_array( $transition['bezier'] ?? null ) ? $transition['bezier'] : [];
+
+		return [
+			'type'       => $type,
+			'duration'   => isset( $transition['duration'] ) ? max( 0, (float) $transition['duration'] ) : 0.3,
+			'easePreset' => $ease_preset,
+			'springMode' => $spring_mode,
+			'bounce'     => isset( $transition['bounce'] ) ? max( 0, min( 1, (float) $transition['bounce'] ) ) : 0.2,
+			'stiffness'  => isset( $transition['stiffness'] ) ? max( 1, (float) $transition['stiffness'] ) : 500,
+			'damping'    => isset( $transition['damping'] ) ? max( 1, (float) $transition['damping'] ) : 24,
+			'mass'       => isset( $transition['mass'] ) ? max( 0.1, (float) $transition['mass'] ) : 1,
+			'bezier'     => [
+				'x1' => isset( $bezier['x1'] ) ? max( 0, min( 1, (float) $bezier['x1'] ) ) : 0.44,
+				'y1' => isset( $bezier['y1'] ) ? max( 0, min( 1, (float) $bezier['y1'] ) ) : 0,
+				'x2' => isset( $bezier['x2'] ) ? max( 0, min( 1, (float) $bezier['x2'] ) ) : 0.56,
+				'y2' => isset( $bezier['y2'] ) ? max( 0, min( 1, (float) $bezier['y2'] ) ) : 1,
+			],
+		];
+	}
+
 	private function get_component_runtime_assets(): string {
 		$bid = esc_attr( $this->build_id );
-		$css = ".{$bid} .fb-component-instance{position:relative;}"
-			. ".{$bid} .fb-component-variant{position:absolute;inset:0;display:none;}"
-			. ".{$bid} .fb-component-variant.is-active{display:block;}"
+		$css = ".{$bid} .fb-component-instance{position:relative;overflow:hidden;}"
+			. ".{$bid} .fb-component-variant{position:absolute;inset:0;visibility:hidden;opacity:0;pointer-events:none;}"
+			. ".{$bid} .fb-component-variant.is-active,.{$bid} .fb-component-variant.is-present{visibility:visible;}"
+			. ".{$bid} .fb-component-variant.is-active{opacity:1;pointer-events:auto;}"
 			. ".{$bid} .fb-component-variant > .fb-el{pointer-events:auto;}";
 
-		$script = "<script>(function(){"
-			. "var scope=document.querySelector('.fb-page.{$bid}');if(!scope)return;"
-			. "var instances=scope.querySelectorAll('.fb-component-instance[data-fb-component-id]');"
-			. "var findVariant=function(instance,variantId){return Array.prototype.find.call(instance.querySelectorAll('.fb-component-variant'),function(node){return node.dataset.fbVariantId===variantId;})||null;};"
-			. "instances.forEach(function(instance){"
-			. "var timer=null;"
-			. "var clearTimer=function(){if(timer){window.clearTimeout(timer);timer=null;}};"
-			. "var getActive=function(){return instance.querySelector('.fb-component-variant.is-active');};"
-			. "var queueAppear=function(){clearTimer();var active=getActive();if(!active||active.dataset.fbTrigger!=='appear')return;var target=active.dataset.fbTargetVariantId;if(!target)return;var delay=Math.max(0,(parseFloat(active.dataset.fbDelay||'0')||0)*1000);timer=window.setTimeout(function(){showVariant(target);},delay);};"
-			. "var showVariant=function(variantId){var next=findVariant(instance,variantId);if(!next)return;instance.querySelectorAll('.fb-component-variant').forEach(function(node){node.classList.toggle('is-active',node===next);});instance.dataset.fbActiveVariant=variantId;queueAppear();};"
-			. "var runTrigger=function(expected){var active=getActive();if(!active||active.dataset.fbTrigger!==expected)return;var target=active.dataset.fbTargetVariantId;if(!target)return;var delay=Math.max(0,(parseFloat(active.dataset.fbDelay||'0')||0)*1000);clearTimer();if(delay>0){timer=window.setTimeout(function(){showVariant(target);},delay);}else{showVariant(target);}};"
-			. "instance.addEventListener('click',function(){runTrigger('click');});"
-			. "instance.addEventListener('pointerdown',function(){runTrigger('click-start');});"
-			. "instance.addEventListener('mouseenter',function(){runTrigger('mouse-enter');});"
-			. "instance.addEventListener('mouseleave',function(){runTrigger('mouse-leave');});"
-			. "queueAppear();"
-			. "});"
-			. "})();</script>";
+		$script = <<<SCRIPT
+<script>
+(function(){
+	var gsap = window.gsap || null;
+	var Flip = window.Flip || (gsap && gsap.plugins ? gsap.plugins.Flip : null) || null;
+	if (gsap && Flip && gsap.registerPlugin) gsap.registerPlugin(Flip);
+	var scope = document.querySelector('.fb-page.{$bid}');
+	if (!scope) return;
+	var instances = scope.querySelectorAll('.fb-component-instance[data-fb-component-id]');
+	var prefersReducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	var EASE_CURVES = {
+		easeInOut: 'cubic-bezier(0.44, 0, 0.56, 1)',
+		easeOut: 'cubic-bezier(0.22, 1, 0.36, 1)',
+		easeIn: 'cubic-bezier(0.64, 0, 0.78, 0)',
+		linear: 'linear'
+	};
+	var findVariant = function(instance, variantId) {
+		return Array.prototype.find.call(instance.querySelectorAll('.fb-component-variant'), function(node) {
+			return node.dataset.fbVariantId === variantId;
+		}) || null;
+	};
+	var parseNumber = function(value, fallback) {
+		var parsed = parseFloat(value);
+		return Number.isFinite(parsed) ? parsed : fallback;
+	};
+	var parseTransition = function(node) {
+		return {
+			type: node.dataset.fbTransitionType || 'instant',
+			duration: Math.max(0, parseNumber(node.dataset.fbTransitionDuration, 0.3)),
+			easePreset: node.dataset.fbTransitionEase || 'easeInOut',
+			springMode: node.dataset.fbTransitionSpringMode || 'time',
+			bounce: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBounce, 0.2))),
+			stiffness: Math.max(1, parseNumber(node.dataset.fbTransitionStiffness, 500)),
+			damping: Math.max(1, parseNumber(node.dataset.fbTransitionDamping, 60)),
+			mass: Math.max(0.1, parseNumber(node.dataset.fbTransitionMass, 1)),
+			bezier: {
+				x1: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBezierX1, 0.44))),
+				y1: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBezierY1, 0))),
+				x2: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBezierX2, 0.56))),
+				y2: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBezierY2, 1)))
+			}
+		};
+	};
+	var getEaseValue = function(transition) {
+		if (!transition || transition.type === 'instant') return 'linear';
+		if (transition.type === 'ease') {
+			return createBezierEase(transition.bezier);
+		}
+		return transition.springMode === 'physics'
+			? 'none'
+			: 'back.out(' + (1 + transition.bounce * 1.2) + ')';
+	};
+	var createBezierEase = function(bezier) {
+		var x1 = Math.max(0, Math.min(1, bezier && bezier.x1 !== undefined ? bezier.x1 : 0.44));
+		var y1 = Math.max(0, Math.min(1, bezier && bezier.y1 !== undefined ? bezier.y1 : 0));
+		var x2 = Math.max(0, Math.min(1, bezier && bezier.x2 !== undefined ? bezier.x2 : 0.56));
+		var y2 = Math.max(0, Math.min(1, bezier && bezier.y2 !== undefined ? bezier.y2 : 1));
+		if (x1 === y1 && x2 === y2) return function(value) { return value; };
+		var calcBezier = function(time, point1, point2) {
+			var a = 1 - (3 * point2) + (3 * point1);
+			var b = (3 * point2) - (6 * point1);
+			var c = 3 * point1;
+			return (((a * time) + b) * time + c) * time;
+		};
+		var getSlope = function(time, point1, point2) {
+			var a = 1 - (3 * point2) + (3 * point1);
+			var b = (3 * point2) - (6 * point1);
+			var c = 3 * point1;
+			return (3 * a * time * time) + (2 * b * time) + c;
+		};
+		var binarySubdivide = function(targetX, left, right) {
+			var currentX;
+			var currentT;
+			for (var index = 0; index < 8; index++) {
+				currentT = left + ((right - left) * 0.5);
+				currentX = calcBezier(currentT, x1, x2) - targetX;
+				if (Math.abs(currentX) < 1e-5) return currentT;
+				if (currentX > 0) right = currentT;
+				else left = currentT;
+			}
+			return currentT;
+		};
+		var getTForX = function(targetX) {
+			var guessT = targetX;
+			for (var index = 0; index < 4; index++) {
+				var slope = getSlope(guessT, x1, x2);
+				if (Math.abs(slope) < 1e-6) break;
+				var currentX = calcBezier(guessT, x1, x2) - targetX;
+				guessT -= currentX / slope;
+			}
+			if (guessT >= 0 && guessT <= 1) return guessT;
+			return binarySubdivide(targetX, 0, 1);
+		};
+		return function(value) {
+			return calcBezier(getTForX(Math.max(0, Math.min(1, value))), y1, y2);
+		};
+	};
+	var getPhysicsSpringConfig = function(transition) {
+		var mass = Math.max(0.1, transition.mass || 1);
+		var stiffness = Math.max(1, transition.stiffness || 500);
+		var damping = Math.max(1, transition.damping || 24);
+		var angularFrequency = Math.sqrt(stiffness / mass);
+		var dampingRatio = damping / (2 * Math.sqrt(stiffness * mass));
+		var duration = dampingRatio < 1
+			? Math.log(1 / 0.0025) / (Math.max(0.05, dampingRatio) * angularFrequency)
+			: Math.log(1 / 0.0025) / angularFrequency;
+		return {
+			mass: mass,
+			stiffness: stiffness,
+			damping: damping,
+			angularFrequency: angularFrequency,
+			dampingRatio: dampingRatio,
+			duration: Math.max(0.45, Math.min(2.4, duration))
+		};
+	};
+	var sampleSpringValue = function(initialValue, elapsed, spring) {
+		if (!initialValue) return 0;
+		var velocity = 0;
+		var angularFrequency = spring.angularFrequency;
+		var dampingRatio = spring.dampingRatio;
+		if (dampingRatio < 1) {
+			var dampedFrequency = angularFrequency * Math.sqrt(1 - (dampingRatio * dampingRatio));
+			var envelope = Math.exp(-dampingRatio * angularFrequency * elapsed);
+			var coefficient = (velocity + (dampingRatio * angularFrequency * initialValue)) / dampedFrequency;
+			return envelope * ((initialValue * Math.cos(dampedFrequency * elapsed)) + (coefficient * Math.sin(dampedFrequency * elapsed)));
+		}
+		if (Math.abs(dampingRatio - 1) < 0.0001) {
+			return (initialValue + ((velocity + (angularFrequency * initialValue)) * elapsed)) * Math.exp(-angularFrequency * elapsed);
+		}
+		var decay = Math.sqrt((dampingRatio * dampingRatio) - 1);
+		var rateA = -angularFrequency * (dampingRatio - decay);
+		var rateB = -angularFrequency * (dampingRatio + decay);
+		var coeffA = (velocity - (rateB * initialValue)) / (rateA - rateB);
+		var coeffB = initialValue - coeffA;
+		return (coeffA * Math.exp(rateA * elapsed)) + (coeffB * Math.exp(rateB * elapsed));
+	};
+	var addPhysicsSpringSequence = function(timeline, node, startState, spring, at) {
+		var stepCount = 24;
+		var previousTime = 0;
+		for (var index = 1; index <= stepCount; index++) {
+			var elapsed = (spring.duration * index) / stepCount;
+			var stepDuration = elapsed - previousTime;
+			timeline.to(node, {
+				x: sampleSpringValue(startState.x, elapsed, spring),
+				y: sampleSpringValue(startState.y, elapsed, spring),
+				scaleX: 1 + sampleSpringValue(startState.scaleX - 1, elapsed, spring),
+				scaleY: 1 + sampleSpringValue(startState.scaleY - 1, elapsed, spring),
+				rotation: sampleSpringValue(startState.rotation || 0, elapsed, spring),
+				duration: stepDuration,
+				ease: 'none',
+				clearProps: index === stepCount ? 'transform' : undefined
+			}, at + previousTime);
+			previousTime = elapsed;
+		}
+	};
+	var addWrapperPhysicsSequence = function(timeline, node, spring, at) {
+		gsap.set(node, { scaleX: 0.935, scaleY: 0.935, transformOrigin: 'top left' });
+		addPhysicsSpringSequence(timeline, node, {
+			x: 0,
+			y: 0,
+			scaleX: 0.935,
+			scaleY: 0.935
+		}, spring, at);
+	};
+	var getTransitionDurationMs = function(transition) {
+		if (!transition || transition.type === 'instant') return 0;
+		if (transition.type === 'ease') return Math.max(120, transition.duration * 1000);
+		if (transition.springMode === 'time') return Math.max(180, transition.duration * 1000);
+		return getPhysicsSpringConfig(transition).duration * 1000;
+	};
+	var getRealisticOvershoot = function(transition) {
+		if (!transition || transition.type !== 'realistic') return 1.03;
+		if (transition.springMode === 'physics') {
+			var spring = getPhysicsSpringConfig(transition);
+			if (spring.dampingRatio >= 1) return 1;
+			return 1 + Math.min(0.28, Math.max(0.04, 0.16 * (1 - spring.dampingRatio)));
+		}
+		return 1 + Math.max(0.06, transition.bounce * 0.18);
+	};
+	var getRealisticProfile = function(transition) {
+		var overshoot = Math.max(0.05, getRealisticOvershoot(transition) - 1);
+		return {
+			travelOvershoot: Math.max(0.12, overshoot * 1.55),
+			scaleOvershoot: Math.max(0.05, overshoot * 1.1),
+			pushDuration: Math.max(0.18, transition.duration * 0.42),
+			settleDuration: Math.max(0.22, transition.duration * 0.58),
+			pushEase: 'power2.out',
+			settleEase: 'back.out(' + (1.6 + (transition.bounce * 2.6)) + ')'
+		};
+	};
+	var applyInstantSwitch = function(instance, next) {
+		if (gsap) gsap.killTweensOf(instance.querySelectorAll('.fb-component-variant'));
+		instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
+			node.classList.remove('is-present');
+			node.classList.toggle('is-active', node === next);
+			node.style.opacity = '';
+			node.style.transform = '';
+			node.style.visibility = '';
+			node.style.pointerEvents = '';
+		});
+	};
+	var getEnterVars = function(transition) {
+		if (transition.type === 'realistic') {
+			var overshoot = getRealisticOvershoot(transition);
+			return {
+				opacity: 1,
+				y: 0,
+				scale: 1,
+				duration: getTransitionDurationMs(transition) / 1000,
+				ease: transition.springMode === 'physics' ? 'elastic.out(1,' + Math.max(0.2, transition.mass * 0.45) + ')' : 'back.out(' + (1 + transition.bounce * 1.2) + ')',
+				clearProps: 'opacity,transform,visibility,pointerEvents',
+				transformOrigin: 'top left',
+				startAt: { opacity: 0, y: 0, scale: Math.max(0.94, overshoot - 0.06) },
+			};
+		}
+		return {
+			opacity: 1,
+			y: 0,
+			scale: 1,
+			duration: getTransitionDurationMs(transition) / 1000,
+			ease: getEaseValue(transition),
+			clearProps: 'opacity,transform,visibility,pointerEvents',
+			transformOrigin: 'top left',
+			startAt: { opacity: 0, y: 0, scale: 0.992 },
+		};
+	};
+	var getExitVars = function(transition) {
+		return {
+			opacity: 0,
+			y: 0,
+			scale: transition.type === 'realistic' ? 0.985 : 0.992,
+			duration: getTransitionDurationMs(transition) / 1000,
+			ease: transition.type === 'realistic' ? 'power2.in' : getEaseValue(transition),
+			clearProps: 'opacity,transform,visibility,pointerEvents',
+			transformOrigin: 'top left',
+		};
+	};
+	var collectSharedElementPairs = function(container, currentVariant, nextVariant) {
+		if (!container || !currentVariant || !nextVariant) return [];
+		var containerRect = container.getBoundingClientRect();
+		var currentNodes = new Map(Array.prototype.map.call(currentVariant.querySelectorAll('[data-fb-node-id]'), function(node) {
+			return [node.dataset.fbNodeId, node];
+		}));
+		return Array.prototype.reduce.call(nextVariant.querySelectorAll('[data-fb-node-id]'), function(pairs, nextNode) {
+			var nodeId = nextNode.dataset.fbNodeId;
+			var currentNode = currentNodes.get(nodeId);
+			if (!nodeId || !currentNode) return pairs;
+			var currentRect = currentNode.getBoundingClientRect();
+			var nextRect = nextNode.getBoundingClientRect();
+			if (!currentRect.width || !currentRect.height || !nextRect.width || !nextRect.height) return pairs;
+			var insideViewport = currentRect.right >= containerRect.left
+				&& currentRect.left <= containerRect.right
+				&& currentRect.bottom >= containerRect.top
+				&& currentRect.top <= containerRect.bottom;
+			pairs.push({
+				currentNode: currentNode,
+				nextNode: nextNode,
+				deltaX: currentRect.left - nextRect.left,
+				deltaY: currentRect.top - nextRect.top,
+				scaleX: currentRect.width / nextRect.width,
+				scaleY: currentRect.height / nextRect.height,
+				insideViewport: insideViewport
+			});
+			return pairs;
+		}, []);
+	};
+	var ANIMATABLE_STYLE_PROPS = ['backgroundColor', 'color', 'borderRadius', 'borderColor', 'boxShadow', 'opacity'];
+	var CROSSFADE_STYLE_PROPS = ['backgroundImage'];
+	var FLIP_PROPS = 'opacity,backgroundColor,color,borderRadius,borderColor,boxShadow';
+	var hasStyleDifference = function(currentValue, nextValue) {
+		if (currentValue === nextValue) return false;
+		var currentNumber = parseFloat(currentValue);
+		var nextNumber = parseFloat(nextValue);
+		if (isFinite(currentNumber) && isFinite(nextNumber)) {
+			return Math.abs(currentNumber - nextNumber) > 0.01;
+		}
+		return true;
+	};
+	var getRotationFromComputedStyle = function(style) {
+		var rotate = style && style.rotate;
+		if (rotate && rotate !== 'none') {
+			var parsedRotate = parseFloat(rotate);
+			if (isFinite(parsedRotate)) return parsedRotate;
+		}
+		var transform = style && style.transform;
+		if (!transform || transform === 'none') return 0;
+		var matrixMatch = transform.match(/^matrix\(([^)]+)\)$/);
+		if (matrixMatch) {
+			var matrixValues = matrixMatch[1].split(',').map(function(value) { return parseFloat(value.trim()); });
+			if (matrixValues.length >= 2 && matrixValues.every(function(value) { return isFinite(value); })) {
+				return Math.atan2(matrixValues[1], matrixValues[0]) * (180 / Math.PI);
+			}
+		}
+		var matrix3dMatch = transform.match(/^matrix3d\(([^)]+)\)$/);
+		if (matrix3dMatch) {
+			var matrix3dValues = matrix3dMatch[1].split(',').map(function(value) { return parseFloat(value.trim()); });
+			if (matrix3dValues.length >= 2 && matrix3dValues.every(function(value) { return isFinite(value); })) {
+				return Math.atan2(matrix3dValues[1], matrix3dValues[0]) * (180 / Math.PI);
+			}
+		}
+		return 0;
+	};
+	var getNodeAnimationChanges = function(currentNode, nextNode) {
+		var currentRect = currentNode.getBoundingClientRect();
+		var nextRect = nextNode.getBoundingClientRect();
+		var currentStyle = window.getComputedStyle(currentNode);
+		var nextStyle = window.getComputedStyle(nextNode);
+		var styleFrom = {};
+		var styleTo = {};
+		ANIMATABLE_STYLE_PROPS.forEach(function(prop) {
+			var currentValue = currentStyle[prop];
+			var nextValue = nextStyle[prop];
+			if (!hasStyleDifference(currentValue, nextValue)) return;
+			styleFrom[prop] = currentValue;
+			styleTo[prop] = nextValue;
+		});
+		var unsupportedChange = CROSSFADE_STYLE_PROPS.some(function(prop) {
+			return hasStyleDifference(currentStyle[prop], nextStyle[prop]);
+		}) || currentNode.textContent !== nextNode.textContent;
+		var deltaX = currentRect.left - nextRect.left;
+		var deltaY = currentRect.top - nextRect.top;
+		var scaleX = currentRect.width / Math.max(nextRect.width, 0.01);
+		var scaleY = currentRect.height / Math.max(nextRect.height, 0.01);
+		var rotation = getRotationFromComputedStyle(currentStyle) - getRotationFromComputedStyle(nextStyle);
+		var geometryChanged = Math.abs(deltaX) > 0.5
+			|| Math.abs(deltaY) > 0.5
+			|| Math.abs(scaleX - 1) > 0.01
+			|| Math.abs(scaleY - 1) > 0.01
+			|| Math.abs(rotation) > 0.5;
+		return {
+			geometryChanged: geometryChanged,
+			styleChanged: Object.keys(styleTo).length > 0,
+			needsCrossfade: unsupportedChange,
+			startState: {
+				x: deltaX,
+				y: deltaY,
+				scaleX: Math.max(0.01, scaleX),
+				scaleY: Math.max(0.01, scaleY),
+				rotation: rotation
+			},
+			styleFrom: styleFrom,
+			styleTo: styleTo,
+			styleProps: Object.keys(styleTo)
+		};
+	};
+	var prepareAnimatedPairs = function(pairs) {
+		var pairEntries = pairs.map(function(pair) {
+			return { pair: pair, changes: getNodeAnimationChanges(pair.currentNode, pair.nextNode) };
+		});
+		var byId = new Map(pairEntries.map(function(entry) {
+			return [entry.pair.nextNode.dataset.fbNodeId, entry];
+		}));
+		return pairEntries.filter(function(entry) {
+			if (!entry.changes.geometryChanged && !entry.changes.styleChanged && !entry.changes.needsCrossfade) return false;
+			var ancestor = entry.pair.nextNode.parentElement ? entry.pair.nextNode.parentElement.closest('[data-fb-node-id]') : null;
+			while (ancestor) {
+				var ancestorEntry = byId.get(ancestor.dataset.fbNodeId);
+				if (ancestorEntry && (ancestorEntry.changes.geometryChanged || ancestorEntry.changes.needsCrossfade)) return false;
+				ancestor = ancestor.parentElement ? ancestor.parentElement.closest('[data-fb-node-id]') : null;
+			}
+			return true;
+		});
+	};
+	var collectTopLevelUnmatchedNodes = function(variantNode, matchedIds) {
+		if (!variantNode) return [];
+		var allNodes = Array.prototype.slice.call(variantNode.querySelectorAll('[data-fb-node-id]'));
+		return allNodes.filter(function(node) {
+			var nodeId = node.dataset.fbNodeId;
+			if (!nodeId || matchedIds.has(nodeId)) return false;
+			var ancestor = node.parentElement ? node.parentElement.closest('[data-fb-node-id]') : null;
+			while (ancestor) {
+				var ancestorId = ancestor.dataset.fbNodeId;
+				if (ancestorId && !matchedIds.has(ancestorId)) return false;
+				ancestor = ancestor.parentElement ? ancestor.parentElement.closest('[data-fb-node-id]') : null;
+			}
+			return true;
+		});
+	};
+	var animateVariantSwitch = function(instance, current, next, transition, onComplete) {
+		if (!next) return;
+		if (!current || current === next || prefersReducedMotion || !transition || transition.type === 'instant' || !gsap || !Flip) {
+			applyInstantSwitch(instance, next);
+			if (onComplete) onComplete();
+			return;
+		}
+		var duration = getTransitionDurationMs(transition);
+		if (!duration) {
+			applyInstantSwitch(instance, next);
+			if (onComplete) onComplete();
+			return;
+		}
+		next.classList.add('is-present');
+		next.style.visibility = 'visible';
+		next.style.pointerEvents = 'none';
+		next.style.opacity = '1';
+		current.style.pointerEvents = 'none';
+		var complete = function() {
+			instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
+				var isActive = node === next;
+				node.classList.remove('is-present');
+				node.classList.toggle('is-active', isActive);
+				node.style.opacity = '';
+				node.style.transform = '';
+				node.style.visibility = '';
+				node.style.pointerEvents = '';
+			});
+			if (onComplete) onComplete();
+		};
+		var currentFlipTargets = current.querySelectorAll('[data-flip-id]');
+		var state = Flip.getState(currentFlipTargets, { props: FLIP_PROPS, simple: false });
+		var totalDuration = getTransitionDurationMs(transition) / 1000;
+		var ease = transition.type === 'realistic'
+			? (transition.springMode === 'physics'
+				? 'elastic.out(1,' + Math.max(0.2, transition.mass * 0.45) + ')'
+				: 'back.out(' + (1 + transition.bounce * 1.2) + ')')
+			: getEaseValue(transition);
+		current.classList.remove('is-active');
+		current.classList.add('is-present');
+		next.classList.add('is-present');
+		next.classList.add('is-active');
+		Flip.from(state, {
+			targets: Array.prototype.slice.call(current.querySelectorAll('[data-flip-id]')).concat(Array.prototype.slice.call(next.querySelectorAll('[data-flip-id]'))),
+			absolute: true,
+			nested: true,
+			scale: true,
+			simple: false,
+			props: FLIP_PROPS,
+			duration: totalDuration,
+			ease: ease,
+			onEnter: function(elements) {
+				return gsap.fromTo(elements, { opacity: 0 }, {
+					opacity: 1,
+					duration: totalDuration,
+					ease: ease,
+					clearProps: 'opacity'
+				});
+			},
+			onLeave: function(elements) {
+				return gsap.to(elements, {
+					opacity: 0,
+					duration: totalDuration,
+					ease: ease,
+					clearProps: 'opacity'
+				});
+			},
+			onComplete: complete
+		});
+	};
+
+	instances.forEach(function(instance) {
+		var timer = null;
+		var clearTimer = function() {
+			if (!timer) return;
+			window.clearTimeout(timer);
+			timer = null;
+		};
+		var getActive = function() {
+			return instance.querySelector('.fb-component-variant.is-active') || instance.querySelector('.fb-component-variant');
+		};
+		var showVariant = function(variantId, transition) {
+			var current = getActive();
+			var next = findVariant(instance, variantId);
+			if (!next) return;
+			animateVariantSwitch(instance, current, next, transition || parseTransition(current || next), function() {
+				instance.dataset.fbActiveVariant = variantId;
+				queueAppear();
+			});
+		};
+		var queueAppear = function() {
+			clearTimer();
+			var active = getActive();
+			if (!active || active.dataset.fbTrigger !== 'appear') return;
+			var target = active.dataset.fbTargetVariantId;
+			if (!target) return;
+			var delay = Math.max(0, parseNumber(active.dataset.fbDelay, 0) * 1000);
+			var transition = parseTransition(active);
+			timer = window.setTimeout(function() {
+				showVariant(target, transition);
+			}, delay);
+		};
+		var runTrigger = function(expected) {
+			var active = getActive();
+			if (!active || active.dataset.fbTrigger !== expected) return;
+			var target = active.dataset.fbTargetVariantId;
+			if (!target) return;
+			var delay = Math.max(0, parseNumber(active.dataset.fbDelay, 0) * 1000);
+			var transition = parseTransition(active);
+			clearTimer();
+			if (delay > 0) {
+				timer = window.setTimeout(function() {
+					showVariant(target, transition);
+				}, delay);
+				return;
+			}
+			showVariant(target, transition);
+		};
+		instance.addEventListener('click', function() { runTrigger('click'); });
+		instance.addEventListener('pointerdown', function() { runTrigger('click-start'); });
+		instance.addEventListener('mouseenter', function() { runTrigger('mouse-enter'); });
+		instance.addEventListener('mouseleave', function() { runTrigger('mouse-leave'); });
+		queueAppear();
+	});
+})();
+</script>
+SCRIPT;
 
 		return '<style>' . $css . '</style>' . $script;
 	}

@@ -197,10 +197,32 @@ class FrameBuilder_API {
 					if ( ! is_array( $variant ) || empty( $variant['id'] ) ) continue;
 					$interaction = null;
 					if ( is_array( $variant['interaction'] ?? null ) && ! empty( $variant['interaction']['targetVariantId'] ) ) {
+						$bezier = is_array( $variant['interaction']['transition']['bezier'] ?? null )
+							? [
+								'x1' => isset( $variant['interaction']['transition']['bezier']['x1'] ) ? max( 0, min( 1, (float) $variant['interaction']['transition']['bezier']['x1'] ) ) : 0.44,
+								'y1' => isset( $variant['interaction']['transition']['bezier']['y1'] ) ? max( 0, min( 1, (float) $variant['interaction']['transition']['bezier']['y1'] ) ) : 0,
+								'x2' => isset( $variant['interaction']['transition']['bezier']['x2'] ) ? max( 0, min( 1, (float) $variant['interaction']['transition']['bezier']['x2'] ) ) : 0.56,
+								'y2' => isset( $variant['interaction']['transition']['bezier']['y2'] ) ? max( 0, min( 1, (float) $variant['interaction']['transition']['bezier']['y2'] ) ) : 1,
+							]
+							: null;
+						$transition = is_array( $variant['interaction']['transition'] ?? null )
+							? [
+								'type'       => sanitize_text_field( $variant['interaction']['transition']['type'] ?? 'instant' ),
+								'duration'   => isset( $variant['interaction']['transition']['duration'] ) ? max( 0, (float) $variant['interaction']['transition']['duration'] ) : 0.3,
+								'easePreset' => sanitize_text_field( $variant['interaction']['transition']['easePreset'] ?? 'easeInOut' ),
+								'springMode' => sanitize_text_field( $variant['interaction']['transition']['springMode'] ?? 'time' ),
+								'bounce'     => isset( $variant['interaction']['transition']['bounce'] ) ? max( 0, min( 1, (float) $variant['interaction']['transition']['bounce'] ) ) : 0.2,
+								'stiffness'  => isset( $variant['interaction']['transition']['stiffness'] ) ? max( 1, (float) $variant['interaction']['transition']['stiffness'] ) : 500,
+								'damping'    => isset( $variant['interaction']['transition']['damping'] ) ? max( 1, (float) $variant['interaction']['transition']['damping'] ) : 24,
+								'mass'       => isset( $variant['interaction']['transition']['mass'] ) ? max( 0.1, (float) $variant['interaction']['transition']['mass'] ) : 1,
+								'bezier'     => $bezier,
+							]
+							: null;
 						$interaction = [
 							'targetVariantId' => sanitize_text_field( $variant['interaction']['targetVariantId'] ),
 							'trigger'         => sanitize_text_field( $variant['interaction']['trigger'] ?? 'click' ),
 							'delay'           => isset( $variant['interaction']['delay'] ) ? max( 0, (float) $variant['interaction']['delay'] ) : 0,
+							'transition'      => $transition,
 						];
 					}
 					$clean_variants[] = [

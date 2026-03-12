@@ -56,6 +56,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const readOnlyComponentRoot  = activeSurface === 'component' && !!el?.componentRoot;
   const interactionLocked      = locked || readOnlyComponentRoot;
   const insideComponentInstanceOnPage = !!componentInstanceAncestor;
+  const suppressPointerEventsOnPage = insideComponentInstanceOnPage && !el?.componentInstance;
   const canvasScale            = viewport?.scale ?? 1;
 
   const isRelative = positionType === 'relative';
@@ -393,7 +394,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
     cursor:  pendingDraw ? 'crosshair' : interactionLocked ? 'not-allowed' : 'move',
     boxSizing: 'border-box',
-    pointerEvents: insideComponentInstanceOnPage ? 'none' : undefined,
+    pointerEvents: suppressPointerEventsOnPage ? 'none' : undefined,
   };
 
   const textStyle = el.type === 'text' ? {

@@ -3,6 +3,7 @@ import { useEditorStore, resolveElement, resolveBackground, resolvePagePadding, 
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import { IconButton, UIIcons } from '../components/UIIcons';
+import VariantTransitionModal from '../components/VariantTransitionModal';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -434,6 +435,22 @@ function rgbaToHex(color) {
   return '#' + [m[1], m[2], m[3]].map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
 }
 
+function getTransitionTypeLabel(type) {
+  if (type === 'realistic') return 'Realistic';
+  if (type === 'ease') return 'Ease';
+  return 'Instant';
+}
+
+function getTransitionSummary(interaction) {
+  if (!interaction?.targetVariantId) return 'No transition';
+  const transition = interaction.transition ?? { type: 'instant' };
+  if (transition.type === 'instant') return 'Instant';
+  if (transition.type === 'ease') return `${getTransitionTypeLabel(transition.type)} · ${Math.round((transition.duration ?? 0.3) * 10) / 10}s`;
+  return transition.springMode === 'physics'
+    ? 'Realistic · Physics'
+    : `Realistic · ${Math.round((transition.duration ?? 0.3) * 10) / 10}s`;
+}
+
 // ── Reset override button ───────────────────────────────────────
 function ResetBtn({ show, onReset }) {
   if (!show) return null;
@@ -449,12 +466,14 @@ function ResetBtn({ show, onReset }) {
 // ── Main component ────────────────────────────────────────────
 
 export default function PropertiesPanel() {
+  const [transitionModalState, setTransitionModalState] = useState(null);
   const selection           = useEditorStore(s => s.selection);
   const activeSurface       = useEditorStore(s => s.activeSurface);
   const componentEditor     = useEditorStore(s => s.componentEditor);
   const element             = useEditorStore(s => s.getSelectedElement());
   const components          = useEditorStore(s => s.components);
   const changeComponentInstanceVariant = useEditorStore(s => s.changeComponentInstanceVariant);
+  const updateComponentEditorVariantInteraction = useEditorStore(s => s.updateComponentEditorVariantInteraction);
   const updateElementLayout = useEditorStore(s => s.updateElementLayout);
   const updateStyles        = useEditorStore(s => s.updateElementStyles);
   const pushHistory         = useEditorStore(s => s.pushHistory);
@@ -695,35 +714,82 @@ export default function PropertiesPanel() {
   const selectedEditorVariant = activeSurface === 'component' && element.componentRoot
     ? (componentEditor.variants ?? []).find((variant) => variant.id === element.componentEditorVariantId)
     : null;
+  const selectedEditorTransitionTarget = selectedEditorVariant?.interaction?.targetVariantId
+    ? (componentEditor.variants ?? []).find((variant) => variant.id === selectedEditorVariant.interaction.targetVariantId) ?? null
+    : null;
 
   if (activeSurface === 'component' && element.componentRoot) {
     return (
-      <aside className="fb-right">
-        <div className="fb-right__header">{selectedEditorVariant?.name || element.componentVariantName || 'Primary'}</div>
-        <div className="fb-panel-body">
-          <Section title="Size">
-            <div className="fb-quad" style={{ marginBottom: 6 }}>
-              <NumberInput
-                value={resolved.width ?? 240}
-                min={20}
-                label="W"
-                onChange={v => { updateElementLayout(element.id, bpId, { width: Math.max(20, v), widthMode: 'fixed' }); commit(); }}
-              />
-              <NumberInput
-                value={resolved.height ?? 160}
-                min={20}
-                label="H"
-                onChange={v => { updateElementLayout(element.id, bpId, { height: Math.max(20, v), heightMode: 'fixed' }); commit(); }}
-              />
-            </div>
-            <div className="fb-artboard-bp-note">
-              {selectedEditorVariant?.name === 'Primary'
-                ? 'Primary defines the base component size. Other variants inherit from it unless they override width or height.'
-                : 'This variant inherits from Primary until you override its size here. Instances on the main canvas can still be resized independently.'}
-            </div>
-          </Section>
-        </div>
-      </aside>
+      <>
+        <aside className="fb-right">
+          <div className="fb-right__header">{selectedEditorVariant?.name || element.componentVariantName || 'Primary'}</div>
+          <div className="fb-panel-body">
+            <Section title="Size">
+              <div className="fb-quad" style={{ marginBottom: 6 }}>
+                <NumberInput
+                  value={resolved.width ?? 240}
+                  min={20}
+                  label="W"
+                  onChange={v => { updateElementLayout(element.id, bpId, { width: Math.max(20, v), widthMode: 'fixed' }); commit(); }}
+                />
+                <NumberInput
+                  value={resolved.height ?? 160}
+                  min={20}
+                  label="H"
+                  onChange={v => { updateElementLayout(element.id, bpId, { height: Math.max(20, v), heightMode: 'fixed' }); commit(); }}
+                />
+              </div>
+              <div className="fb-artboard-bp-note">
+                {selectedEditorVariant?.name === 'Primary'
+                  ? 'Primary defines the base component size. Other variants inherit from it unless they override width or height.'
+                  : 'This variant inherits from Primary until you override its size here. Instances on the main canvas can still be resized independently.'}
+              </div>
+            </Section>
+            <Section title="Transition">
+              {selectedEditorTransitionTarget ? (
+                <>
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Type</span>
+                    <button
+                      type="button"
+                      className="fb-secondary-btn fb-prop-action-btn"
+                      onClick={() => setTransitionModalState({ variantId: selectedEditorVariant.id })}
+                    >
+                      {getTransitionSummary(selectedEditorVariant?.interaction)}
+                    </button>
+                  </div>
+                  <div className="fb-artboard-bp-note">
+                    Animates {selectedEditorVariant?.name || 'this variant'} to {selectedEditorTransitionTarget.name || 'the target variant'} on component change.
+                  </div>
+                </>
+              ) : (
+                <div className="fb-artboard-bp-note">
+                  Connect this variant to another variant first. Then you can edit how the change animates here.
+                </div>
+              )}
+            </Section>
+          </div>
+        </aside>
+        {transitionModalState && selectedEditorVariant && selectedEditorTransitionTarget ? (
+          <VariantTransitionModal
+            sourceName={selectedEditorVariant.name}
+            targetName={selectedEditorTransitionTarget.name}
+            initialTransition={selectedEditorVariant.interaction?.transition}
+            initialDelay={selectedEditorVariant.interaction?.delay ?? 0}
+            onCancel={() => setTransitionModalState(null)}
+            onSave={({ transition, delay }) => {
+              updateComponentEditorVariantInteraction(selectedEditorVariant.id, {
+                targetVariantId: selectedEditorVariant.interaction?.targetVariantId,
+                trigger: selectedEditorVariant.interaction?.trigger ?? 'click',
+                delay,
+                transition,
+              });
+              commit();
+              setTransitionModalState(null);
+            }}
+          />
+        ) : null}
+      </>
     );
   }
 

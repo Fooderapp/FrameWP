@@ -412,6 +412,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const page                   = useEditorStore(s => s.getCurrentPage());
   const activeSurface          = useEditorStore(s => s.activeSurface);
   const componentEditor        = useEditorStore(s => s.componentEditor);
+  const openComponentEditor    = useEditorStore(s => s.openComponentEditor);
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const setSelection           = useEditorStore(s => s.setSelection);
   const viewport               = useEditorStore(s => s.viewport);
@@ -698,6 +699,11 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
         onDoubleClick={(e) => {
           if (e.target !== e.currentTarget) return;
           e.stopPropagation();
+          if (el.componentInstance?.componentId) {
+            setSelection({ elementId: el.id, bpId: selection.bpId });
+            openComponentEditor(el.componentInstance.componentId);
+            return;
+          }
           if (canDrill) {
             setDrilledContainerId(el.id);
             setSelection({ elementId: el.id, bpId: selection.bpId });
