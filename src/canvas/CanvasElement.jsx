@@ -25,6 +25,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const openComponentEditor    = useEditorStore(s => s.openComponentEditor);
   const activeSurface          = useEditorStore(s => s.activeSurface);
   const setComponentEditorActiveVariant = useEditorStore(s => s.setComponentEditorActiveVariant);
+  const viewport               = useEditorStore(s => s.viewport);
 
   const parentEl               = el?.parentId ? allElements.find(e => e.id === el.parentId) : null;
   let componentInstanceAncestor = null;
@@ -55,6 +56,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const readOnlyComponentRoot  = activeSurface === 'component' && !!el?.componentRoot;
   const interactionLocked      = locked || readOnlyComponentRoot;
   const insideComponentInstanceOnPage = !!componentInstanceAncestor;
+  const canvasScale            = viewport?.scale ?? 1;
 
   const isRelative = positionType === 'relative';
   const isFixed    = positionType === 'fixed';
@@ -434,6 +436,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         <button
           type="button"
           className="fb-component-root-label"
+          style={{
+            top: `${-6 / canvasScale}px`,
+            transform: `translateY(-100%) scale(${1 / canvasScale})`,
+            transformOrigin: 'left bottom',
+          }}
           onMouseDown={(e) => {
             e.stopPropagation();
             if (el.componentEditorVariantId) setComponentEditorActiveVariant(el.componentEditorVariantId);

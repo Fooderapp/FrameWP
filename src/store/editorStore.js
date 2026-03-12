@@ -158,12 +158,22 @@ function ensureComponentPrimaryRoot(snapshot = []) {
 }
 
 function normalizeComponentVariant(variant, fallbackName = 'Variant', { primary = false } = {}) {
+  const trigger = typeof variant?.interaction?.trigger === 'string'
+    ? variant.interaction.trigger
+    : 'click';
+  const delay = Number.isFinite(variant?.interaction?.delay)
+    ? Math.max(0, variant.interaction.delay)
+    : 0;
+  const targetVariantId = typeof variant?.interaction?.targetVariantId === 'string' && variant.interaction.targetVariantId
+    ? variant.interaction.targetVariantId
+    : null;
   return {
     id: variant?.id ?? makeId('cmp-var'),
     name: primary ? 'Primary' : (variant?.name || fallbackName).trim(),
     snapshot: primary
       ? ensureComponentPrimaryRoot(variant?.snapshot ?? [])
       : deepClone(Array.isArray(variant?.snapshot) ? variant.snapshot : []),
+    interaction: targetVariantId ? { targetVariantId, trigger, delay } : null,
   };
 }
 
@@ -179,15 +189,23 @@ function normalizeStoredComponent(component) {
   const normalizedVariants = variants.map((variant, index) => (
     index === 0 ? { ...variant, name: 'Primary' } : variant
   ));
-  const defaultVariantId = normalizedVariants.some((variant) => variant.id === component?.defaultVariantId)
+  const variantIds = new Set(normalizedVariants.map((variant) => variant.id));
+  const sanitizedVariants = normalizedVariants.map((variant) => {
+    const interaction = variant.interaction;
+    if (!interaction?.targetVariantId || !variantIds.has(interaction.targetVariantId) || interaction.targetVariantId === variant.id) {
+      return { ...variant, interaction: null };
+    }
+    return variant;
+  });
+  const defaultVariantId = sanitizedVariants.some((variant) => variant.id === component?.defaultVariantId)
     ? component.defaultVariantId
-    : normalizedVariants[0]?.id ?? null;
+    : sanitizedVariants[0]?.id ?? null;
 
   return {
     ...component,
     defaultVariantId,
-    variants: normalizedVariants,
-    snapshot: normalizedVariants[0]?.snapshot ?? [],
+    variants: sanitizedVariants,
+    snapshot: sanitizedVariants[0]?.snapshot ?? [],
   };
 }
 
@@ -480,6 +498,31 @@ function makeEmptyComponentEditor() {
   };
 }
 
+
+function buildPersistableLayoutPayload(state) {
+  const page = state.pages.find((item) => item.id === state.currentPageId);
+  const componentEditorOpen = state.activeSurface === 'component' && state.componentEditor?.isOpen;
+
+  const components = componentEditorOpen
+    ? state.components.map((component) => {
+        if (component.id !== state.componentEditor.componentId) return component;
+        const syncedVariants = syncComponentEditorVariants(state.componentEditor);
+        return normalizeStoredComponent({
+          ...component,
+          updatedAt: Date.now(),
+          defaultVariantId: component.defaultVariantId ?? syncedVariants[0]?.id ?? null,
+          variants: syncedVariants,
+          snapshot: syncedVariants[0]?.snapshot ?? [],
+        });
+      })
+    : state.components;
+
+  return {
+    ...page,
+    _breakpointDefs: state.breakpointDefs,
+    _componentLibrary: components,
+  };
+}
 // ── Element factory ──────────────────────────────────────────
 
 export function createFrame(x = 80, y = 80, name) {
@@ -1131,6 +1174,29 @@ export const useEditorStore = create((set, get) => {
       });
     },
 
+    updateComponentEditorVariantInteraction(variantId, interaction) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            variants: (state.componentEditor.variants ?? []).map((variant) => {
+              if (variant.id !== variantId) return variant;
+              if (!interaction?.targetVariantId) return { ...variant, interaction: null };
+              return {
+                ...variant,
+                interaction: {
+                  targetVariantId: interaction.targetVariantId,
+                  trigger: interaction.trigger || 'click',
+                  delay: Number.isFinite(interaction.delay) ? Math.max(0, interaction.delay) : 0,
+                },
+              };
+            }),
+          },
+        };
+      });
+    },
+
     addComponentVariant() {
       set((state) => {
         if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
@@ -1638,7 +1704,6 @@ export const useEditorStore = create((set, get) => {
 
     async saveLayout() {
       const state = get();
-      const page = state.pages.find(p => p.id === state.currentPageId);
       get().setSaveStatus('saving');
       // wp_localize_script converts everything to strings, so postId is "0" not 0
       const postId = parseInt(window.fbData?.postId, 10);
@@ -1647,7 +1712,7 @@ export const useEditorStore = create((set, get) => {
           const nonce = window.fbData.nonce;
           // Send nonce both as header AND as _wpnonce URL param (Nginx may strip custom headers)
           const url = window.fbData.restUrl + 'save-layout?_wpnonce=' + encodeURIComponent(nonce);
-          const payload = { ...page, _breakpointDefs: state.breakpointDefs };
+          const payload = buildPersistableLayoutPayload(state);
           const res = await fetch(url, {
             method: 'POST',
             credentials: 'same-origin',
@@ -1657,8 +1722,8 @@ export const useEditorStore = create((set, get) => {
           const data = await res.json();
           get().setSaveStatus(data.success ? 'ok' : 'error');
         } else {
-          const payload = { ...page, _breakpointDefs: state.breakpointDefs };
-          localStorage.setItem('fb_layout_' + page.id, JSON.stringify(payload));
+          const payload = buildPersistableLayoutPayload(state);
+          localStorage.setItem('fb_layout_' + state.currentPageId, JSON.stringify(payload));
           get().setSaveStatus('ok');
         }
       } catch (err) {
@@ -1709,14 +1774,13 @@ export const useEditorStore = create((set, get) => {
 
     async publishLayout() {
       const state = get();
-      const page = state.pages.find(p => p.id === state.currentPageId);
       get().setSaveStatus('saving');
       const postId = parseInt(window.fbData?.postId, 10);
       try {
         if (window.fbData && postId > 0) {
           const nonce = window.fbData.nonce;
           const url = window.fbData.restUrl + 'publish?_wpnonce=' + encodeURIComponent(nonce);
-          const publishPayload = { ...page, _breakpointDefs: state.breakpointDefs };
+          const publishPayload = buildPersistableLayoutPayload(state);
           const res = await fetch(url, {
             method: 'POST',
             credentials: 'same-origin',

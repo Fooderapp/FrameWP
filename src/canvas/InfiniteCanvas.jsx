@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useState } from 'react';
 import { useEditorStore, createFrame, createImage, createText, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
 import Artboard from './Artboard';
+import VariantInteractionModal from '../components/VariantInteractionModal';
 
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
@@ -94,6 +95,33 @@ function getFlexAxis(node) {
   if (!node) return 'y';
   const style = window.getComputedStyle(node);
   return (style.flexDirection ?? 'column').startsWith('row') ? 'x' : 'y';
+}
+
+function pointInClientRect(clientX, clientY, rect) {
+  if (!rect) return false;
+  return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+}
+
+function buildConnectorPath(start, end) {
+  const deltaX = Math.max(48, Math.abs(end.x - start.x) * 0.35);
+  return `M ${start.x} ${start.y} C ${start.x + deltaX} ${start.y}, ${end.x - deltaX} ${end.y}, ${end.x} ${end.y}`;
+}
+
+function toContainerPoint(rect, point) {
+  if (!point) return null;
+  return {
+    x: point.x - (rect?.left ?? 0),
+    y: point.y - (rect?.top ?? 0),
+  };
+}
+
+function clientToWorldPoint(containerRect, viewport, point) {
+  if (!point) return null;
+  const scale = viewport?.scale ?? 1;
+  return {
+    x: (point.x - (containerRect?.left ?? 0) - (viewport?.x ?? 0)) / scale,
+    y: (point.y - (containerRect?.top ?? 0) - (viewport?.y ?? 0)) / scale,
+  };
 }
 
 function getElementWorldMetrics({ el, bpId, bp, page, boardDom, scale }) {
@@ -382,6 +410,8 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const bpDefs                 = useEditorStore(s => s.breakpointDefs);
   const allElements            = useEditorStore(s => s.getAllElements());
   const page                   = useEditorStore(s => s.getCurrentPage());
+  const activeSurface          = useEditorStore(s => s.activeSurface);
+  const componentEditor        = useEditorStore(s => s.componentEditor);
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const setSelection           = useEditorStore(s => s.setSelection);
   const viewport               = useEditorStore(s => s.viewport);
@@ -453,7 +483,12 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const constraints = { top: true, left: true, right: false, bottom: false, ...(resolved.constraints ?? {}) };
   const isDragging = dragOverlay?.elementId === el.id;
   const canMoveOverlay = !el.locked && !isDragging && resolved.positionType !== 'relative' && !isFlowInLayout;
-  const overlayHandles = isFontResizeTextElement(el, resolved) ? ['se'] : OVERLAY_HANDLES;
+  const isActiveComponentVariantRoot = activeSurface === 'component'
+    && !!el.componentRoot
+    && !!el.componentEditorVariantId
+    && componentEditor?.activeVariantId === el.componentEditorVariantId;
+  const overlayHandles = (isFontResizeTextElement(el, resolved) ? ['se'] : OVERLAY_HANDLES)
+    .filter((handle) => !(isActiveComponentVariantRoot && handle === 'e'));
   const rotateHandles = ['nw', 'ne', 'se', 'sw'];
   const overlayCapturesPointer = canMoveOverlay && el.type !== 'text' && Math.abs(parseFloat(rotation) || 0) <= 0.01;
 
@@ -594,8 +629,9 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const canDrill   = elChildren.length > 0;
   const svgWidth = Math.max(...Object.values(bpDefs).map((entry) => entry.x + entry.width), worldX + overlayW) + 400;
   const svgHeight = Math.max(...Object.values(bpDefs).map((entry) => entry.y + entry.height), worldY + overlayH) + 400;
-  const outlineColor = el.componentInstance ? 'var(--component-accent)' : 'var(--accent-light)';
-  const outlineShadow = el.componentInstance ? 'var(--component-accent-strong)' : 'transparent';
+  const useComponentSelectionAccent = activeSurface === 'component' || el.componentInstance;
+  const outlineColor = useComponentSelectionAccent ? 'var(--component-accent)' : 'var(--accent-light)';
+  const outlineShadow = useComponentSelectionAccent ? 'var(--component-accent-strong)' : 'transparent';
   const overlayHitRect = hasRotation && visualRect
     ? visualRect
     : { left: worldX, top: worldY, width: overlayW, height: overlayH };
@@ -632,6 +668,14 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   if (!Object.values(rotatePoints).every(isFinitePoint)) return null;
   if (!Object.values(radiusAnchorPoints).every(isFinitePoint)) return null;
   const polygonPoints = [tl, tr, br, bl].map((point) => `${point.x},${point.y}`).join(' ');
+  const edgeResizeLines = !el.locked && !isDragging
+    ? [
+        { key: 'n', start: tl, end: tr, handle: 'n', enabled: overlayHandles.includes('n') },
+        { key: 'e', start: tr, end: br, handle: 'e', enabled: OVERLAY_HANDLES.includes('e') },
+        { key: 's', start: bl, end: br, handle: 's', enabled: overlayHandles.includes('s') },
+        { key: 'w', start: tl, end: bl, handle: 'w', enabled: overlayHandles.includes('w') },
+      ].filter((edge) => edge.enabled)
+    : [];
 
   return (
     <>
@@ -674,6 +718,25 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
           vectorEffect="non-scaling-stroke"
           style={{ filter: outlineShadow !== 'transparent' ? `drop-shadow(0 0 ${1 / scale}px ${outlineShadow})` : undefined }}
         />
+        {edgeResizeLines.map((edge) => (
+          <line
+            key={`edge-${edge.key}`}
+            x1={edge.start.x}
+            y1={edge.start.y}
+            x2={edge.end.x}
+            y2={edge.end.y}
+            stroke="rgba(0,0,0,0.001)"
+            strokeWidth={16 / scale}
+            vectorEffect="non-scaling-stroke"
+            pointerEvents="stroke"
+            style={{ cursor: `${edge.handle}-resize` }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onStartResize(e, selection.bpId, el, edge.handle);
+            }}
+          />
+        ))}
         {!el.locked && !isDragging && overlayHandles.map((handle) => {
           const point = handlePoints[handle];
           return (
@@ -685,7 +748,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
               height={handleSize}
               rx={2 / scale}
               ry={2 / scale}
-              fill={el.componentInstance ? 'var(--component-accent)' : '#fff'}
+              fill={useComponentSelectionAccent ? 'var(--component-accent)' : '#fff'}
               stroke={outlineColor}
               strokeWidth={1.5 / scale}
               vectorEffect="non-scaling-stroke"
@@ -768,9 +831,11 @@ export default function InfiniteCanvas() {
   const insertComponentInstance = useEditorStore(s => s.insertComponentInstance);
   const openComponentEditor = useEditorStore(s => s.openComponentEditor);
   const addComponentVariant = useEditorStore(s => s.addComponentVariant);
+  const updateComponentEditorVariantInteraction = useEditorStore(s => s.updateComponentEditorVariantInteraction);
   const deleteElement       = useEditorStore(s => s.deleteElement);
   const reparentElement      = useEditorStore(s => s.reparentElement);
   const setHoveredId         = useEditorStore(s => s.setHoveredId);
+  const hoveredId            = useEditorStore(s => s.hoveredId);
   const pushHistory          = useEditorStore(s => s.pushHistory);
   const setInteracting       = useEditorStore(s => s.setInteracting);
   const pendingDraw          = useEditorStore(s => s.pendingDraw);
@@ -798,11 +863,62 @@ export default function InfiniteCanvas() {
   const [dragOverlay,      setDragOverlay]      = useState(null); // { elementId, worldX, worldY, width, height }
   const [alignmentGuides,  setAlignmentGuides]  = useState([]); // [{ orientation, x?, y?, start, end }]
   const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
+  const [variantRootLayout, setVariantRootLayout] = useState({});
+  const [variantConnectionDraft, setVariantConnectionDraft] = useState(null); // { sourceVariantId, clientX, clientY }
+  const [variantInteractionModal, setVariantInteractionModal] = useState(null); // { sourceVariantId, targetVariantId, initialInteraction }
   const [contextMenu,      setContextMenu]      = useState(null);
   const [componentModal,   setComponentModal]   = useState(null);
   const clipboard = useRef(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const resolveVariantRootAtClientPoint = useCallback((clientX, clientY, { excludeVariantId = null } = {}) => {
+    const container = containerRef.current;
+    if (!container || activeSurface !== 'component') return null;
+
+    const elementIndex = new Map((componentEditor.page?.elements ?? []).map((element) => [element.id, element]));
+    for (const node of document.elementsFromPoint(clientX, clientY)) {
+      if (!container.contains(node)) continue;
+      if (node.closest('.fb-context-menu, .fb-right, .fb-left, .fb-topbar, .fb-overlay-modal')) return null;
+      const target = node.closest?.('[data-id]');
+      if (!target || !container.contains(target)) continue;
+
+      let cursor = elementIndex.get(target.dataset.id ?? '') ?? null;
+      while (cursor?.parentId) {
+        cursor = elementIndex.get(cursor.parentId) ?? null;
+      }
+      if (!cursor?.componentRoot || !cursor?.componentEditorVariantId) continue;
+      if (cursor.componentEditorVariantId === excludeVariantId) continue;
+
+      const layout = variantRootLayout[cursor.componentEditorVariantId] ?? null;
+      if (!layout) continue;
+      return layout;
+    }
+
+    return null;
+  }, [activeSurface, componentEditor.page?.elements, variantRootLayout]);
+
+  const openVariantInteractionModal = useCallback((sourceVariantId, targetVariantId) => {
+    if (!sourceVariantId || !targetVariantId) return;
+    const sourceVariant = (componentEditor.variants ?? []).find((variant) => variant.id === sourceVariantId) ?? null;
+    if (!sourceVariant) return;
+
+    setVariantInteractionModal({
+      sourceVariantId,
+      targetVariantId,
+      initialInteraction: sourceVariant?.interaction?.targetVariantId === targetVariantId
+        ? {
+            targetVariantId,
+            trigger: sourceVariant.interaction.trigger,
+            delay: sourceVariant.interaction.delay ?? 0,
+          }
+        : {
+            targetVariantId,
+            trigger: sourceVariant.interaction?.trigger ?? 'click',
+            delay: sourceVariant.interaction?.targetVariantId ? (sourceVariant.interaction.delay ?? 0) : 0,
+          },
+    });
+  }, [componentEditor.variants]);
+
   useLayoutEffect(() => {
     if (!reorderTarget?.bpId) {
       setReorderIndicatorOverlay(null);
@@ -872,6 +988,84 @@ export default function InfiniteCanvas() {
       axis,
     });
   }, [reorderTarget, viewport.scale]);
+
+  useLayoutEffect(() => {
+    if (activeSurface !== 'component' || !componentEditor?.isOpen) {
+      setVariantRootLayout({});
+      return;
+    }
+
+    const boardDom = document.querySelector('.fb-artboard[data-bp="desktop"]');
+    const roots = (componentEditor.page?.elements ?? []).filter((el) => !el.parentId && el.componentRoot);
+    if (!boardDom || !roots.length) {
+      setVariantRootLayout({});
+      return;
+    }
+
+    const nextLayout = {};
+    roots.forEach((root) => {
+      const node = boardDom.querySelector(`[data-id="${root.id}"]`);
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      const currentBp = useEditorStore.getState().breakpointDefs.desktop;
+      const currentScale = useEditorStore.getState().viewport.scale ?? 1;
+      const boardRect = boardDom.getBoundingClientRect();
+      const left = currentBp.x + (rect.left - boardRect.left) / currentScale;
+      const top = currentBp.y + (rect.top - boardRect.top) / currentScale;
+      const width = rect.width / currentScale;
+      const height = rect.height / currentScale;
+      const centerY = top + (height / 2);
+      const connectorX = left + width;
+      const from = { x: connectorX, y: centerY };
+      const to = { x: left, y: centerY };
+      nextLayout[root.componentEditorVariantId] = {
+        variantId: root.componentEditorVariantId,
+        rootId: root.id,
+        name: root.componentVariantName || 'Primary',
+        rect,
+        worldRect: {
+          left,
+          top,
+          width,
+          height,
+        },
+        from,
+        to,
+        connector: from,
+      };
+    });
+    setVariantRootLayout(nextLayout);
+  }, [activeSurface, componentEditor?.isOpen, componentEditor?.page?.elements, viewport.x, viewport.y, viewport.scale, componentEditor?.activeVariantId]);
+
+  useEffect(() => {
+    if (!variantConnectionDraft) return undefined;
+
+    const handleMove = (e) => {
+      setVariantConnectionDraft((current) => (current
+        ? { ...current, clientX: e.clientX, clientY: e.clientY }
+        : current));
+    };
+
+    const handleUp = (e) => {
+      setVariantConnectionDraft((current) => {
+        if (!current) return current;
+        const target = resolveVariantRootAtClientPoint(e.clientX, e.clientY, { excludeVariantId: current.sourceVariantId });
+
+        if (target) {
+          openVariantInteractionModal(current.sourceVariantId, target.variantId);
+        }
+
+        return null;
+      });
+    };
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, [openVariantInteractionModal, resolveVariantRootAtClientPoint, variantConnectionDraft]);
 
   const canPasteIntoFrame = useCallback((bpId = null, elementId = null) => {
     if (!clipboard.current) return false;
@@ -1027,6 +1221,10 @@ export default function InfiniteCanvas() {
   const resolveHoveredElementId = useCallback((clientX, clientY) => {
     const container = containerRef.current;
     if (!container) return null;
+    if (variantConnectionDraft) {
+      const eligibleRoot = resolveVariantRootAtClientPoint(clientX, clientY, { excludeVariantId: variantConnectionDraft.sourceVariantId });
+      return eligibleRoot?.rootId ?? null;
+    }
     const topNode = document.elementFromPoint(clientX, clientY);
     if (!topNode || !container.contains(topNode)) return null;
     for (const node of document.elementsFromPoint(clientX, clientY)) {
@@ -1037,7 +1235,7 @@ export default function InfiniteCanvas() {
       return target.dataset.id ?? null;
     }
     return null;
-  }, []);
+  }, [resolveVariantRootAtClientPoint, variantConnectionDraft]);
 
   const resolveElementDragDrop = useCallback((session, clientX, clientY) => {
     const st = useEditorStore.getState();
@@ -2321,8 +2519,8 @@ export default function InfiniteCanvas() {
   const lastVariantRoot = componentVariantRoots[componentVariantRoots.length - 1] ?? null;
   const canvasAddVariantPos = activeSurface === 'component' && lastVariantRoot && bpDefs.desktop
     ? {
-        left: bpDefs.desktop.x + (lastVariantRoot.base?.x ?? 0) + (lastVariantRoot.base?.width ?? 240) + 44,
-        top: bpDefs.desktop.y + (lastVariantRoot.base?.y ?? 0) + Math.max(24, ((lastVariantRoot.base?.height ?? 160) * 0.5) - 18),
+        left: bpDefs.desktop.x + (lastVariantRoot.base?.x ?? 0) + (lastVariantRoot.base?.width ?? 240) + (44 / Math.max(0.001, scale)),
+        top: bpDefs.desktop.y + (lastVariantRoot.base?.y ?? 0) + ((lastVariantRoot.base?.height ?? 160) * 0.5),
       }
     : null;
   const activeDragPreview = dragOverlay && drag.current?.type === 'element-drag'
@@ -2342,6 +2540,60 @@ export default function InfiniteCanvas() {
         rotation: drag.current?.rotation ?? 0,
       }
     : null;
+  const activeVariantConnector = activeSurface === 'component'
+    ? (variantRootLayout[componentEditor.activeVariantId] ?? null)
+    : null;
+  const connectorContainerRect = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+  const connectorWorldBounds = {
+    width: Math.max(...Object.values(bpDefs).map((entry) => entry.x + entry.width), ...Object.values(variantRootLayout).map((entry) => (entry.worldRect?.left ?? 0) + (entry.worldRect?.width ?? 0)), 0) + 400,
+    height: Math.max(...Object.values(bpDefs).map((entry) => entry.y + entry.height), ...Object.values(variantRootLayout).map((entry) => (entry.worldRect?.top ?? 0) + (entry.worldRect?.height ?? 0)), 0) + 400,
+  };
+  const variantConnectionLines = activeSurface === 'component'
+    ? (componentEditor.variants ?? []).flatMap((variant) => {
+        if (variant.id !== componentEditor.activeVariantId) return [];
+        const source = variantRootLayout[variant.id];
+        const target = variant.interaction?.targetVariantId ? variantRootLayout[variant.interaction.targetVariantId] : null;
+        if (!source || !target) return [];
+        return [{
+          key: `${variant.id}-${variant.interaction.targetVariantId}`,
+          sourceVariantId: variant.id,
+          targetVariantId: variant.interaction.targetVariantId,
+          path: buildConnectorPath(source.from, target.to),
+          end: target.to,
+          trigger: variant.interaction.trigger,
+          delay: variant.interaction.delay ?? 0,
+        }];
+      })
+    : [];
+  const draftHoverTarget = variantConnectionDraft
+    ? resolveVariantRootAtClientPoint(variantConnectionDraft.clientX, variantConnectionDraft.clientY, { excludeVariantId: variantConnectionDraft.sourceVariantId })
+    : null;
+  const draftEndpoint = draftHoverTarget?.to ?? (variantConnectionDraft
+    ? clientToWorldPoint(connectorContainerRect, viewport, { x: variantConnectionDraft.clientX, y: variantConnectionDraft.clientY })
+    : null);
+  const variantDraftPath = variantConnectionDraft && variantRootLayout[variantConnectionDraft.sourceVariantId]
+    ? buildConnectorPath(variantRootLayout[variantConnectionDraft.sourceVariantId].from, draftEndpoint)
+    : null;
+  const variantInteractionSource = variantInteractionModal
+    ? (componentEditor.variants ?? []).find((variant) => variant.id === variantInteractionModal.sourceVariantId) ?? null
+    : null;
+  const variantInteractionTarget = variantInteractionModal
+    ? (componentEditor.variants ?? []).find((variant) => variant.id === variantInteractionModal.targetVariantId) ?? null
+    : null;
+  const saveVariantInteraction = useCallback((nextInteraction) => {
+    if (!variantInteractionModal?.sourceVariantId || !variantInteractionModal?.targetVariantId) return;
+    updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, {
+      targetVariantId: variantInteractionModal.targetVariantId,
+      trigger: nextInteraction.trigger,
+      delay: nextInteraction.delay,
+    });
+    setVariantInteractionModal(null);
+  }, [updateComponentEditorVariantInteraction, variantInteractionModal]);
+  const disconnectVariantInteraction = useCallback(() => {
+    if (!variantInteractionModal?.sourceVariantId) return;
+    updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, null);
+    setVariantInteractionModal(null);
+  }, [updateComponentEditorVariantInteraction, variantInteractionModal]);
 
   return (
     <div
@@ -2417,11 +2669,92 @@ export default function InfiniteCanvas() {
           <button
             type="button"
             className="fb-component-canvas-add-variant"
-            style={{ left: canvasAddVariantPos.left, top: canvasAddVariantPos.top }}
+            style={{
+              left: canvasAddVariantPos.left,
+              top: canvasAddVariantPos.top,
+              transform: `translateY(-50%) scale(${1 / Math.max(0.001, scale)})`,
+              transformOrigin: 'left center',
+            }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={() => addComponentVariant()}
           >
             + Variant
+          </button>
+        ) : null}
+        {activeSurface === 'component' && (variantConnectionLines.length || variantDraftPath) ? (
+          <svg
+            className="fb-variant-connector-layer"
+            width={connectorWorldBounds.width}
+            height={connectorWorldBounds.height}
+          >
+            {variantConnectionLines.map((line) => (
+              <g key={line.key}>
+                <path className="fb-variant-connector-line fb-variant-connector-line--glow" d={line.path} />
+                <path
+                  className="fb-variant-connector-line fb-variant-connector-line--interactive"
+                  d={line.path}
+                  style={{ pointerEvents: 'stroke' }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openVariantInteractionModal(line.sourceVariantId, line.targetVariantId);
+                  }}
+                />
+                <circle
+                  className="fb-variant-connector-end-dot fb-variant-connector-end-dot--interactive"
+                  cx={line.end.x}
+                  cy={line.end.y}
+                  r="4.5"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openVariantInteractionModal(line.sourceVariantId, line.targetVariantId);
+                  }}
+                />
+              </g>
+            ))}
+            {variantDraftPath ? (
+              <g>
+                <path className="fb-variant-connector-line fb-variant-connector-line--draft" d={variantDraftPath} />
+                <circle className="fb-variant-connector-end-dot fb-variant-connector-end-dot--draft" cx={draftEndpoint.x} cy={draftEndpoint.y} r="4.5" />
+              </g>
+            ) : null}
+          </svg>
+        ) : null}
+        {draftHoverTarget ? (
+          <div
+            className="fb-variant-connector-target"
+            style={{
+              left: draftHoverTarget.worldRect.left,
+              top: draftHoverTarget.worldRect.top,
+              width: draftHoverTarget.worldRect.width,
+              height: draftHoverTarget.worldRect.height,
+            }}
+          />
+        ) : null}
+        {activeVariantConnector ? (
+          <button
+            type="button"
+            className="fb-variant-connector-handle"
+            style={{
+              left: activeVariantConnector.connector.x,
+              top: activeVariantConnector.connector.y,
+              transform: `translate(-50%, -50%) scale(${1 / Math.max(0.001, scale)})`,
+              transformOrigin: 'center center',
+            }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setVariantConnectionDraft({
+                sourceVariantId: activeVariantConnector.variantId,
+                clientX: e.clientX,
+                clientY: e.clientY,
+              });
+            }}
+            title={`Connect ${activeVariantConnector.name}`}
+          >
+            <span className="fb-variant-connector-handle__dot" />
+            <span className="fb-variant-connector-handle__core" aria-hidden="true" />
           </button>
         ) : null}
       </div>
@@ -2451,6 +2784,16 @@ export default function InfiniteCanvas() {
           }}
         />
       )}
+      {variantInteractionModal && variantInteractionSource && variantInteractionTarget ? (
+        <VariantInteractionModal
+          sourceName={variantInteractionSource.name}
+          targetName={variantInteractionTarget.name}
+          initialInteraction={variantInteractionModal.initialInteraction}
+          onCancel={() => setVariantInteractionModal(null)}
+          onSave={saveVariantInteraction}
+          onDisconnect={variantInteractionSource.interaction ? disconnectVariantInteraction : null}
+        />
+      ) : null}
       {radiusDragInfo && (
         <div className="fb-radius-tooltip" style={{ position: 'fixed', left: radiusDragInfo.clientX + 14, top: radiusDragInfo.clientY - 28, pointerEvents: 'none', zIndex: 99999 }}>
           {radiusDragInfo.value}px

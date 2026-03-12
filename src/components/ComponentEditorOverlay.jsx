@@ -1,10 +1,13 @@
-import React, { useMemo } from 'react';
+import React, { useState } from 'react';
 import LeftPanel from '../panels/LeftPanel';
 import InfiniteCanvas from '../canvas/InfiniteCanvas';
 import PropertiesPanel from '../panels/PropertiesPanel';
-import { useEditorStore, resolveElement } from '../store/editorStore';
+import { useEditorStore } from '../store/editorStore';
+import ComponentPlayPreview from './ComponentPlayPreview';
+import { IconButton, UIIcons } from './UIIcons';
 
 export default function ComponentEditorOverlay() {
+  const [playModeOpen, setPlayModeOpen] = useState(false);
   const componentEditor = useEditorStore(s => s.componentEditor);
   const components = useEditorStore(s => s.components);
   const closeComponentEditor = useEditorStore(s => s.closeComponentEditor);
@@ -13,32 +16,6 @@ export default function ComponentEditorOverlay() {
 
   const component = components.find(item => item.id === componentEditor.componentId);
   const activeVariantId = componentEditor.activeVariantId;
-  const validationMessage = useMemo(() => {
-    const elements = componentEditor.page?.elements ?? [];
-    const variantRoots = elements.filter((el) => !el.parentId && el.componentRoot);
-    if (!variantRoots.length) return 'Add at least one variant before closing the component editor.';
-    for (const variantRoot of variantRoots) {
-      const roots = elements.filter((el) => el.parentId === variantRoot.id);
-      if (!roots.length) {
-        return `${variantRoot.componentVariantName || 'Variant'} needs at least one layer inside it before closing the component editor.`;
-      }
-      const invalidFill = roots.find((el) => {
-        const resolved = resolveElement(el, 'desktop');
-        return resolved.widthMode === 'fill' || resolved.heightMode === 'fill';
-      });
-      if (invalidFill) {
-        return `${variantRoot.componentVariantName || 'Variant'} has a top-level layer using Fill. Switch it to Fixed, Relative, or Hug.`;
-      }
-      const collapsed = roots.find((el) => {
-        const resolved = resolveElement(el, 'desktop');
-        return (resolved.width ?? 0) <= 20 || (resolved.height ?? 0) <= 20;
-      });
-      if (collapsed) {
-        return `${variantRoot.componentVariantName || 'Variant'} has a collapsed top-level layer. Increase its width and height above 20px before closing.`;
-      }
-    }
-    return null;
-  }, [componentEditor.page?.elements]);
 
   if (!componentEditor.isOpen || !component) return null;
 
@@ -69,24 +46,30 @@ export default function ComponentEditorOverlay() {
             </button>
           </div>
         </div>
-        <button
-          type="button"
-          className="fb-secondary-btn"
-          onClick={closeComponentEditor}
-        >
-          Close
-        </button>
-      </div>
-      {validationMessage ? (
-        <div className="fb-component-editor-overlay__warning">
-          {validationMessage}
+        <div className="fb-component-editor-overlay__actions">
+          <IconButton icon={UIIcons.play} title="Play test" onClick={() => setPlayModeOpen(true)} />
+          <button
+            type="button"
+            className="fb-secondary-btn"
+            onClick={closeComponentEditor}
+          >
+            Close
+          </button>
         </div>
-      ) : null}
+      </div>
       <div className="fb-editor fb-component-editor-overlay__body">
         <LeftPanel />
         <InfiniteCanvas />
         <PropertiesPanel />
       </div>
+      {playModeOpen ? (
+        <ComponentPlayPreview
+          componentName={component.name}
+          variants={componentEditor.variants ?? []}
+          initialVariantId={activeVariantId}
+          onClose={() => setPlayModeOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

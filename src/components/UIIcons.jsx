@@ -27,6 +27,7 @@ export const UIIcons = {
   fit: <Svg><path d="M8 4H4v4" /><path d="M16 4h4v4" /><path d="M20 16v4h-4" /><path d="M4 16v4h4" /></Svg>,
   save: <Svg><path d="M5 4h11l3 3v13H5z" /><path d="M8 4v6h8" /><path d="M9 19h6" /></Svg>,
   publish: <Svg><path d="M12 4v11" /><path d="M8 8l4-4 4 4" /><path d="M5 20h14" /></Svg>,
+  play: <Svg><path d="M9 7.5v9l7-4.5-7-4.5z" /><circle cx="12" cy="12" r="9" /></Svg>,
   layers: <Svg><path d="M12 4l8 4-8 4-8-4 8-4z" /><path d="M4 12l8 4 8-4" /><path d="M4 16l8 4 8-4" /></Svg>,
   elements: <Svg><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></Svg>,
   component: <Svg><rect x="4" y="6" width="8" height="8" rx="2" /><path d="M14 9h6M17 6v6" /></Svg>,

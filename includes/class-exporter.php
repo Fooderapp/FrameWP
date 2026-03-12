@@ -32,6 +32,8 @@ class FrameBuilder_Exporter {
 
 	/** @var array<string,array|null> Cascaded page layout (flex) per breakpoint; null = off */
 	private array  $page_layout = [];
+	/** @var array<string,array> Component library indexed by component ID */
+	private array $component_library = [];
 
 	/** @var array<string,float|null> Per-breakpoint viewport fold height (null = auto-compute) */
 	private array $viewport_fold_h = [ 'desktop' => null, 'tablet' => null, 'mobile' => null ];
@@ -39,6 +41,7 @@ class FrameBuilder_Exporter {
 	public function __construct( array $layout ) {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
+		$this->component_library = $this->load_component_library();
 
 		// Override default bp_cfg with saved artboard dimensions if present
 		$defs = $layout['_breakpointDefs'] ?? null;
@@ -136,6 +139,7 @@ class FrameBuilder_Exporter {
 		}
 
 		$html .= '</div>';
+		$html .= $this->get_component_runtime_assets();
 		return $html;
 	}
 
@@ -299,6 +303,8 @@ class FrameBuilder_Exporter {
 			$inline .= 'transform:rotate(' . floatval( $resolved['rotation'] ) . 'deg);';
 		}
 
+		$layout_inline = $inline;
+
 		$visual_props = [
 			'backgroundColor' => 'background-color',
 			'borderRadius'    => 'border-radius',
@@ -338,6 +344,15 @@ class FrameBuilder_Exporter {
 			} else {
 				$inline .= 'background-image:url(' . esc_attr( $bg_img ) . ');background-size:' . esc_attr( $this->sanitize_css_value( $bg_size ) ) . ';background-repeat:no-repeat;background-position:' . $bg_pos . ';';
 			}
+		}
+
+		$component_instance = is_array( $el['componentInstance'] ?? null ) ? $el['componentInstance'] : null;
+		$component_id = sanitize_text_field( $component_instance['componentId'] ?? '' );
+		if ( $component_id && $this->get_component_definition( $component_id ) ) {
+			$html = '<div class="' . esc_attr( $class . ' fb-component-instance' ) . '" style="' . esc_attr( $layout_inline ) . '" data-fb-component-id="' . esc_attr( $component_id ) . '" data-fb-active-variant="' . esc_attr( sanitize_text_field( $component_instance['variantId'] ?? '' ) ) . '">';
+			$html .= $this->render_component_instance_variants( $el, $resolved, $bpId );
+			$html .= '</div>';
+			return $html;
 		}
 		// Emit the div with all accumulated inline styles
 		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '">';
@@ -708,7 +723,239 @@ class FrameBuilder_Exporter {
 		return max( $max_h, 100 );
 	}
 
+	private function load_component_library(): array {
+		$components = is_array( $this->layout['_componentLibrary'] ?? null )
+			? $this->layout['_componentLibrary']
+			: json_decode( get_option( '_fb_component_library', '[]' ), true );
+		if ( ! is_array( $components ) ) return [];
+
+		$indexed = [];
+		foreach ( $components as $component ) {
+			if ( ! is_array( $component ) || empty( $component['id'] ) ) continue;
+			$indexed[ sanitize_text_field( $component['id'] ) ] = $component;
+		}
+
+		return $indexed;
+	}
+
+	private function get_component_definition( string $component_id ): ?array {
+		return $this->component_library[ $component_id ] ?? null;
+	}
+
+	private function is_assoc_array( array $value ): bool {
+		if ( [] === $value ) return false;
+		return array_keys( $value ) !== range( 0, count( $value ) - 1 );
+	}
+
+	private function deep_merge_value( $base, $override ) {
+		if ( ! is_array( $base ) || ! is_array( $override ) ) return $override;
+		if ( ! $this->is_assoc_array( $base ) || ! $this->is_assoc_array( $override ) ) return $override;
+
+		$merged = $base;
+		foreach ( $override as $key => $value ) {
+			$merged[ $key ] = array_key_exists( $key, $base )
+				? $this->deep_merge_value( $base[ $key ], $value )
+				: $value;
+		}
+		return $merged;
+	}
+
+	private function get_snapshot_root( array $snapshot ): ?array {
+		$id_set = [];
+		foreach ( $snapshot as $el ) {
+			if ( ! empty( $el['id'] ) ) $id_set[ $el['id'] ] = true;
+		}
+		foreach ( $snapshot as $el ) {
+			$parent_id = $el['parentId'] ?? null;
+			if ( ! $parent_id || empty( $id_set[ $parent_id ] ) ) return $el;
+		}
+		return $snapshot[0] ?? null;
+	}
+
+	private function apply_component_variant_overrides( array $primary_snapshot, array $override_snapshot ): array {
+		$base_map = [];
+		foreach ( $primary_snapshot as $el ) {
+			if ( empty( $el['id'] ) ) continue;
+			$base_map[ $el['id'] ] = $el;
+		}
+
+		$delete_ids = [];
+		$collect_delete_ids = function( string $element_id ) use ( &$collect_delete_ids, &$delete_ids, $base_map ): void {
+			if ( isset( $delete_ids[ $element_id ] ) ) return;
+			$delete_ids[ $element_id ] = true;
+			$element = $base_map[ $element_id ] ?? null;
+			foreach ( $element['children'] ?? [] as $child_id ) {
+				if ( is_string( $child_id ) && $child_id !== '' ) {
+					$collect_delete_ids( $child_id );
+				}
+			}
+		};
+
+		foreach ( $override_snapshot as $entry ) {
+			if ( ! empty( $entry['__deleted'] ) && ! empty( $entry['id'] ) ) {
+				$collect_delete_ids( $entry['id'] );
+			}
+		}
+
+		$next = [];
+		foreach ( $primary_snapshot as $el ) {
+			if ( empty( $el['id'] ) || isset( $delete_ids[ $el['id'] ] ) ) continue;
+			$clone = $el;
+			$clone['children'] = array_values( array_filter(
+				$clone['children'] ?? [],
+				fn( $child_id ) => ! isset( $delete_ids[ $child_id ] )
+			) );
+			$next[] = $clone;
+		}
+
+		$next_map = [];
+		foreach ( $next as $el ) {
+			$next_map[ $el['id'] ] = $el;
+		}
+
+		foreach ( $override_snapshot as $entry ) {
+			if ( ! is_array( $entry ) || ! empty( $entry['__deleted'] ) || empty( $entry['id'] ) ) continue;
+			if ( isset( $next_map[ $entry['id'] ] ) ) {
+				$merged = $this->deep_merge_value( $next_map[ $entry['id'] ], $entry );
+				unset( $merged['__added'], $merged['__deleted'] );
+				$next_map[ $entry['id'] ] = $merged;
+			} else {
+				$added = $entry;
+				unset( $added['__added'], $added['__deleted'] );
+				$next_map[ $added['id'] ] = $added;
+			}
+		}
+
+		return array_values( $next_map );
+	}
+
+	private function compose_component_variant_snapshot( array $component, ?string $variant_id = null ): array {
+		$variants = is_array( $component['variants'] ?? null ) ? $component['variants'] : [];
+		if ( empty( $variants ) ) return [];
+
+		$primary_variant = $variants[0] ?? null;
+		if ( ! is_array( $primary_variant ) ) return [];
+
+		$target_variant = null;
+		foreach ( $variants as $candidate ) {
+			if ( ! is_array( $candidate ) || empty( $candidate['id'] ) ) continue;
+			if ( $variant_id && $candidate['id'] === $variant_id ) {
+				$target_variant = $candidate;
+				break;
+			}
+		}
+		if ( ! $target_variant ) {
+			$default_variant_id = $component['defaultVariantId'] ?? null;
+			foreach ( $variants as $candidate ) {
+				if ( ! is_array( $candidate ) || empty( $candidate['id'] ) ) continue;
+				if ( $default_variant_id && $candidate['id'] === $default_variant_id ) {
+					$target_variant = $candidate;
+					break;
+				}
+			}
+		}
+		if ( ! $target_variant ) $target_variant = $primary_variant;
+
+		$primary_snapshot = is_array( $primary_variant['snapshot'] ?? null ) ? $primary_variant['snapshot'] : [];
+		if ( empty( $target_variant['id'] ) || $target_variant['id'] === ( $primary_variant['id'] ?? null ) ) {
+			return $primary_snapshot;
+		}
+
+		return $this->apply_component_variant_overrides(
+			$primary_snapshot,
+			is_array( $target_variant['snapshot'] ?? null ) ? $target_variant['snapshot'] : []
+		);
+	}
+
+	private function render_snapshot_element( array $el, array $snapshot_index, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): string {
+		$previous_index = $this->el_index;
+		$this->el_index = $snapshot_index;
+		$html = $this->render_element( $el, $bpId, $cw, $ch, $artboard_layout_on, $parent_flex_dir );
+		$this->el_index = $previous_index;
+		return $html;
+	}
+
+	private function render_component_instance_variants( array $el, array $resolved, string $bpId ): string {
+		$instance = is_array( $el['componentInstance'] ?? null ) ? $el['componentInstance'] : [];
+		$component_id = sanitize_text_field( $instance['componentId'] ?? '' );
+		$component = $component_id ? $this->get_component_definition( $component_id ) : null;
+		$variants = is_array( $component['variants'] ?? null ) ? $component['variants'] : [];
+		if ( ! $component || empty( $variants ) ) return '';
+
+		$active_variant_id = sanitize_text_field( $instance['variantId'] ?? ( $component['defaultVariantId'] ?? ( $variants[0]['id'] ?? '' ) ) );
+		$root_width = max( 1, (float) ( $resolved['width'] ?? 1 ) );
+		$root_height = max( 1, (float) ( $resolved['height'] ?? 1 ) );
+		$html = '';
+
+		foreach ( $variants as $variant ) {
+			if ( ! is_array( $variant ) || empty( $variant['id'] ) ) continue;
+			$variant_id = sanitize_text_field( $variant['id'] );
+			$snapshot = $this->compose_component_variant_snapshot( $component, $variant_id );
+			$root = $this->get_snapshot_root( $snapshot );
+			if ( ! $root ) continue;
+
+			$snapshot_index = [];
+			foreach ( $snapshot as $snapshot_el ) {
+				if ( ! empty( $snapshot_el['id'] ) ) $snapshot_index[ $snapshot_el['id'] ] = $snapshot_el;
+			}
+
+			$root_variant = $root;
+			$root_variant['parentId'] = null;
+			$root_variant['base']['x'] = 0;
+			$root_variant['base']['y'] = 0;
+			$root_variant['base']['width'] = $root_width;
+			$root_variant['base']['height'] = $root_height;
+
+			$interaction = is_array( $variant['interaction'] ?? null ) ? $variant['interaction'] : null;
+			$target_variant_id = sanitize_text_field( $interaction['targetVariantId'] ?? '' );
+			$trigger = sanitize_text_field( $interaction['trigger'] ?? '' );
+			$delay = isset( $interaction['delay'] ) ? max( 0, (float) $interaction['delay'] ) : 0;
+			$attrs = ' data-fb-variant-id="' . esc_attr( $variant_id ) . '"';
+			if ( $target_variant_id !== '' && $target_variant_id !== $variant_id ) {
+				$attrs .= ' data-fb-trigger="' . esc_attr( $trigger ?: 'click' ) . '"';
+				$attrs .= ' data-fb-target-variant-id="' . esc_attr( $target_variant_id ) . '"';
+				$attrs .= ' data-fb-delay="' . esc_attr( (string) $delay ) . '"';
+			}
+
+			$html .= '<div class="fb-component-variant' . ( $variant_id === $active_variant_id ? ' is-active' : '' ) . '"' . $attrs . '>';
+			$html .= $this->render_snapshot_element( $root_variant, $snapshot_index, $bpId, $root_width, $root_height, false, 'none' );
+			$html .= '</div>';
+		}
+
+		return $html;
+	}
+
+	private function get_component_runtime_assets(): string {
+		$bid = esc_attr( $this->build_id );
+		$css = ".{$bid} .fb-component-instance{position:relative;}"
+			. ".{$bid} .fb-component-variant{position:absolute;inset:0;display:none;}"
+			. ".{$bid} .fb-component-variant.is-active{display:block;}"
+			. ".{$bid} .fb-component-variant > .fb-el{pointer-events:auto;}";
+
+		$script = "<script>(function(){"
+			. "var scope=document.querySelector('.fb-page.{$bid}');if(!scope)return;"
+			. "var instances=scope.querySelectorAll('.fb-component-instance[data-fb-component-id]');"
+			. "var findVariant=function(instance,variantId){return Array.prototype.find.call(instance.querySelectorAll('.fb-component-variant'),function(node){return node.dataset.fbVariantId===variantId;})||null;};"
+			. "instances.forEach(function(instance){"
+			. "var timer=null;"
+			. "var clearTimer=function(){if(timer){window.clearTimeout(timer);timer=null;}};"
+			. "var getActive=function(){return instance.querySelector('.fb-component-variant.is-active');};"
+			. "var queueAppear=function(){clearTimer();var active=getActive();if(!active||active.dataset.fbTrigger!=='appear')return;var target=active.dataset.fbTargetVariantId;if(!target)return;var delay=Math.max(0,(parseFloat(active.dataset.fbDelay||'0')||0)*1000);timer=window.setTimeout(function(){showVariant(target);},delay);};"
+			. "var showVariant=function(variantId){var next=findVariant(instance,variantId);if(!next)return;instance.querySelectorAll('.fb-component-variant').forEach(function(node){node.classList.toggle('is-active',node===next);});instance.dataset.fbActiveVariant=variantId;queueAppear();};"
+			. "var runTrigger=function(expected){var active=getActive();if(!active||active.dataset.fbTrigger!==expected)return;var target=active.dataset.fbTargetVariantId;if(!target)return;var delay=Math.max(0,(parseFloat(active.dataset.fbDelay||'0')||0)*1000);clearTimer();if(delay>0){timer=window.setTimeout(function(){showVariant(target);},delay);}else{showVariant(target);}};"
+			. "instance.addEventListener('click',function(){runTrigger('click');});"
+			. "instance.addEventListener('pointerdown',function(){runTrigger('click-start');});"
+			. "instance.addEventListener('mouseenter',function(){runTrigger('mouse-enter');});"
+			. "instance.addEventListener('mouseleave',function(){runTrigger('mouse-leave');});"
+			. "queueAppear();"
+			. "});"
+			. "})();</script>";
+
+		return '<style>' . $css . '</style>' . $script;
+	}
+
 	private function sanitize_css_value( $value ): string {
 		return preg_replace( '/[;\{\}]/', '', (string) $value );
 	}
+
 }

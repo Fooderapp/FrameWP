@@ -195,10 +195,19 @@ class FrameBuilder_API {
 			if ( is_array( $component['variants'] ?? null ) ) {
 				foreach ( $component['variants'] as $variant ) {
 					if ( ! is_array( $variant ) || empty( $variant['id'] ) ) continue;
+					$interaction = null;
+					if ( is_array( $variant['interaction'] ?? null ) && ! empty( $variant['interaction']['targetVariantId'] ) ) {
+						$interaction = [
+							'targetVariantId' => sanitize_text_field( $variant['interaction']['targetVariantId'] ),
+							'trigger'         => sanitize_text_field( $variant['interaction']['trigger'] ?? 'click' ),
+							'delay'           => isset( $variant['interaction']['delay'] ) ? max( 0, (float) $variant['interaction']['delay'] ) : 0,
+						];
+					}
 					$clean_variants[] = [
-						'id'       => sanitize_text_field( $variant['id'] ),
-						'name'     => sanitize_text_field( $variant['name'] ?? 'Variant' ),
-						'snapshot' => is_array( $variant['snapshot'] ?? null ) ? $variant['snapshot'] : [],
+						'id'          => sanitize_text_field( $variant['id'] ),
+						'name'        => sanitize_text_field( $variant['name'] ?? 'Variant' ),
+						'snapshot'    => is_array( $variant['snapshot'] ?? null ) ? $variant['snapshot'] : [],
+						'interaction' => $interaction,
 					];
 				}
 			}
