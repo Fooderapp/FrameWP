@@ -52,23 +52,44 @@ async function requestJson(url, options) {
   return data ?? {};
 }
 
-async function postWordPressAction(restPath, ajaxAction, body) {
+function appendAjaxField(formData, key, value) {
+  if (value == null) return;
+  if (typeof value === 'object') {
+    formData.append(key, JSON.stringify(value));
+    return;
+  }
+  formData.append(key, `${value}`);
+}
+
+async function requestWordPressEndpoint(restPath, ajaxAction, options = {}) {
+  const { method = 'GET', body = null } = options;
   const nonce = window.fbData?.nonce;
-  const restUrl = `${window.fbData?.restUrl || ''}${restPath}?_wpnonce=${encodeURIComponent(nonce || '')}`;
+  const restUrl = new URL(`${window.fbData?.restUrl || ''}${restPath}`, window.location.origin);
+
+  if (method === 'GET' && body && typeof body === 'object') {
+    Object.entries(body).forEach(([key, value]) => {
+      if (value == null) return;
+      restUrl.searchParams.set(key, `${value}`);
+    });
+  }
+  restUrl.searchParams.set('_wpnonce', nonce || '');
 
   try {
-    return await requestJson(restUrl, {
-      method: 'POST',
+    return await requestJson(restUrl.toString(), {
+      method,
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce || '' },
-      body: JSON.stringify(body),
+      headers: method === 'GET'
+        ? { 'X-WP-Nonce': nonce || '' }
+        : { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce || '' },
+      ...(method === 'GET' || !body ? {} : { body: JSON.stringify(body) }),
     });
   } catch (restError) {
     const formData = new FormData();
     formData.append('action', ajaxAction);
     formData.append('_wpnonce', nonce || '');
-    formData.append('post_id', `${body.post_id || 0}`);
-    formData.append('layout', JSON.stringify(body.layout ?? {}));
+    if (body && typeof body === 'object') {
+      Object.entries(body).forEach(([key, value]) => appendAjaxField(formData, key, value));
+    }
 
     return requestJson(getAjaxUrl(), {
       method: 'POST',
@@ -76,6 +97,10 @@ async function postWordPressAction(restPath, ajaxAction, body) {
       body: formData,
     });
   }
+}
+
+async function postWordPressAction(restPath, ajaxAction, body) {
+  return requestWordPressEndpoint(restPath, ajaxAction, { method: 'POST', body });
 }
 
 const LAYOUT_NUMERIC_KEYS = new Set([
@@ -299,7 +324,7 @@ function applyVariableBindingValue(resolved, propertyKey, variable) {
 const BREAKPOINTS = {
   desktop: { id: 'desktop', name: 'Desktop', icon: '🖥', width: 1440, height: 900, x: 100,  y: 120, viewportFoldH: null },
   tablet:  { id: 'tablet',  name: 'Tablet',  icon: '📟', width: 768,  height: 1024, x: 1600, y: 120, viewportFoldH: null },
-  mobile:  { id: 'mobile',  name: 'Mobile',  icon: '📱', width: 375,  height: 812,  x: 2440, y: 120, viewportFoldH: null },
+  mobile:  { id: 'mobile',  name: 'Mobile',  icon: '📱', width: 390,  height: 844,  x: 2440, y: 120, viewportFoldH: null },
 };
 
 const COMPONENT_EDITOR_BREAKPOINTS = {
@@ -879,6 +904,27 @@ function syncComponentEditorVariants(componentEditor) {
   });
 }
 
+export function getLiveComponentEditorVariants(componentEditor) {
+  return syncComponentEditorVariants(componentEditor);
+}
+
+function buildComponentLibraryForPersistence(state) {
+  const componentEditorOpen = state.activeSurface === 'component' && state.componentEditor?.isOpen;
+  if (!componentEditorOpen) return state.components;
+
+  return state.components.map((component) => {
+    if (component.id !== state.componentEditor.componentId) return component;
+    const syncedVariants = syncComponentEditorVariants(state.componentEditor);
+    return normalizeStoredComponent({
+      ...component,
+      updatedAt: Date.now(),
+      defaultVariantId: component.defaultVariantId ?? syncedVariants[0]?.id ?? null,
+      variants: syncedVariants,
+      snapshot: syncedVariants[0]?.snapshot ?? [],
+    });
+  });
+}
+
 function makeComponentEditorBreakpoints(elements = []) {
   const variantRoots = (elements ?? []).filter((el) => !el.parentId && el.componentRoot);
   const width = Math.max(1400, ...variantRoots.map((root) => (root.base?.x ?? 0) + (root.base?.width ?? 240) + COMPONENT_EDITOR_VARIANT_SIDE_PAD));
@@ -930,21 +976,7 @@ function makeEmptyComponentEditor() {
 
 function buildPersistableLayoutPayload(state) {
   const page = state.pages.find((item) => item.id === state.currentPageId);
-  const componentEditorOpen = state.activeSurface === 'component' && state.componentEditor?.isOpen;
-
-  const components = componentEditorOpen
-    ? state.components.map((component) => {
-        if (component.id !== state.componentEditor.componentId) return component;
-        const syncedVariants = syncComponentEditorVariants(state.componentEditor);
-        return normalizeStoredComponent({
-          ...component,
-          updatedAt: Date.now(),
-          defaultVariantId: component.defaultVariantId ?? syncedVariants[0]?.id ?? null,
-          variants: syncedVariants,
-          snapshot: syncedVariants[0]?.snapshot ?? [],
-        });
-      })
-    : state.components;
+  const components = buildComponentLibraryForPersistence(state);
 
   return {
     ...page,
@@ -1457,13 +1489,7 @@ export const useEditorStore = create((set, get) => {
     async loadGlobalVariables() {
       try {
         if (window.fbData?.restUrl) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'variables?_wpnonce=' + encodeURIComponent(nonce);
-          const res = await fetch(url, {
-            credentials: 'same-origin',
-            headers: { 'X-WP-Nonce': nonce },
-          });
-          const data = await res.json();
+          const data = await requestWordPressEndpoint('variables', 'framebuilder_get_variables');
           if (data.success && Array.isArray(data.variables)) {
             set({ globalVariables: normalizeVariableList(data.variables, 'global') });
           }
@@ -1481,13 +1507,9 @@ export const useEditorStore = create((set, get) => {
       set({ globalVariables: normalizedVariables });
       try {
         if (window.fbData?.restUrl) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'variables?_wpnonce=' + encodeURIComponent(nonce);
-          await fetch(url, {
+          await requestWordPressEndpoint('variables', 'framebuilder_save_variables', {
             method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce },
-            body: JSON.stringify({ variables: normalizedVariables }),
+            body: { variables: normalizedVariables },
           });
         } else {
           localStorage.setItem('fb_global_variables', JSON.stringify(normalizedVariables));
@@ -1500,13 +1522,7 @@ export const useEditorStore = create((set, get) => {
     async loadVariableSources() {
       try {
         if (window.fbData?.restUrl) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'variable-sources?_wpnonce=' + encodeURIComponent(nonce);
-          const res = await fetch(url, {
-            credentials: 'same-origin',
-            headers: { 'X-WP-Nonce': nonce },
-          });
-          const data = await res.json();
+          const data = await requestWordPressEndpoint('variable-sources', 'framebuilder_get_variable_sources');
           if (data.success) {
             set({
               variableSources: {
@@ -1628,13 +1644,7 @@ export const useEditorStore = create((set, get) => {
     async loadComponents() {
       try {
         if (window.fbData?.restUrl) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'components?_wpnonce=' + encodeURIComponent(nonce);
-          const res = await fetch(url, {
-            credentials: 'same-origin',
-            headers: { 'X-WP-Nonce': nonce },
-          });
-          const data = await res.json();
+          const data = await requestWordPressEndpoint('components', 'framebuilder_get_components');
           if (data.success && Array.isArray(data.components)) {
             set({ components: data.components.map(normalizeStoredComponent) });
           }
@@ -1647,25 +1657,25 @@ export const useEditorStore = create((set, get) => {
       }
     },
 
-    async saveComponents(components) {
+    async saveComponents(components, options = {}) {
+      const { throwOnError = false } = options;
       const normalizedComponents = components.map(normalizeStoredComponent);
       set({ components: normalizedComponents });
       try {
         if (window.fbData?.restUrl) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'components?_wpnonce=' + encodeURIComponent(nonce);
-          await fetch(url, {
+          await requestWordPressEndpoint('components', 'framebuilder_save_components', {
             method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce },
-            body: JSON.stringify({ components: normalizedComponents }),
+            body: { components: normalizedComponents },
           });
         } else {
           localStorage.setItem('fb_component_library', JSON.stringify(normalizedComponents));
         }
+        return normalizedComponents;
       } catch (e) {
         console.error('[FrameBuilder] saveComponents failed', e);
+        if (throwOnError) throw e;
       }
+      return normalizedComponents;
     },
 
     createComponentFromElement(elementId, name) {
@@ -2049,13 +2059,7 @@ export const useEditorStore = create((set, get) => {
     async loadColorStyles() {
       try {
         if (window.fbData?.restUrl) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'color-styles?_wpnonce=' + encodeURIComponent(nonce);
-          const res = await fetch(url, {
-            credentials: 'same-origin',
-            headers: { 'X-WP-Nonce': nonce },
-          });
-          const data = await res.json();
+          const data = await requestWordPressEndpoint('color-styles', 'framebuilder_get_color_styles');
           if (data.success && Array.isArray(data.styles)) {
             set({ colorStyles: data.styles });
           }
@@ -2072,13 +2076,9 @@ export const useEditorStore = create((set, get) => {
       set({ colorStyles: styles });
       try {
         if (window.fbData?.restUrl) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'color-styles?_wpnonce=' + encodeURIComponent(nonce);
-          await fetch(url, {
+          await requestWordPressEndpoint('color-styles', 'framebuilder_save_color_styles', {
             method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce },
-            body: JSON.stringify({ styles }),
+            body: { styles },
           });
         } else {
           localStorage.setItem('fb_color_styles', JSON.stringify(styles));
@@ -2611,16 +2611,27 @@ export const useEditorStore = create((set, get) => {
       // wp_localize_script converts everything to strings, so postId is "0" not 0
       const postId = parseInt(window.fbData?.postId, 10);
       try {
+        const components = buildComponentLibraryForPersistence(state).map(normalizeStoredComponent);
+        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
+          await get().saveComponents(components, { throwOnError: true });
+        }
         if (window.fbData && postId > 0) {
-          const payload = buildPersistableLayoutPayload(state);
+          const payload = {
+            ...buildPersistableLayoutPayload(state),
+            _componentLibrary: components,
+          };
           const data = await postWordPressAction('save-layout', 'framebuilder_save_layout', {
             post_id: postId,
             layout: payload,
           });
           get().setSaveStatus(data.success ? 'ok' : 'error');
         } else {
-          const payload = buildPersistableLayoutPayload(state);
+          const payload = {
+            ...buildPersistableLayoutPayload(state),
+            _componentLibrary: components,
+          };
           localStorage.setItem('fb_layout_' + state.currentPageId, JSON.stringify(payload));
+          localStorage.setItem('fb_component_library', JSON.stringify(components));
           get().setSaveStatus('ok');
         }
       } catch (err) {
@@ -2634,39 +2645,40 @@ export const useEditorStore = create((set, get) => {
       const postId = parseInt(window.fbData?.postId, 10);
       try {
         if (window.fbData && postId > 0) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'get-layout/' + postId + '?_wpnonce=' + encodeURIComponent(nonce);
-          const res = await fetch(url, {
-            credentials: 'same-origin',
-            headers: { 'X-WP-Nonce': nonce },
+          const data = await requestWordPressEndpoint(`get-layout/${postId}`, 'framebuilder_get_layout', {
+            body: { post_id: postId },
           });
-          const data = await res.json();
           if (data.success && data.layout) {
-            const { _breakpointDefs, ...cleanLayout } = data.layout;
+            const { _breakpointDefs, _componentLibrary, ...cleanLayout } = data.layout;
             set(state => ({
               pages: state.pages.map(p =>
                 p.id === state.currentPageId
                   ? normalizePageData({ ...cleanLayout, id: state.currentPageId })
                   : p
               ),
+              ...(Array.isArray(_componentLibrary) ? { components: _componentLibrary.map(normalizeStoredComponent) } : {}),
               ...(_breakpointDefs ? { breakpointDefs: _breakpointDefs } : {}),
             }));
+            return { hasStoredComponentLibrary: Array.isArray(_componentLibrary) };
           }
         } else {
           const stored = localStorage.getItem('fb_layout_page-1');
           if (stored) {
-            const { _breakpointDefs, ...cleanLayout } = JSON.parse(stored);
+            const { _breakpointDefs, _componentLibrary, ...cleanLayout } = JSON.parse(stored);
             set(state => ({
               pages: state.pages.map(p =>
                 p.id === state.currentPageId ? normalizePageData({ ...cleanLayout, id: state.currentPageId }) : p
               ),
+              ...(Array.isArray(_componentLibrary) ? { components: _componentLibrary.map(normalizeStoredComponent) } : {}),
               ...(_breakpointDefs ? { breakpointDefs: _breakpointDefs } : {}),
             }));
+            return { hasStoredComponentLibrary: Array.isArray(_componentLibrary) };
           }
         }
       } catch (err) {
         console.warn('[FrameBuilder] loadLayout failed', err);
       }
+      return { hasStoredComponentLibrary: false };
     },
 
     async publishLayout() {
@@ -2674,8 +2686,15 @@ export const useEditorStore = create((set, get) => {
       get().setSaveStatus('saving');
       const postId = parseInt(window.fbData?.postId, 10);
       try {
+        const components = buildComponentLibraryForPersistence(state).map(normalizeStoredComponent);
+        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
+          await get().saveComponents(components, { throwOnError: true });
+        }
         if (window.fbData && postId > 0) {
-          const publishPayload = buildPersistableLayoutPayload(state);
+          const publishPayload = {
+            ...buildPersistableLayoutPayload(state),
+            _componentLibrary: components,
+          };
           const data = await postWordPressAction('publish', 'framebuilder_publish_layout', {
             post_id: postId,
             layout: publishPayload,
@@ -2683,6 +2702,7 @@ export const useEditorStore = create((set, get) => {
           get().setSaveStatus(data.success ? 'ok' : 'error');
           if (data.success && data.permalink) window.open(data.permalink, '_blank');
         } else {
+          localStorage.setItem('fb_component_library', JSON.stringify(components));
           get().setSaveStatus('ok');
         }
       } catch (err) {

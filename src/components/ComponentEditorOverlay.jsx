@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import LeftPanel from '../panels/LeftPanel';
 import InfiniteCanvas from '../canvas/InfiniteCanvas';
 import PropertiesPanel from '../panels/PropertiesPanel';
-import { useEditorStore } from '../store/editorStore';
+import { getLiveComponentEditorVariants, useEditorStore } from '../store/editorStore';
 import ComponentPlayPreview from './ComponentPlayPreview';
 import { IconButton, UIIcons } from './UIIcons';
 
@@ -20,6 +20,7 @@ export default function ComponentEditorOverlay() {
   const [playModeOpen, setPlayModeOpen] = useState(false);
   const componentEditor = useEditorStore(s => s.componentEditor);
   const components = useEditorStore(s => s.components);
+  const previewVariants = useEditorStore(s => getLiveComponentEditorVariants(s.componentEditor));
   const closeComponentEditor = useEditorStore(s => s.closeComponentEditor);
   const selectComponentEditorVariant = useEditorStore(s => s.selectComponentEditorVariant);
   const addComponentVariant = useEditorStore(s => s.addComponentVariant);
@@ -83,7 +84,7 @@ export default function ComponentEditorOverlay() {
       {playModeOpen ? (
         <ComponentPlayPreview
           componentName={component.name}
-          variants={componentEditor.variants ?? []}
+          variants={previewVariants}
           initialVariantId={activeVariantId}
           onClose={() => setPlayModeOpen(false)}
         />

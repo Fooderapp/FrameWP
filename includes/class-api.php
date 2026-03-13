@@ -5,7 +5,15 @@ class FrameBuilder_API {
 
 	public static function init() {
 		add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
+		add_action( 'wp_ajax_framebuilder_get_layout', [ __CLASS__, 'ajax_get_layout' ] );
 		add_action( 'wp_ajax_framebuilder_save_layout', [ __CLASS__, 'ajax_save_layout' ] );
+		add_action( 'wp_ajax_framebuilder_get_color_styles', [ __CLASS__, 'ajax_get_color_styles' ] );
+		add_action( 'wp_ajax_framebuilder_save_color_styles', [ __CLASS__, 'ajax_save_color_styles' ] );
+		add_action( 'wp_ajax_framebuilder_get_components', [ __CLASS__, 'ajax_get_components' ] );
+		add_action( 'wp_ajax_framebuilder_save_components', [ __CLASS__, 'ajax_save_components' ] );
+		add_action( 'wp_ajax_framebuilder_get_variables', [ __CLASS__, 'ajax_get_variables' ] );
+		add_action( 'wp_ajax_framebuilder_save_variables', [ __CLASS__, 'ajax_save_variables' ] );
+		add_action( 'wp_ajax_framebuilder_get_variable_sources', [ __CLASS__, 'ajax_get_variable_sources' ] );
 		add_action( 'wp_ajax_framebuilder_publish_layout', [ __CLASS__, 'ajax_publish_layout' ] );
 	}
 
@@ -113,6 +121,14 @@ class FrameBuilder_API {
 
 	public static function get_layout( WP_REST_Request $request ) {
 		$post_id = absint( $request['post_id'] );
+		$result = self::perform_get_layout( $post_id );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	private static function perform_get_layout( int $post_id ) {
 		if ( ! $post_id ) {
 			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
 		}
@@ -122,7 +138,7 @@ class FrameBuilder_API {
 		}
 		$raw    = get_post_meta( $post_id, '_fb_layout', true );
 		$layout = $raw ? json_decode( $raw, true ) : null;
-		return rest_ensure_response( [
+		return [
 			'success' => true,
 			'layout'  => $layout,
 			'post'    => [
@@ -130,7 +146,7 @@ class FrameBuilder_API {
 				'title' => get_the_title( $post ),
 				'slug'  => $post->post_name,
 			],
-		] );
+		];
 	}
 
 	public static function save_layout( WP_REST_Request $request ) {
@@ -195,6 +211,17 @@ class FrameBuilder_API {
 		wp_send_json( $result );
 	}
 
+	public static function ajax_get_layout() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_get_layout( absint( $_POST['post_id'] ?? 0 ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
 	public static function ajax_publish_layout() {
 		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
 			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
@@ -221,14 +248,25 @@ class FrameBuilder_API {
 
 	// Site-wide colour styles stored as a WP option (not per-post).
 	public static function get_color_styles( WP_REST_Request $request ) {
+		return rest_ensure_response( self::perform_get_color_styles() );
+	}
+
+	private static function perform_get_color_styles() {
 		$raw    = get_option( '_fb_color_styles', '[]' );
 		$styles = json_decode( $raw, true );
 		if ( ! is_array( $styles ) ) $styles = [];
-		return rest_ensure_response( [ 'success' => true, 'styles' => $styles ] );
+		return [ 'success' => true, 'styles' => $styles ];
 	}
 
 	public static function save_color_styles( WP_REST_Request $request ) {
-		$styles = $request->get_param( 'styles' );
+		$result = self::perform_save_color_styles( $request->get_param( 'styles' ) );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	private static function perform_save_color_styles( $styles ) {
 		if ( ! is_array( $styles ) ) {
 			return new WP_Error( 'invalid_styles', 'styles must be an array.', [ 'status' => 400 ] );
 		}
@@ -243,18 +281,29 @@ class FrameBuilder_API {
 			];
 		}
 		update_option( '_fb_color_styles', wp_json_encode( $clean ) );
-		return rest_ensure_response( [ 'success' => true ] );
+		return [ 'success' => true, 'styles' => $clean ];
 	}
 
 	public static function get_components( WP_REST_Request $request ) {
+		return rest_ensure_response( self::perform_get_components() );
+	}
+
+	private static function perform_get_components() {
 		$raw        = get_option( '_fb_component_library', '[]' );
 		$components = json_decode( $raw, true );
 		if ( ! is_array( $components ) ) $components = [];
-		return rest_ensure_response( [ 'success' => true, 'components' => $components ] );
+		return [ 'success' => true, 'components' => $components ];
 	}
 
 	public static function save_components( WP_REST_Request $request ) {
-		$components = $request->get_param( 'components' );
+		$result = self::perform_save_components( $request->get_param( 'components' ) );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	private static function perform_save_components( $components ) {
 		if ( ! is_array( $components ) ) {
 			return new WP_Error( 'invalid_components', 'components must be an array.', [ 'status' => 400 ] );
 		}
@@ -323,7 +372,7 @@ class FrameBuilder_API {
 		}
 
 		update_option( '_fb_component_library', wp_json_encode( $clean ) );
-		return rest_ensure_response( [ 'success' => true ] );
+		return [ 'success' => true, 'components' => $clean ];
 	}
 
 	private static function sanitize_variable_value( string $type, $value ) {
@@ -372,19 +421,35 @@ class FrameBuilder_API {
 	}
 
 	public static function get_variables( WP_REST_Request $request ) {
+		return rest_ensure_response( self::perform_get_variables() );
+	}
+
+	private static function perform_get_variables() {
 		$raw = get_option( '_fb_global_variables', '[]' );
 		$variables = json_decode( $raw, true );
 		if ( ! is_array( $variables ) ) $variables = [];
-		return rest_ensure_response( [ 'success' => true, 'variables' => $variables ] );
+		return [ 'success' => true, 'variables' => $variables ];
 	}
 
 	public static function save_variables( WP_REST_Request $request ) {
-		$variables = self::sanitize_variables_list( $request->get_param( 'variables' ), 'global' );
+		$result = self::perform_save_variables( $request->get_param( 'variables' ) );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	private static function perform_save_variables( $variables ) {
+		$variables = self::sanitize_variables_list( $variables, 'global' );
 		update_option( '_fb_global_variables', wp_json_encode( $variables ) );
-		return rest_ensure_response( [ 'success' => true, 'variables' => $variables ] );
+		return [ 'success' => true, 'variables' => $variables ];
 	}
 
 	public static function get_variable_sources( WP_REST_Request $request ) {
+		return rest_ensure_response( self::perform_get_variable_sources() );
+	}
+
+	private static function perform_get_variable_sources() {
 		$pages = get_posts( [
 			'post_type'      => 'page',
 			'post_status'    => [ 'publish', 'draft', 'private' ],
@@ -420,7 +485,7 @@ class FrameBuilder_API {
 			}, $product_posts );
 		}
 
-		return rest_ensure_response( [
+		return [
 			'success'  => true,
 			'pages'    => array_map( static function( $post ) {
 				return [
@@ -439,6 +504,67 @@ class FrameBuilder_API {
 				];
 			}, $posts ),
 			'products' => $products,
-		] );
+		];
+	}
+
+	public static function ajax_get_color_styles() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		wp_send_json( self::perform_get_color_styles() );
+	}
+
+	public static function ajax_save_color_styles() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_save_color_styles( self::decode_ajax_layout( $_POST['styles'] ?? null ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	public static function ajax_get_components() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		wp_send_json( self::perform_get_components() );
+	}
+
+	public static function ajax_save_components() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_save_components( self::decode_ajax_layout( $_POST['components'] ?? null ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	public static function ajax_get_variables() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		wp_send_json( self::perform_get_variables() );
+	}
+
+	public static function ajax_save_variables() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_save_variables( self::decode_ajax_layout( $_POST['variables'] ?? null ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	public static function ajax_get_variable_sources() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		wp_send_json( self::perform_get_variable_sources() );
 	}
 }

@@ -169,7 +169,7 @@ class FrameBuilder_Exporter {
 	private array $bp_cfg = [
 		'desktop' => [ 'max_w' => 1440, 'default_h' => 900  ],
 		'tablet'  => [ 'max_w' => 768,  'default_h' => 1024 ],
-		'mobile'  => [ 'max_w' => 375,  'default_h' => 812  ],
+		'mobile'  => [ 'max_w' => 390,  'default_h' => 844  ],
 	];
 
 	public function generate_css(): string {
@@ -674,10 +674,12 @@ class FrameBuilder_Exporter {
 	 */
 	private function responsive_visibility_css(): string {
 		$bid = $this->build_id;
+		$tablet_max = max( 768, (int) round( (float) ( $this->bp_cfg['tablet']['max_w'] ?? 768 ) ) );
+		$mobile_max = max( 480, (int) round( (float) ( $this->bp_cfg['mobile']['max_w'] ?? 390 ) ) );
 		return implode( "\n", [
 			".{$bid} .fb-bp-tablet, .{$bid} .fb-bp-mobile { display: none; }",
-			"@media (max-width: 768px) { .{$bid} .fb-bp-desktop { display: none !important; } .{$bid} .fb-bp-tablet { display: block !important; } }",
-			"@media (max-width: 375px) { .{$bid} .fb-bp-tablet  { display: none !important; } .{$bid} .fb-bp-mobile  { display: block !important; } }",
+			"@media (max-width: {$tablet_max}px) { .{$bid} .fb-bp-desktop { display: none !important; } .{$bid} .fb-bp-tablet { display: block !important; } }",
+			"@media (max-width: {$mobile_max}px) { .{$bid} .fb-bp-tablet  { display: none !important; } .{$bid} .fb-bp-mobile  { display: block !important; } }",
 		] );
 	}
 

@@ -603,8 +603,14 @@ function InteractionSection({ interactions, variableSources, interactionVariable
 }
 
 function MediaPickerModal({ onSelect, onClose }) {
-  const adminUrl = (window.fbData?.adminUrl ?? '').replace(/\/$/, '');
-  const src = `${adminUrl}/admin.php?page=fb-media-picker`;
+  const adminUrl = window.fbData?.adminUrl ?? '';
+  const siteUrl = window.fbData?.siteUrl ?? window.location.origin;
+  let src = '';
+  try {
+    src = new URL('admin.php?page=fb-media-picker', adminUrl || `${siteUrl.replace(/\/$/, '')}/wp-admin/`).toString();
+  } catch (error) {
+    src = `${siteUrl.replace(/\/$/, '')}/wp-admin/admin.php?page=fb-media-picker`;
+  }
 
   useEffect(() => {
     const handler = (e) => {

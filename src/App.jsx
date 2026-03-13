@@ -20,7 +20,15 @@ export default function App() {
   const resizeStateRef = useRef(null);
 
   useEffect(() => {
-    Promise.all([loadLayout(), loadComponents(), loadGlobalVariables(), loadVariableSources()]).then(() => pushHistory());
+    (async () => {
+      const layoutState = await loadLayout();
+      await Promise.all([
+        layoutState?.hasStoredComponentLibrary ? Promise.resolve() : loadComponents(),
+        loadGlobalVariables(),
+        loadVariableSources(),
+      ]);
+      pushHistory();
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
