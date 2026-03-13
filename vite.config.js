@@ -4,7 +4,7 @@ import { resolve } from 'path';
 
 export default defineConfig({
   plugins: [react()],
-  base: '/wp-content/plugins/framebuilder/assets/',
+  base: './',
   build: {
     outDir: '/Users/nagybertalan/Local Sites/canvaswp/app/public/wp-content/plugins/framebuilder/assets',
     emptyOutDir: true,

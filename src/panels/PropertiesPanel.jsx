@@ -301,19 +301,41 @@ const TEXT_GROW_OPTIONS = [
   { value: 'fixed', label: 'Fixed size', icon: UIIcons.fixedSize },
 ];
 
-function AlignStrip({ resolved, containerW, containerH, upd, commit, disabled }) {
+function getAlignTargets(action, width, height, containerW, containerH) {
+  switch (action) {
+    case 'left': return { x: 0 };
+    case 'hcenter': return { x: Math.round((containerW - width) / 2) };
+    case 'right': return { x: containerW - width };
+    case 'top': return { y: 0 };
+    case 'vcenter': return { y: Math.round((containerH - height) / 2) };
+    case 'bottom': return { y: containerH - height };
+    default: return null;
+  }
+}
+
+function AlignStrip({ resolved, containerW, containerH, upd, commit, disabled, onAlign = null }) {
   const w = resolved.width ?? 100;
   const h = resolved.height ?? 100;
-  const go = (axis, val) => { upd(axis, val); commit(); };
+  const go = (action) => {
+    if (disabled) return;
+    if (typeof onAlign === 'function') {
+      onAlign(action);
+      return;
+    }
+    const targets = getAlignTargets(action, w, h, containerW, containerH);
+    if (!targets) return;
+    Object.entries(targets).forEach(([axis, value]) => upd(axis, value));
+    commit();
+  };
   return (
     <div className={`fb-align-strip${disabled ? ' fb-align-strip--disabled' : ''}`}>
-      <div className="fb-align-strip__btn" title="Align left"         onClick={() => !disabled && go('x', 0)}>{ALIGN_SVG.left}</div>
-      <div className="fb-align-strip__btn" title="Center horizontal"  onClick={() => !disabled && go('x', Math.round((containerW - w) / 2))}>{ALIGN_SVG.hcenter}</div>
-      <div className="fb-align-strip__btn" title="Align right"        onClick={() => !disabled && go('x', containerW - w)}>{ALIGN_SVG.right}</div>
+      <div className="fb-align-strip__btn" title="Align left"         onClick={() => go('left')}>{ALIGN_SVG.left}</div>
+      <div className="fb-align-strip__btn" title="Center horizontal"  onClick={() => go('hcenter')}>{ALIGN_SVG.hcenter}</div>
+      <div className="fb-align-strip__btn" title="Align right"        onClick={() => go('right')}>{ALIGN_SVG.right}</div>
       <div className="fb-align-strip__sep" />
-      <div className="fb-align-strip__btn" title="Align top"          onClick={() => !disabled && go('y', 0)}>{ALIGN_SVG.top}</div>
-      <div className="fb-align-strip__btn" title="Center vertical"    onClick={() => !disabled && go('y', Math.round((containerH - h) / 2))}>{ALIGN_SVG.vcenter}</div>
-      <div className="fb-align-strip__btn" title="Align bottom"       onClick={() => !disabled && go('y', containerH - h)}>{ALIGN_SVG.bottom}</div>
+      <div className="fb-align-strip__btn" title="Align top"          onClick={() => go('top')}>{ALIGN_SVG.top}</div>
+      <div className="fb-align-strip__btn" title="Center vertical"    onClick={() => go('vcenter')}>{ALIGN_SVG.vcenter}</div>
+      <div className="fb-align-strip__btn" title="Align bottom"       onClick={() => go('bottom')}>{ALIGN_SVG.bottom}</div>
     </div>
   );
 }
@@ -1009,6 +1031,59 @@ export default function PropertiesPanel() {
       element: selected,
       resolved: resolveElementWithVariables(selected, bpId, pageVariables, globalVariables),
     }));
+    const bp = bpDefs?.[bpId];
+    const autoFoldH = bp
+      ? (bp.id === 'desktop' ? Math.round(bp.width * 9 / 16) : Math.round(bp.width * 16 / 9))
+      : 900;
+    const alignmentParentId = selectedElements[0]?.parentId ?? null;
+    const sharesAlignmentParent = selectedElements.every((selected) => (selected.parentId ?? null) === alignmentParentId);
+    let alignContainerW = bp?.width ?? 1440;
+    let alignContainerH = bp?.height ?? 900;
+    if (alignmentParentId) {
+      const parent = allEls.find((candidate) => candidate.id === alignmentParentId);
+      if (parent) {
+        const parentResolved = resolveElementWithVariables(parent, bpId, pageVariables, globalVariables);
+        alignContainerW = parentResolved.width ?? alignContainerW;
+        alignContainerH = parentResolved.height ?? alignContainerH;
+      }
+    }
+    const alignmentEntries = resolvedSelections.map(({ element: selected, resolved }) => {
+      const positionType = resolved.positionType ?? 'absolute';
+      const isFixed = positionType === 'fixed';
+      const isFlow = positionType === 'relative'
+        || (!selected.parentId && resolvePageLayout(page?.layout, bpId) !== null && !resolved.absoluteInLayout && !isFixed);
+      return {
+        id: selected.id,
+        locked: !!selected.locked,
+        isFixed,
+        isFlow,
+        x: resolved.x ?? 0,
+        y: resolved.y ?? 0,
+        width: resolved.width ?? 0,
+        height: resolved.height ?? 0,
+      };
+    });
+    const allFixedSelection = alignmentEntries.every((entry) => entry.isFixed);
+    if (allFixedSelection) alignContainerH = bp?.viewportFoldH ?? autoFoldH;
+    const canAlignSelection = alignmentEntries.length > 0
+      && sharesAlignmentParent
+      && alignmentEntries.every((entry) => !entry.locked && !entry.isFlow)
+      && (allFixedSelection || alignmentEntries.every((entry) => !entry.isFixed));
+    const selectionBounds = canAlignSelection ? alignmentEntries.reduce((acc, entry) => ({
+      left: Math.min(acc.left, entry.x),
+      top: Math.min(acc.top, entry.y),
+      right: Math.max(acc.right, entry.x + entry.width),
+      bottom: Math.max(acc.bottom, entry.y + entry.height),
+    }), {
+      left: alignmentEntries[0].x,
+      top: alignmentEntries[0].y,
+      right: alignmentEntries[0].x + alignmentEntries[0].width,
+      bottom: alignmentEntries[0].y + alignmentEntries[0].height,
+    }) : null;
+    const selectionSize = selectionBounds ? {
+      width: selectionBounds.right - selectionBounds.left,
+      height: selectionBounds.bottom - selectionBounds.top,
+    } : null;
     const getSharedValue = (getter) => {
       const first = getter(resolvedSelections[0]);
       return resolvedSelections.every((entry) => Object.is(getter(entry), first)) ? first : null;
@@ -1054,6 +1129,20 @@ export default function PropertiesPanel() {
       updateElementsStyles(selectionIds, bpId, updates);
       pushHistory();
     };
+    const alignSelection = (action) => {
+      if (!canAlignSelection || !selectionBounds || !selectionSize) return;
+      const targets = getAlignTargets(action, selectionSize.width, selectionSize.height, alignContainerW, alignContainerH);
+      if (!targets) return;
+      const deltaX = targets.x == null ? 0 : targets.x - selectionBounds.left;
+      const deltaY = targets.y == null ? 0 : targets.y - selectionBounds.top;
+      alignmentEntries.forEach((entry) => {
+        const updates = {};
+        if (targets.x != null) updates.x = Math.round(entry.x + deltaX);
+        if (targets.y != null) updates.y = Math.round(entry.y + deltaY);
+        updateElementLayout(entry.id, bpId, updates);
+      });
+      pushHistory();
+    };
 
     return (
       <aside className="fb-right">
@@ -1068,6 +1157,16 @@ export default function PropertiesPanel() {
         </div>
 
         <div className="fb-panel-body">
+          <AlignStrip
+            resolved={selectionSize ?? { width: 0, height: 0 }}
+            containerW={alignContainerW}
+            containerH={alignContainerH}
+            upd={() => {}}
+            commit={() => {}}
+            disabled={!canAlignSelection}
+            onAlign={alignSelection}
+          />
+
           <Section title="Selection">
             <div className="fb-prop-row">
               <span className="fb-prop-label">Types</span>
@@ -1076,6 +1175,7 @@ export default function PropertiesPanel() {
             <div className="fb-artboard-bp-note">
               Only batch-safe controls are shown here. Mixed values stay untouched until you set a replacement.
             </div>
+            {!canAlignSelection ? <div className="fb-artboard-bp-note">Align is available when all selected elements share the same parent and use absolute or fixed positioning.</div> : null}
           </Section>
 
           <Section title="Visibility">
