@@ -195,6 +195,15 @@ function getElementWorldMetrics({ el, bpId, bp, page, boardDom, scale }) {
   };
 }
 
+function getComponentInstanceAncestor(allEls, element) {
+  let cursor = element;
+  while (cursor) {
+    if (cursor.componentInstance) return cursor;
+    cursor = cursor.parentId ? allEls.find((candidate) => candidate.id === cursor.parentId) ?? null : null;
+  }
+  return null;
+}
+
 function rotatePointAround(point, center, degrees) {
   const radians = (degrees * Math.PI) / 180;
   const cos = Math.cos(radians);
@@ -1346,9 +1355,15 @@ export default function InfiniteCanvas() {
       if (!dataId || descendants.has(dataId)) continue;
       const candidate = allEls.find(el => el.id === dataId);
       if (!candidate || candidate.type !== 'frame') continue;
-      const candidateResolved = resolveElement(candidate, session.bpId);
+      const componentContainer = st.activeSurface === 'page'
+        ? getComponentInstanceAncestor(allEls, candidate)
+        : null;
+      if (componentContainer) continue;
+      const resolvedCandidate = candidate;
+      if (descendants.has(resolvedCandidate.id)) continue;
+      const candidateResolved = resolveElement(resolvedCandidate, session.bpId);
       if (candidateResolved.hidden) continue;
-      dropContainer = candidate;
+      dropContainer = resolvedCandidate;
       break;
     }
 
@@ -2588,6 +2603,10 @@ export default function InfiniteCanvas() {
     const type = e.dataTransfer.getData('fb-element-type');
     const draggedId = e.dataTransfer.getData('fb-element-id');
     const componentId = e.dataTransfer.getData('fb-component-id');
+    const targetElement = useEditorStore.getState().getAllElements().find((entry) => entry.id === targetElementId) ?? null;
+    if (useEditorStore.getState().activeSurface === 'page' && targetElement?.componentInstance) {
+      return;
+    }
     const targetBpId = e.target.closest('.fb-artboard[data-bp]')?.dataset.bp ?? useEditorStore.getState().selection?.bpId ?? 'desktop';
     const localPlacement = getParentPlacementFromClient(e.clientX, e.clientY, targetBpId, targetElementId);
     const localX = localPlacement?.x ?? 20;

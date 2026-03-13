@@ -809,6 +809,7 @@ export default function PropertiesPanel() {
   const setElementPropertyBinding = useEditorStore(s => s.setElementPropertyBinding);
   const setElementInteractions = useEditorStore(s => s.setElementInteractions);
   const allEls              = useEditorStore(s => s.getAllElements());
+  const viewportScale       = useEditorStore(s => s.viewport.scale);
 
   // Artboard selection
   const artboardSel         = useEditorStore(s => s.artboardSel);
@@ -1338,6 +1339,15 @@ export default function PropertiesPanel() {
       const pr = resolveElement(parent, bpId);
       containerW = pr.width  ?? containerW;
       containerH = pr.height ?? containerH;
+      const boardDom = typeof document !== 'undefined'
+        ? document.querySelector(`.fb-artboard[data-bp="${bpId}"]`)
+        : null;
+      const parentDom = boardDom?.querySelector(`[data-id="${parent.id}"]`) ?? null;
+      if (parentDom && viewportScale > 0) {
+        const rect = parentDom.getBoundingClientRect();
+        if (rect.width > 0) containerW = rect.width / viewportScale;
+        if (rect.height > 0) containerH = rect.height / viewportScale;
+      }
     }
   }
 

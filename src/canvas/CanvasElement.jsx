@@ -68,7 +68,13 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const readOnlyComponentRoot  = activeSurface === 'component' && !!el?.componentRoot;
   const interactionLocked      = locked || readOnlyComponentRoot;
   const insideComponentInstanceOnPage = !!componentInstanceAncestor;
-  const suppressPointerEventsOnPage = insideComponentInstanceOnPage && !el?.componentInstance;
+  const componentSelectionTargetId = componentInstanceAncestor?.id ?? id;
+  const dropTargetElementId = id;
+  const isComponentInstanceOnPage = activeSurface === 'page' && !!el?.componentInstance;
+  const canDropOnto = !!onDropOntoElement
+    && el.type === 'frame'
+    && !insideComponentInstanceOnPage
+    && !isComponentInstanceOnPage;
   const canvasScale            = viewport?.scale ?? 1;
 
   const isRelative = positionType === 'relative';
@@ -194,7 +200,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     }
     e.stopPropagation();
     if (e.metaKey || e.ctrlKey || e.shiftKey) {
-      toggleSelection({ elementId: id, bpId });
+      toggleSelection({ elementId: componentSelectionTargetId, bpId });
+      return;
+    }
+    if (insideComponentInstanceOnPage) {
+      setSelection({ elementId: componentSelectionTargetId, bpId });
       return;
     }
     if (activeSurface === 'component' && el?.componentEditorVariantId) {
@@ -209,6 +219,12 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   };
 
   const handleDoubleClick = (e) => {
+    if (insideComponentInstanceOnPage && componentInstanceAncestor?.componentInstance?.componentId) {
+      e.stopPropagation();
+      setSelection({ elementId: componentSelectionTargetId, bpId });
+      openComponentEditor(componentInstanceAncestor.componentInstance.componentId);
+      return;
+    }
     if (el.componentInstance?.componentId) {
       e.stopPropagation();
       setSelection({ elementId: id, bpId });
@@ -293,7 +309,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   // ── Drop-onto for nesting ──────────────────────────────────
   const handleDragOver = (e) => {
-    if (onDropOntoElement && el.type === 'frame') {
+    if (canDropOnto) {
       e.preventDefault();
       e.stopPropagation();
       setDropOver(true);
@@ -302,10 +318,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const handleDragLeave = () => setDropOver(false);
   const handleDrop = (e) => {
     setDropOver(false);
-    if (onDropOntoElement && el.type === 'frame') {
+    if (canDropOnto) {
       e.preventDefault();
       e.stopPropagation();
-      onDropOntoElement(e, id);
+      onDropOntoElement(e, dropTargetElementId);
     }
   };
 
@@ -409,7 +425,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
     cursor:  pendingDraw ? 'crosshair' : interactionLocked ? 'not-allowed' : 'move',
     boxSizing: 'border-box',
-    pointerEvents: suppressPointerEventsOnPage ? 'none' : undefined,
+    pointerEvents: undefined,
   };
 
   const textStyle = el.type === 'text' ? {

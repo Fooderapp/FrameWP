@@ -304,17 +304,41 @@ class FrameBuilder_Exporter {
 				$extra .= $w_part . $h_part;
 			}
 			$inline = "position:relative;box-sizing:border-box;{$extra}";
-		} elseif ( $pos_type === 'fixed' ) {
-			$vfh   = $this->get_viewport_fold_h( $bpId );
-			$pos_l = $pin_right && empty( $cx['left'] ) ? "right:{$right_val}px" : "left:{$x}px";
-			$pos_t = $pin_bottom && empty( $cx['top'] ) ? 'bottom:' . ( $vfh - $y - $h ) . 'px' : "top:{$y}px";
-			$inline = "position:fixed;box-sizing:border-box;"
-				. "{$pos_l};{$pos_t};width:{$w_str};height:{$h_str};";
-		} else {
-			$pos_l = $pin_right && empty( $cx['left'] ) ? "right:{$right_val}px" : "left:{$x}px";
-			$pos_t = $pin_bottom && empty( $cx['top'] ) ? "bottom:{$bottom_val}px" : "top:{$y}px";
-			$inline = "position:absolute;box-sizing:border-box;"
-				. "{$pos_l};{$pos_t};width:{$w_str};height:{$h_str};";
+		} elseif ( $pos_type === 'fixed' || $pos_type === 'absolute' ) {
+			$position_css = $pos_type === 'fixed' ? 'fixed' : 'absolute';
+			$inline = "position:{$position_css};box-sizing:border-box;";
+
+			if ( $width_mode === 'fill' ) {
+				$inline .= 'left:0;right:0;width:auto;';
+			} elseif ( $width_mode === 'hug' ) {
+				$inline .= "left:{$x}px;width:fit-content;";
+			} elseif ( $width_mode === 'relative' ) {
+				$inline .= "left:{$x}px;width:{$w_pct}%;";
+			} elseif ( ! empty( $cx['left'] ) && $pin_right ) {
+				$inline .= "left:{$x}px;right:{$right_val}px;";
+			} elseif ( $pin_right && empty( $cx['left'] ) ) {
+				$inline .= "right:{$right_val}px;width:{$w}px;";
+			} else {
+				$inline .= "left:{$x}px;width:{$w}px;";
+			}
+
+			$eff_bottom_val = ( $pos_type === 'fixed' )
+				? ( $this->get_viewport_fold_h( $bpId ) - $y - $h )
+				: $bottom_val;
+
+			if ( $height_mode === 'fill' ) {
+				$inline .= 'top:0;bottom:0;height:auto;';
+			} elseif ( $height_mode === 'hug' ) {
+				$inline .= "top:{$y}px;height:fit-content;";
+			} elseif ( $height_mode === 'relative' ) {
+				$inline .= "top:{$y}px;height:{$h_pct}%;";
+			} elseif ( ! empty( $cx['top'] ) && $pin_bottom ) {
+				$inline .= "top:{$y}px;bottom:{$eff_bottom_val}px;";
+			} elseif ( $pin_bottom && empty( $cx['top'] ) ) {
+				$inline .= "bottom:{$eff_bottom_val}px;height:{$h}px;";
+			} else {
+				$inline .= "top:{$y}px;height:{$h}px;";
+			}
 		}
 		if ( $min_w !== null && $min_w > 0 ) $inline .= "min-width:{$min_w}px;";
 		if ( $max_w !== null && $max_w > 0 ) $inline .= "max-width:{$max_w}px;";
@@ -432,10 +456,11 @@ class FrameBuilder_Exporter {
 			$child_flex_dir = $styles['flexDirection'] ?? 'column';
 		}
 		$child_layout_on = $child_flex_dir !== 'none';
+		list( $child_cw, $child_ch ) = $this->compute_child_context_size( $resolved, $cw, $ch, $artboard_layout_on, $parent_flex_dir );
 		foreach ( $el['children'] ?? [] as $child_id ) {
 			$child = $this->el_index[ $child_id ] ?? null;
 			if ( $child ) {
-				$html .= $this->render_element( $child, $bpId, $w, $h, $child_layout_on, $child_flex_dir );
+				$html .= $this->render_element( $child, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir );
 			}
 		}
 
@@ -660,12 +685,53 @@ class FrameBuilder_Exporter {
 			$child_flex_dir = $styles['flexDirection'] ?? 'column';
 		}
 		$child_layout_on = $child_flex_dir !== 'none';
+		list( $child_cw, $child_ch ) = $this->compute_child_context_size( $resolved, $cw, $ch, $artboard_layout_on, $parent_flex_dir );
 		foreach ( $el['children'] ?? [] as $child_id ) {
 			$child = $this->el_index[ $child_id ] ?? null;
 			if ( $child ) {
-				$this->collect_element_css( $child, $bpId, $w, $h, $child_layout_on, $child_flex_dir );
+				$this->collect_element_css( $child, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir );
 			}
 		}
+	}
+
+	private function compute_child_context_size( array $resolved, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): array {
+		$pos_type = $resolved['positionType'] ?? 'absolute';
+		if ( $artboard_layout_on && empty( $resolved['absoluteInLayout'] ) ) {
+			$pos_type = 'relative';
+		}
+
+		$width_mode = $resolved['widthMode'] ?? 'fixed';
+		$height_mode = $resolved['heightMode'] ?? 'fixed';
+		$width = max( 1.0, (float) ( $resolved['width'] ?? 1 ) );
+		$height = max( 1.0, (float) ( $resolved['height'] ?? 1 ) );
+		$width_pct = (float) ( $resolved['widthPct'] ?? $width );
+		$height_pct = (float) ( $resolved['heightPct'] ?? $height );
+
+		$effective_width = $width;
+		$effective_height = $height;
+
+		if ( 'fill' === $width_mode ) {
+			$effective_width = max( 1.0, $cw );
+		} elseif ( 'relative' === $width_mode ) {
+			$effective_width = max( 1.0, $cw * ( $width_pct / 100 ) );
+		}
+
+		if ( 'fill' === $height_mode ) {
+			$effective_height = max( 1.0, $ch );
+		} elseif ( 'relative' === $height_mode ) {
+			$effective_height = max( 1.0, $ch * ( $height_pct / 100 ) );
+		}
+
+		if ( 'relative' === $pos_type ) {
+			if ( 'row' === $parent_flex_dir && 'fill' === $width_mode && $width > 0 ) {
+				$effective_width = $width;
+			}
+			if ( 'column' === $parent_flex_dir && 'fill' === $height_mode && $height > 0 ) {
+				$effective_height = $height;
+			}
+		}
+
+		return [ $effective_width, $effective_height ];
 	}
 
 	/**
@@ -1137,6 +1203,14 @@ class FrameBuilder_Exporter {
 			$root_variant['base']['y'] = 0;
 			$root_variant['base']['width'] = $root_width;
 			$root_variant['base']['height'] = $root_height;
+			$root_variant['base']['widthMode'] = 'fill';
+			$root_variant['base']['heightMode'] = 'fill';
+			$root_variant['base']['constraints'] = [
+				'top' => true,
+				'left' => true,
+				'right' => true,
+				'bottom' => true,
+			];
 
 			$interaction = is_array( $variant['interaction'] ?? null ) ? $variant['interaction'] : null;
 			$target_variant_id = sanitize_text_field( $interaction['targetVariantId'] ?? '' );

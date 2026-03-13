@@ -5,7 +5,6 @@ import { IconButton, UIIcons } from '../components/UIIcons';
 export default function TopBar() {
   const viewport       = useEditorStore(s => s.viewport);
   const setViewport    = useEditorStore(s => s.setViewport);
-  const saveLayout     = useEditorStore(s => s.saveLayout);
   const publishLayout  = useEditorStore(s => s.publishLayout);
   const saveStatus     = useEditorStore(s => s.saveStatus);
   const undo           = useEditorStore(s => s.undo);
@@ -41,10 +40,10 @@ export default function TopBar() {
     setViewport({ x: (width - worldW) / 2, y: (height - worldH) / 2 + 20, scale });
   };
 
-  const statusLabel = saveStatus === 'saving' ? 'Saving…'
-    : saveStatus === 'ok'       ? '✓ Saved'
-    : saveStatus === 'error'    ? '✗ Error'
-    : null;
+  const statusLabel = saveStatus === 'saving' ? 'Auto-saving…'
+    : saveStatus === 'ok'       ? 'All changes saved'
+    : saveStatus === 'error'    ? 'Auto-save failed'
+    : 'Auto-save on';
   const statusClass = saveStatus === 'ok' ? 'fb-save-status--ok'
     : saveStatus === 'error' ? 'fb-save-status--err'
     : '';
@@ -87,11 +86,8 @@ export default function TopBar() {
 
       {/* Status + actions (right) */}
       <div className="fb-topbar__right">
-        {statusLabel && (
-          <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span>
-        )}
+        <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span>
         <IconButton icon={UIIcons.variables} title="Edit variables" onClick={() => setVariablesModalOpen(true)} />
-        <IconButton icon={UIIcons.save} title="Save layout" onClick={saveLayout} disabled={saveStatus === 'saving'} />
         <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-btn--accent" onClick={publishLayout} disabled={saveStatus === 'saving'} />
       </div>
     </header>

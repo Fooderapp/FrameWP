@@ -13,11 +13,20 @@ export default function App() {
   const loadGlobalVariables = useEditorStore(s => s.loadGlobalVariables);
   const loadVariableSources = useEditorStore(s => s.loadVariableSources);
   const pushHistory = useEditorStore(s => s.pushHistory);
+  const saveLayout = useEditorStore(s => s.saveLayout);
   const componentEditorOpen = useEditorStore(s => s.componentEditor.isOpen);
+  const pages = useEditorStore(s => s.pages);
+  const currentPageId = useEditorStore(s => s.currentPageId);
+  const breakpointDefs = useEditorStore(s => s.breakpointDefs);
+  const activeSurface = useEditorStore(s => s.activeSurface);
+  const componentEditor = useEditorStore(s => s.componentEditor);
+  const components = useEditorStore(s => s.components);
   const variablesModalOpen = useEditorStore(s => s.variablesModalOpen);
   const [leftWidth, setLeftWidth] = useState(240);
   const [rightWidth, setRightWidth] = useState(312);
   const resizeStateRef = useRef(null);
+  const autoSaveReadyRef = useRef(false);
+  const autoSaveTimerRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -28,9 +37,25 @@ export default function App() {
         loadVariableSources(),
       ]);
       pushHistory();
+      autoSaveReadyRef.current = true;
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => () => {
+    if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!autoSaveReadyRef.current) return;
+    if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      saveLayout();
+    }, 700);
+    return () => {
+      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [saveLayout, pages, currentPageId, breakpointDefs, activeSurface, componentEditor, components]);
 
   useEffect(() => {
     const handlePointerMove = (event) => {
