@@ -482,12 +482,13 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const widthPct = resolved?.widthPct ?? width;
   const heightPct = resolved?.heightPct ?? height;
   const isRelative = (resolved?.positionType ?? 'absolute') === 'relative';
+  const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
   const backgroundColor = styles?.backgroundColor && !String(styles.backgroundColor).includes('gradient(')
     ? styles.backgroundColor
     : undefined;
   const backgroundImage = String(styles?.backgroundColor ?? '').includes('gradient(')
     ? styles.backgroundColor
-    : (styles?.backgroundImage ? `url(${styles.backgroundImage})` : undefined);
+    : (backgroundImageUrl ? `url(${backgroundImageUrl})` : undefined);
 
   const style = {
     position: isRelative ? 'relative' : 'absolute',

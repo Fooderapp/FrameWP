@@ -1,5 +1,10 @@
 import { create } from 'zustand';
 
+function getMediaUrl(value) {
+  if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function makeId(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -127,7 +132,7 @@ function normalizeVariableValue(type, value) {
     case 'color':
       return typeof value === 'string' && value ? value : '#000000';
     case 'image':
-      return typeof value === 'string' ? value : `${value ?? ''}`;
+      return getMediaUrl(value);
     case 'number': {
       const parsed = typeof value === 'number' ? value : parseFloat(value);
       return Number.isFinite(parsed) ? parsed : 0;
@@ -266,7 +271,7 @@ function applyVariableBindingValue(resolved, propertyKey, variable) {
       next.hidden = !value;
       break;
     case 'styles.backgroundImage':
-      next.styles.backgroundImage = typeof value === 'string' ? value : `${value ?? ''}`;
+      next.styles.backgroundImage = getMediaUrl(value);
       break;
     case 'styles.backgroundColor':
       next.styles.backgroundColor = typeof value === 'string' ? value : '#000000';
@@ -281,7 +286,7 @@ function applyVariableBindingValue(resolved, propertyKey, variable) {
       next.styles.fontFamily = typeof value === 'string' ? value : `${value ?? ''}`;
       break;
     case 'src':
-      next.src = typeof value === 'string' ? value : `${value ?? ''}`;
+      next.src = getMediaUrl(value);
       break;
     default:
       break;

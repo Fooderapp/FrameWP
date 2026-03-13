@@ -627,7 +627,7 @@ class FrameBuilder_Exporter {
 			$rules[] = $css_key . ': ' . $this->sanitize_css_value( $val );
 		}
 		// Background image fill
-		$bg_img = $styles['backgroundImage'] ?? '';
+		$bg_img = $this->normalize_media_url( $styles['backgroundImage'] ?? '' );
 		if ( $bg_img !== '' ) {
 			$bg_size = $styles['backgroundSize'] ?? 'cover';
 			$bg_pos  = $styles['backgroundPosition'] ?? 'center center';
@@ -690,7 +690,7 @@ class FrameBuilder_Exporter {
 			case 'color':
 				return is_string( $value ) && $value !== '' ? $value : '#000000';
 			case 'image':
-				return is_string( $value ) ? $value : (string) ( $value ?? '' );
+				return $this->normalize_media_url( $value );
 			case 'number':
 				return is_numeric( $value ) ? (float) $value : 0;
 			case 'post':
@@ -792,7 +792,7 @@ class FrameBuilder_Exporter {
 				$next['hidden'] = empty( $value );
 				break;
 			case 'styles.backgroundImage':
-				$next['styles']['backgroundImage'] = is_string( $value ) ? $value : (string) ( $value ?? '' );
+				$next['styles']['backgroundImage'] = $this->normalize_media_url( $value );
 				break;
 			case 'styles.backgroundColor':
 				$next['styles']['backgroundColor'] = is_string( $value ) ? $value : '#000000';
@@ -807,7 +807,7 @@ class FrameBuilder_Exporter {
 				$next['styles']['fontFamily'] = is_string( $value ) ? $value : (string) ( $value ?? '' );
 				break;
 			case 'src':
-				$next['src'] = is_string( $value ) ? $value : (string) ( $value ?? '' );
+				$next['src'] = $this->normalize_media_url( $value );
 				break;
 		}
 

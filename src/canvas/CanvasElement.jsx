@@ -342,6 +342,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     : '';
   const rotationTransform = rotation ? `rotate(${rotation}deg)` : '';
   const composedTransform = [previewTransform, rotationTransform].filter(Boolean).join(' ') || undefined;
+  const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
 
   const inlineStyle = {
     position: effectiveRelative ? 'relative' : 'absolute',
@@ -367,7 +368,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     backgroundImage: (() => {
       const bg = styles?.backgroundColor;
       if (bg && bg.includes('gradient(')) return bg;
-      if (styles?.backgroundImage) return `url(${styles.backgroundImage})`;
+      if (backgroundImageUrl) return `url(${backgroundImageUrl})`;
       return undefined;
     })(),
     borderRadius: (() => {
@@ -400,11 +401,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     boxShadow:        styles?.boxShadow || undefined,
     zIndex:           isDragPreviewActive ? 10001 : (isSelected ? 9999 : (styles?.zIndex ?? undefined)),
     // Background size/position/repeat for image fills
-    backgroundSize:     (styles?.backgroundImage || styles?.backgroundColor?.includes('gradient('))
-      ? (styles?.backgroundSize ?? (styles?.backgroundImage ? 'cover' : undefined))
+    backgroundSize:     (backgroundImageUrl || styles?.backgroundColor?.includes('gradient('))
+      ? (styles?.backgroundSize ?? (backgroundImageUrl ? 'cover' : undefined))
       : undefined,
-    backgroundPosition: styles?.backgroundImage ? (styles?.backgroundPosition ?? 'center center') : undefined,
-    backgroundRepeat:   styles?.backgroundImage && styles?.backgroundSize === 'repeat' ? 'repeat' : (styles?.backgroundImage ? 'no-repeat' : undefined),
+    backgroundPosition: backgroundImageUrl ? (styles?.backgroundPosition ?? 'center center') : undefined,
+    backgroundRepeat:   backgroundImageUrl && styles?.backgroundSize === 'repeat' ? 'repeat' : (backgroundImageUrl ? 'no-repeat' : undefined),
     outline: dropOver ? '2px dashed #3b82f6' : isDropTarget ? '2px solid var(--accent-light)' : undefined,
     cursor:  pendingDraw ? 'crosshair' : interactionLocked ? 'not-allowed' : 'move',
     boxSizing: 'border-box',
