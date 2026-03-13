@@ -2,6 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 
+function getMediaUrl(value) {
+  if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, dragPreview = null, draggingElementId = null }) {
   const [dropOver, setDropOver] = useState(false);
   const elementRef = useRef(null);
@@ -462,7 +467,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       ) : null}
       {/* Image element content */}
       {el.type === 'image' && (() => {
-        const src = resolved.src ?? '';
+        const src = getMediaUrl(resolved.src);
         return src
           ? <img
               src={src}

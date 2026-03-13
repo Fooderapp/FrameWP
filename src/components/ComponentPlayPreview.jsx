@@ -9,6 +9,11 @@ function isObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function getMediaUrl(value) {
+  if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function deepMerge(base, override) {
   if (!isObject(base) || !isObject(override)) return override;
   const next = { ...base };
@@ -539,9 +544,9 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
 
   return (
     <div className="fb-component-play-preview__node" data-fb-node-id={element.id} data-flip-id={element.id} style={style}>
-      {element.type === 'image' && resolved?.src ? (
+      {element.type === 'image' && getMediaUrl(resolved?.src) ? (
         <img
-          src={resolved.src}
+          src={getMediaUrl(resolved?.src)}
           alt=""
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: styles?.objectFit ?? 'cover', borderRadius: 'inherit' }}
           draggable={false}

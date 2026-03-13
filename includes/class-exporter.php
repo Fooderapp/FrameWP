@@ -42,6 +42,19 @@ class FrameBuilder_Exporter {
 	/** @var array<string,float|null> Per-breakpoint viewport fold height (null = auto-compute) */
 	private array $viewport_fold_h = [ 'desktop' => null, 'tablet' => null, 'mobile' => null ];
 
+	private function normalize_media_url( $value ): string {
+		if ( is_array( $value ) ) {
+			if ( isset( $value['url'] ) && is_string( $value['url'] ) ) {
+				return trim( $value['url'] );
+			}
+			return '';
+		}
+		if ( is_string( $value ) ) {
+			return trim( $value );
+		}
+		return '';
+	}
+
 	public function __construct( array $layout ) {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
@@ -344,7 +357,7 @@ class FrameBuilder_Exporter {
 		}
 
 		// Background image fill on frames / divs
-		$bg_img = $styles['backgroundImage'] ?? '';
+		$bg_img = $this->normalize_media_url( $styles['backgroundImage'] ?? '' );
 		if ( $bg_img !== '' ) {
 			$bg_size = $styles['backgroundSize'] ?? 'cover';
 			$bg_pos  = esc_attr( $this->sanitize_css_value( $styles['backgroundPosition'] ?? 'center center' ) );
@@ -377,7 +390,7 @@ class FrameBuilder_Exporter {
 
 		// Image element: render <img> tag filling the div (added after div opening)
 		if ( ( $el['type'] ?? '' ) === 'image' ) {
-			$src     = esc_url( $resolved['src'] ?? '' );
+			$src     = esc_url( $this->normalize_media_url( $resolved['src'] ?? '' ) );
 			$obj_fit = $this->sanitize_css_value( $styles['objectFit'] ?? 'cover' );
 			if ( $src ) {
 				$img_style = "position:absolute;inset:0;width:100%;height:100%;object-fit:{$obj_fit};border-radius:inherit;";
@@ -1341,12 +1354,23 @@ class FrameBuilder_Exporter {
 			return;
 		}
 		if (propertyKey === 'styles.backgroundImage') {
-			node.style.backgroundImage = value ? 'url(' + String(value).replace(/\)/g, '\\)') + ')' : '';
+			var backgroundUrl = '';
+			if (value && typeof value === 'object' && typeof value.url === 'string') backgroundUrl = value.url;
+			else if (typeof value === 'string') backgroundUrl = value;
+			backgroundUrl = backgroundUrl.trim();
+			node.style.backgroundImage = backgroundUrl ? 'url(' + backgroundUrl.replace(/\)/g, '\\)') + ')' : '';
 			return;
 		}
 		if (propertyKey === 'src') {
 			var imageNode = node.tagName === 'IMG' ? node : node.querySelector('img');
-			if (imageNode) imageNode.setAttribute('src', value ? String(value) : '');
+			var imageUrl = '';
+			if (value && typeof value === 'object' && typeof value.url === 'string') imageUrl = value.url;
+			else if (typeof value === 'string') imageUrl = value;
+			imageUrl = imageUrl.trim();
+			if (imageNode) {
+				if (imageUrl) imageNode.setAttribute('src', imageUrl);
+				else imageNode.removeAttribute('src');
+			}
 			return;
 		}
 		if (propertyKey === 'styles.backgroundColor') {

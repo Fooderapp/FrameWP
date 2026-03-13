@@ -28,6 +28,11 @@ function getDefaultInteractionValue(variableType) {
   return '';
 }
 
+function getMediaUrl(value) {
+  if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function normalizeFiniteNumber(value, fallback = 0) {
   const numericValue = typeof value === 'number' ? value : parseFloat(value);
   return Number.isFinite(numericValue) ? numericValue : fallback;
@@ -637,21 +642,22 @@ function MediaPickerModal({ onSelect, onClose }) {
 
 function MediaPickerButton({ value, onChange }) {
   const [open, setOpen] = useState(false);
+  const previewUrl = getMediaUrl(value);
   return (
     <>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-        {value ? (
+        {previewUrl ? (
           <div style={{ width: 36, height: 36, borderRadius: 4, overflow: 'hidden', border: '1px solid var(--border)', flexShrink: 0 }}>
-            <img src={value} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <img src={previewUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           </div>
         ) : null}
         <IconButton
-          icon={value ? UIIcons.swap : UIIcons.image}
-          title={value ? 'Change image' : 'Select image'}
+          icon={previewUrl ? UIIcons.swap : UIIcons.image}
+          title={previewUrl ? 'Change image' : 'Select image'}
           style={{ flex: 1 }}
           onClick={() => setOpen(true)}
         />
-        {value ? (
+        {previewUrl ? (
           <IconButton icon={UIIcons.trash} title="Remove image" onClick={() => onChange('')} />
         ) : null}
       </div>
