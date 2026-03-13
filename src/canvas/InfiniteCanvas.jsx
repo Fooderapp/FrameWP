@@ -879,6 +879,7 @@ export default function InfiniteCanvas() {
   const containerRef = useRef(null);
   const worldRef     = useRef(null);
   const lastPointerClientRef = useRef({ x: null, y: null });
+  const skipNextArtboardClickRef = useRef(false);
 
   const viewport      = useEditorStore(s => s.viewport);
   const setViewport   = useEditorStore(s => s.setViewport);
@@ -1521,6 +1522,11 @@ export default function InfiniteCanvas() {
   useEffect(() => {
     const onKeyDown = (e) => {
       const isEditableTarget = e.target.matches('input,textarea') || e.target.isContentEditable;
+        if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'f') {
+          e.preventDefault();
+          useEditorStore.getState().setPendingDraw('frame');
+          return;
+        }
       if (e.code === 'Space' && !e.target.matches('input,textarea')) {
         e.preventDefault();
         spaceDown.current = true;
@@ -1994,6 +2000,8 @@ export default function InfiniteCanvas() {
       addElement(newEl, parentId, targetBpId);
       // If drawn inside a container, drill into it so the element is interactable
       if (parentId) useEditorStore.getState().setDrilledContainerId(parentId);
+      skipNextArtboardClickRef.current = true;
+      setArtboardSel(null);
       useEditorStore.getState().setSelection({ elementId: newEl.id, bpId: targetBpId });
       pushHistory();
       setPendingDraw(null);
@@ -2788,6 +2796,7 @@ export default function InfiniteCanvas() {
             dropTargetId={dropTargetId}
             dragPreview={activeDragPreview}
             draggingElementId={draggingElementId}
+            skipNextBoardClickRef={skipNextArtboardClickRef}
           />
         ))}
         {activeSurface !== 'component' ? <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} /> : null}

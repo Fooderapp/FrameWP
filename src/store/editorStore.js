@@ -153,6 +153,13 @@ function getDefaultVariableValue(type) {
 function normalizeVariableValue(type, value) {
   switch (type) {
     case 'boolean':
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') return true;
+        if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off' || normalized === '') return false;
+      }
+      if (typeof value === 'number') return value !== 0;
       return !!value;
     case 'color':
       return typeof value === 'string' && value ? value : '#000000';
@@ -1394,7 +1401,37 @@ function upsertComponent(components, component) {
 
 // ── History helpers ──────────────────────────────────────────
 
-function snapshot(pages) { return JSON.stringify(pages); }
+function snapshotPages(pages) { return JSON.stringify(pages); }
+
+function snapshotComponentEditorState(state) {
+  return JSON.stringify({
+    breakpointDefs: state.breakpointDefs,
+    selection: normalizeSelection(state.selection),
+    artboardSel: state.artboardSel ?? null,
+    hoveredId: state.hoveredId ?? null,
+    drilledContainerId: state.drilledContainerId ?? null,
+    pendingDraw: state.pendingDraw ?? null,
+    leftTab: state.leftTab ?? 'layers',
+    componentEditor: state.componentEditor,
+  });
+}
+
+function restoreComponentEditorSnapshot(snapshot) {
+  const parsed = JSON.parse(snapshot);
+  return {
+    activeSurface: 'component',
+    breakpointDefs: parsed.breakpointDefs ?? BREAKPOINTS,
+    selection: normalizeSelection(parsed.selection),
+    artboardSel: parsed.artboardSel ?? null,
+    hoveredId: parsed.hoveredId ?? null,
+    drilledContainerId: parsed.drilledContainerId ?? null,
+    pendingDraw: parsed.pendingDraw ?? null,
+    leftTab: parsed.leftTab ?? 'layers',
+    componentEditor: parsed.componentEditor
+      ? { ...parsed.componentEditor, isOpen: true }
+      : makeEmptyComponentEditor(),
+  };
+}
 const MAX_HISTORY = 60;
 
 // ── Store ────────────────────────────────────────────────────
@@ -1846,6 +1883,8 @@ export const useEditorStore = create((set, get) => {
           leftTab: state.componentEditor.uiRestore?.leftTab ?? 'layers',
           breakpointDefs: state.componentEditor.uiRestore?.breakpointDefs ?? BREAKPOINTS,
           componentEditor: makeEmptyComponentEditor(),
+          componentHistory: [],
+          componentHistoryIndex: -1,
         });
       }
     },
@@ -1870,28 +1909,44 @@ export const useEditorStore = create((set, get) => {
         breakpointDefs: deepClone(state.breakpointDefs),
       };
 
-      set({
-        activeSurface: 'component',
+      const nextComponentEditor = {
+        isOpen: true,
+        componentId,
+        activeVariantId: initialVariantId,
+        variants: deepClone(normalizedComponent.variants ?? []),
+        page: {
+          ...makeComponentEditorPage(),
+          title: normalizedComponent.name,
+          elements: editorCanvas.elements,
+        },
         breakpointDefs: deepClone(componentBreakpoints),
-        leftTab: 'layers',
-        selection: initialRoot ? buildSelection([initialRoot.id], 'desktop', initialRoot.id) : null,
+        uiRestore,
+      };
+
+      const nextSelection = initialRoot ? buildSelection([initialRoot.id], 'desktop', initialRoot.id) : null;
+      const initialHistoryEntry = snapshotComponentEditorState({
+        breakpointDefs: deepClone(componentBreakpoints),
+        selection: nextSelection,
         artboardSel: null,
         hoveredId: null,
         drilledContainerId: null,
         pendingDraw: null,
-        componentEditor: {
-          isOpen: true,
-          componentId,
-          activeVariantId: initialVariantId,
-          variants: deepClone(normalizedComponent.variants ?? []),
-          page: {
-            ...makeComponentEditorPage(),
-            title: normalizedComponent.name,
-            elements: editorCanvas.elements,
-          },
-          breakpointDefs: deepClone(componentBreakpoints),
-          uiRestore,
-        },
+        leftTab: 'layers',
+        componentEditor: nextComponentEditor,
+      });
+
+      set({
+        activeSurface: 'component',
+        breakpointDefs: deepClone(componentBreakpoints),
+        leftTab: 'layers',
+        selection: nextSelection,
+        artboardSel: null,
+        hoveredId: null,
+        drilledContainerId: null,
+        pendingDraw: null,
+        componentEditor: nextComponentEditor,
+        componentHistory: [initialHistoryEntry],
+        componentHistoryIndex: 0,
       });
     },
 
@@ -2051,6 +2106,8 @@ export const useEditorStore = create((set, get) => {
         leftTab: current.uiRestore?.leftTab ?? 'layers',
         breakpointDefs: current.uiRestore?.breakpointDefs ?? BREAKPOINTS,
         componentEditor: makeEmptyComponentEditor(),
+        componentHistory: [],
+        componentHistoryIndex: -1,
       });
       get().saveComponents(nextComponents);
       get().applyComponentToInstances(current.componentId);
@@ -2581,9 +2638,22 @@ export const useEditorStore = create((set, get) => {
     // ── History ────────────────────────────────────────────
     history: [],
     historyIndex: -1,
+    componentHistory: [],
+    componentHistoryIndex: -1,
 
     pushHistory() {
-      const snap = snapshot(get().pages);
+      const current = get();
+      if (current.activeSurface === 'component' && current.componentEditor?.isOpen) {
+        const snap = snapshotComponentEditorState(current);
+        set((state) => {
+          const trimmed = state.componentHistory.slice(0, state.componentHistoryIndex + 1);
+          const next = [...trimmed, snap].slice(-MAX_HISTORY);
+          return { componentHistory: next, componentHistoryIndex: next.length - 1 };
+        });
+        return;
+      }
+
+      const snap = snapshotPages(current.pages);
       set(state => {
         const trimmed = state.history.slice(0, state.historyIndex + 1);
         const next = [...trimmed, snap].slice(-MAX_HISTORY);
@@ -2592,12 +2662,34 @@ export const useEditorStore = create((set, get) => {
     },
 
     undo() {
+      const current = get();
+      if (current.activeSurface === 'component' && current.componentEditor?.isOpen) {
+        const { componentHistory, componentHistoryIndex } = current;
+        if (componentHistoryIndex <= 0) return;
+        set({
+          ...restoreComponentEditorSnapshot(componentHistory[componentHistoryIndex - 1]),
+          componentHistoryIndex: componentHistoryIndex - 1,
+        });
+        return;
+      }
+
       const { history, historyIndex } = get();
       if (historyIndex <= 0) return;
       set({ pages: JSON.parse(history[historyIndex - 1]), historyIndex: historyIndex - 1 });
     },
 
     redo() {
+      const current = get();
+      if (current.activeSurface === 'component' && current.componentEditor?.isOpen) {
+        const { componentHistory, componentHistoryIndex } = current;
+        if (componentHistoryIndex >= componentHistory.length - 1) return;
+        set({
+          ...restoreComponentEditorSnapshot(componentHistory[componentHistoryIndex + 1]),
+          componentHistoryIndex: componentHistoryIndex + 1,
+        });
+        return;
+      }
+
       const { history, historyIndex } = get();
       if (historyIndex >= history.length - 1) return;
       set({ pages: JSON.parse(history[historyIndex + 1]), historyIndex: historyIndex + 1 });

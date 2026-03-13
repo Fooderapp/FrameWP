@@ -574,7 +574,7 @@ function InteractionSection({ interactions, variableSources, interactionVariable
                       <option value="set">Set exact</option>
                       <option value="default">Set default value</option>
                     </select>
-                    {showValueInput ? <input className="fb-prop-input" type="color" value={interaction.value || '#000000'} onChange={(event) => updateInteraction(interaction.id, { value: event.target.value })} /> : <div className="fb-interaction-card__hint">Uses the variable&apos;s default value</div>}
+                    {showValueInput ? <FillPicker value={interaction.value || '#000000'} onChange={(value) => updateInteraction(interaction.id, { value })} /> : <div className="fb-interaction-card__hint">Uses the variable&apos;s default value</div>}
                   </div>
                 ) : null}
 

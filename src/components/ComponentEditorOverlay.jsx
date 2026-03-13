@@ -24,6 +24,8 @@ export default function ComponentEditorOverlay() {
   const closeComponentEditor = useEditorStore(s => s.closeComponentEditor);
   const selectComponentEditorVariant = useEditorStore(s => s.selectComponentEditorVariant);
   const addComponentVariant = useEditorStore(s => s.addComponentVariant);
+  const undo = useEditorStore(s => s.undo);
+  const redo = useEditorStore(s => s.redo);
 
   const component = components.find(item => item.id === componentEditor.componentId);
   const activeVariantId = componentEditor.activeVariantId;
@@ -62,6 +64,8 @@ export default function ComponentEditorOverlay() {
           </div>
         </div>
         <div className="fb-component-editor-overlay__actions">
+          <IconButton icon={UIIcons.undo} title="Undo (Cmd/Ctrl+Z)" onClick={undo} />
+          <IconButton icon={UIIcons.redo} title="Redo (Cmd/Ctrl+Shift+Z)" onClick={redo} />
           <IconButton icon={UIIcons.play} title="Play test" onClick={() => setPlayModeOpen(true)} />
           <button
             type="button"

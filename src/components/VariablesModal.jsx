@@ -1,6 +1,7 @@
 import React from 'react';
 import { useEditorStore } from '../store/editorStore';
 import { IconButton, UIIcons } from './UIIcons';
+import FillPicker from './FillPicker';
 
 const VARIABLE_TYPE_OPTIONS = [
   { value: 'string', label: 'String' },
@@ -32,7 +33,7 @@ function VariableValueField({ variable, sources, onChange }) {
   }
 
   if (variable.type === 'color') {
-    return <input className="fb-prop-input" type="color" value={variable.value || '#000000'} onChange={(event) => onChange(event.target.value)} />;
+    return <FillPicker value={variable.value || '#000000'} onChange={onChange} />;
   }
 
   if (variable.type === 'image') {

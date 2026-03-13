@@ -54,6 +54,7 @@ export default function Artboard({
   surfaceMode = 'artboard',
   dragPreview = null,
   draggingElementId = null,
+  skipNextBoardClickRef = null,
 }) {
   const allElements      = useEditorStore(s => s.getAllElements());
   const breakpointDefs   = useEditorStore(s => s.breakpointDefs);
@@ -106,6 +107,10 @@ export default function Artboard({
   const onCanvasEls  = eligibleEls.filter(el => !isOffCanvas(el));
 
   const handleBoardClick = (e) => {
+    if (skipNextBoardClickRef?.current) {
+      skipNextBoardClickRef.current = false;
+      return;
+    }
     if (e.target === e.currentTarget) {
       setSelection(null);
       setDrilledContainerId(null);

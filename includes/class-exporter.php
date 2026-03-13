@@ -754,6 +754,13 @@ class FrameBuilder_Exporter {
 	private function normalize_variable_value( string $type, $value ) {
 		switch ( $type ) {
 			case 'boolean':
+				if ( is_bool( $value ) ) return $value;
+				if ( is_string( $value ) ) {
+					$normalized = strtolower( trim( $value ) );
+					if ( in_array( $normalized, [ 'true', '1', 'yes', 'on' ], true ) ) return true;
+					if ( in_array( $normalized, [ 'false', '0', 'no', 'off', '' ], true ) ) return false;
+				}
+				if ( is_numeric( $value ) ) return (float) $value !== 0.0;
 				return (bool) $value;
 			case 'color':
 				return is_string( $value ) && $value !== '' ? $value : '#000000';
@@ -1313,7 +1320,16 @@ class FrameBuilder_Exporter {
 		return 'desktop';
 	};
 	var normalizeVariableValue = function(type, value) {
-		if (type === 'boolean') return !!value;
+			if (type === 'boolean') {
+				if (typeof value === 'boolean') return value;
+				if (typeof value === 'string') {
+					var normalized = value.trim().toLowerCase();
+					if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') return true;
+					if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off' || normalized === '') return false;
+				}
+				if (typeof value === 'number') return value !== 0;
+				return !!value;
+			}
 		if (type === 'color') return typeof value === 'string' && value ? value : '#000000';
 		if (type === 'image') return typeof value === 'string' ? value : String(value == null ? '' : value);
 		if (type === 'number') {
