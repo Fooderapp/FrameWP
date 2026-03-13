@@ -20,6 +20,7 @@ function Svg({ children, size = 16, strokeWidth = 1.7, ...props }) {
 }
 
 export const UIIcons = {
+  arrowLeft: <Svg><path d="M19 12H5" /><path d="M11 6l-6 6 6 6" /></Svg>,
   undo: <Svg><path d="M9 7H4v5" /><path d="M4 12c1.8-3.8 5-6 9-6 4.4 0 8 3.6 8 8" /></Svg>,
   redo: <Svg><path d="M15 7h5v5" /><path d="M20 12c-1.8-3.8-5-6-9-6-4.4 0-8 3.6-8 8" /></Svg>,
   zoomIn: <Svg><circle cx="11" cy="11" r="6.5" /><path d="M11 8v6M8 11h6M20 20l-4-4" /></Svg>,

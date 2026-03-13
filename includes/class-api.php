@@ -5,6 +5,8 @@ class FrameBuilder_API {
 
 	public static function init() {
 		add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
+		add_action( 'wp_ajax_framebuilder_save_layout', [ __CLASS__, 'ajax_save_layout' ] );
+		add_action( 'wp_ajax_framebuilder_publish_layout', [ __CLASS__, 'ajax_publish_layout' ] );
 	}
 
 	public static function register_routes() {
@@ -134,6 +136,24 @@ class FrameBuilder_API {
 	public static function save_layout( WP_REST_Request $request ) {
 		$post_id = absint( $request->get_param( 'post_id' ) );
 		$layout  = $request->get_param( 'layout' );
+		$result = self::perform_save_layout( $post_id, $layout );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	public static function publish_layout( WP_REST_Request $request ) {
+		$post_id = absint( $request->get_param( 'post_id' ) );
+		$layout  = $request->get_param( 'layout' );
+		$result = self::perform_publish_layout( $post_id, $layout );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	private static function perform_save_layout( int $post_id, $layout ) {
 		if ( ! $post_id ) {
 			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
 		}
@@ -141,16 +161,14 @@ class FrameBuilder_API {
 			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
 		}
 		update_post_meta( $post_id, '_fb_layout', wp_slash( wp_json_encode( $layout ) ) );
-		return rest_ensure_response( [ 'success' => true ] );
+		return [ 'success' => true ];
 	}
 
-	public static function publish_layout( WP_REST_Request $request ) {
-		$post_id = absint( $request->get_param( 'post_id' ) );
-		$layout  = $request->get_param( 'layout' );
+	private static function perform_publish_layout( int $post_id, $layout ) {
 		if ( ! $post_id ) {
 			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
 		}
-		if ( ! current_user_can( 'publish_posts', $post_id ) ) {
+		if ( ! current_user_can( 'edit_post', $post_id ) || ! current_user_can( 'publish_posts' ) ) {
 			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
 		}
 		update_post_meta( $post_id, '_fb_layout', wp_slash( wp_json_encode( $layout ) ) );
@@ -160,10 +178,45 @@ class FrameBuilder_API {
 		update_post_meta( $post_id, '_fb_published_html', wp_slash( $html ) );
 		update_post_meta( $post_id, '_fb_published_css',  wp_slash( $css ) );
 		wp_update_post( [ 'ID' => $post_id, 'post_status' => 'publish' ] );
-		return rest_ensure_response( [
+		return [
 			'success'   => true,
 			'permalink' => get_permalink( $post_id ),
-		] );
+		];
+	}
+
+	public static function ajax_save_layout() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_save_layout( absint( $_POST['post_id'] ?? 0 ), self::decode_ajax_layout( $_POST['layout'] ?? null ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	public static function ajax_publish_layout() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_publish_layout( absint( $_POST['post_id'] ?? 0 ), self::decode_ajax_layout( $_POST['layout'] ?? null ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	private static function decode_ajax_layout( $layout ) {
+		if ( is_array( $layout ) ) {
+			return $layout;
+		}
+		if ( is_string( $layout ) && $layout !== '' ) {
+			$decoded = json_decode( wp_unslash( $layout ), true );
+			if ( is_array( $decoded ) ) {
+				return $decoded;
+			}
+		}
+		return [];
 	}
 
 	// Site-wide colour styles stored as a WP option (not per-post).

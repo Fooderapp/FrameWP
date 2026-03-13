@@ -15,6 +15,64 @@ function pick(obj, keys) {
   }, {});
 }
 
+function getAjaxUrl() {
+  if (window.fbData?.ajaxUrl) return window.fbData.ajaxUrl;
+  if (window.fbData?.adminUrl) return `${window.fbData.adminUrl.replace(/\/?$/, '/')}admin-ajax.php`;
+  return '/wp-admin/admin-ajax.php';
+}
+
+async function requestJson(url, options) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let data = null;
+
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (error) {
+      const parseError = new Error(`Unexpected response from ${url}`);
+      parseError.status = response.status;
+      parseError.responseText = text;
+      throw parseError;
+    }
+  }
+
+  if (!response.ok) {
+    const requestError = new Error(data?.message || response.statusText || 'Request failed');
+    requestError.status = response.status;
+    requestError.data = data;
+    throw requestError;
+  }
+
+  return data ?? {};
+}
+
+async function postWordPressAction(restPath, ajaxAction, body) {
+  const nonce = window.fbData?.nonce;
+  const restUrl = `${window.fbData?.restUrl || ''}${restPath}?_wpnonce=${encodeURIComponent(nonce || '')}`;
+
+  try {
+    return await requestJson(restUrl, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce || '' },
+      body: JSON.stringify(body),
+    });
+  } catch (restError) {
+    const formData = new FormData();
+    formData.append('action', ajaxAction);
+    formData.append('_wpnonce', nonce || '');
+    formData.append('post_id', `${body.post_id || 0}`);
+    formData.append('layout', JSON.stringify(body.layout ?? {}));
+
+    return requestJson(getAjaxUrl(), {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: formData,
+    });
+  }
+}
+
 const LAYOUT_NUMERIC_KEYS = new Set([
   'x', 'y', 'width', 'height', 'rotation',
   'minW', 'maxW', 'minH', 'maxH',
@@ -2549,17 +2607,11 @@ export const useEditorStore = create((set, get) => {
       const postId = parseInt(window.fbData?.postId, 10);
       try {
         if (window.fbData && postId > 0) {
-          const nonce = window.fbData.nonce;
-          // Send nonce both as header AND as _wpnonce URL param (Nginx may strip custom headers)
-          const url = window.fbData.restUrl + 'save-layout?_wpnonce=' + encodeURIComponent(nonce);
           const payload = buildPersistableLayoutPayload(state);
-          const res = await fetch(url, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce },
-            body: JSON.stringify({ post_id: postId, layout: payload }),
+          const data = await postWordPressAction('save-layout', 'framebuilder_save_layout', {
+            post_id: postId,
+            layout: payload,
           });
-          const data = await res.json();
           get().setSaveStatus(data.success ? 'ok' : 'error');
         } else {
           const payload = buildPersistableLayoutPayload(state);
@@ -2618,16 +2670,11 @@ export const useEditorStore = create((set, get) => {
       const postId = parseInt(window.fbData?.postId, 10);
       try {
         if (window.fbData && postId > 0) {
-          const nonce = window.fbData.nonce;
-          const url = window.fbData.restUrl + 'publish?_wpnonce=' + encodeURIComponent(nonce);
           const publishPayload = buildPersistableLayoutPayload(state);
-          const res = await fetch(url, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce },
-            body: JSON.stringify({ post_id: postId, layout: publishPayload }),
+          const data = await postWordPressAction('publish', 'framebuilder_publish_layout', {
+            post_id: postId,
+            layout: publishPayload,
           });
-          const data = await res.json();
           get().setSaveStatus(data.success ? 'ok' : 'error');
           if (data.success && data.permalink) window.open(data.permalink, '_blank');
         } else {

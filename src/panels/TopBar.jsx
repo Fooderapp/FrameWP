@@ -14,6 +14,10 @@ export default function TopBar() {
   const setVariablesModalOpen = useEditorStore(s => s.setVariablesModalOpen);
 
   const pct = Math.round(viewport.scale * 100);
+  const postId = parseInt(window.fbData?.postId, 10) || 0;
+  const backToWordPressUrl = postId > 0
+    ? `${window.fbData?.adminUrl || '/wp-admin/'}post.php?post=${postId}&action=edit`
+    : (window.fbData?.adminUrl || '/wp-admin/');
 
   const zoomTo = (targetScale) => {
     setViewport((vp) => ({
@@ -45,6 +49,10 @@ export default function TopBar() {
     : saveStatus === 'error' ? 'fb-save-status--err'
     : '';
 
+  const handleBackToWordPress = () => {
+    window.location.href = backToWordPressUrl;
+  };
+
   return (
     <header className="fb-topbar">
       {/* Branding */}
@@ -55,6 +63,10 @@ export default function TopBar() {
       {/* Undo / Redo */}
       <IconButton icon={UIIcons.undo} title="Undo (⌘Z)" onClick={undo} />
       <IconButton icon={UIIcons.redo} title="Redo (⌘⇧Z)" onClick={redo} />
+      <button type="button" className="fb-secondary-btn fb-topbar__back" onClick={handleBackToWordPress}>
+        {UIIcons.arrowLeft}
+        <span>Back to WordPress</span>
+      </button>
 
       <div className="fb-topbar__sep" />
 

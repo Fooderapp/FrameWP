@@ -150,6 +150,7 @@ class FrameBuilder_Plugin {
 		wp_localize_script( 'framebuilder', 'fbData', [
 			'nonce'    => wp_create_nonce( 'wp_rest' ),
 			'restUrl'  => rest_url( 'framebuilder/v1/' ),
+			'ajaxUrl'  => admin_url( 'admin-ajax.php' ),
 			'siteUrl'  => site_url(),
 			'adminUrl' => admin_url(),
 			'postId'   => isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0,

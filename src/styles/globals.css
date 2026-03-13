@@ -204,6 +204,20 @@ html, body, #framebuilder-root {
   align-items: center;
   gap: 6px;
 }
+
+.fb-topbar__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+.fb-topbar__back svg {
+  width: 14px;
+  height: 14px;
+}
+
 .fb-btn {
   padding: 5px 10px;
   border-radius: var(--radius);
