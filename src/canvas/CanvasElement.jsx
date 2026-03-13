@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useEditorStore, resolveElement } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 
 export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, dragPreview = null, draggingElementId = null }) {
@@ -11,8 +11,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   const allElements            = useEditorStore(s => s.getAllElements());
   const el                     = allElements.find(e => e.id === elementId);
-  const children               = useEditorStore(s => s.getChildElements(elementId));
   const setSelection           = useEditorStore(s => s.setSelection);
+  const toggleSelection        = useEditorStore(s => s.toggleSelection);
+  const setPrimarySelection    = useEditorStore(s => s.setPrimarySelection);
   const deleteElement          = useEditorStore(s => s.deleteElement);
   const updateElementLayout    = useEditorStore(s => s.updateElementLayout);
   const pushHistory            = useEditorStore(s => s.pushHistory);
@@ -26,6 +27,12 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const activeSurface          = useEditorStore(s => s.activeSurface);
   const setComponentEditorActiveVariant = useEditorStore(s => s.setComponentEditorActiveVariant);
   const viewport               = useEditorStore(s => s.viewport);
+  const currentPage            = useEditorStore(s => s.pages.find((page) => page.id === s.currentPageId) ?? null);
+  const globalVariables        = useEditorStore(s => s.globalVariables);
+  const pageVariables          = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
+  const children               = el?.children?.length
+    ? el.children.map((childId) => allElements.find((candidate) => candidate.id === childId)).filter(Boolean)
+    : allElements.filter((candidate) => candidate.parentId === elementId);
 
   const parentEl               = el?.parentId ? allElements.find(e => e.id === el.parentId) : null;
   let componentInstanceAncestor = null;
@@ -39,7 +46,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       cursor = cursor.parentId ? allElements.find((candidate) => candidate.id === cursor.parentId) : null;
     }
   }
-  const resolved               = el ? resolveElement(el, bpId) : null;
+  const resolved               = el ? resolveElementWithVariables(el, bpId, pageVariables, globalVariables) : null;
   const id                     = el?.id ?? elementId;
   const locked                 = el?.locked ?? false;
   const x                      = resolved?.x ?? 0;
@@ -69,7 +76,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const effectiveRelative = isRelative || isFlowInLayout;
 
   // ── Parent flex direction (needed for fill mode) ───────────
-  const parentResolved = parentEl ? resolveElement(parentEl, bpId) : null;
+  const parentResolved = parentEl ? resolveElementWithVariables(parentEl, bpId, pageVariables, globalVariables) : null;
   // 'row' | 'column' | 'block'  (block = not a flex parent)
   const parentDir = (() => {
     if (!effectiveRelative) return 'block';
@@ -181,11 +188,16 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       return;
     }
     e.stopPropagation();
+    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+      toggleSelection({ elementId: id, bpId });
+      return;
+    }
     if (activeSurface === 'component' && el?.componentEditorVariantId) {
       setComponentEditorActiveVariant(el.componentEditorVariantId);
     }
     if (interactionLocked) {
-      setSelection({ elementId: id, bpId });
+      if (isSelected) setPrimarySelection(id);
+      else setSelection({ elementId: id, bpId });
       return;
     }
     onStartElementDrag && onStartElementDrag(e, bpId, { id });
@@ -235,9 +247,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         setIsEditingText(false);
       }
       return;
-    }
-    if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.matches('input,textarea')) {
-      if (isSelected) deleteElement(id);
     }
   };
 
@@ -548,7 +557,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
             <CanvasElement
               elementId={child.id}
               bpId={bpId}
-              isSelected={selection?.elementId === child.id}
+              isSelected={isElementSelected(selection, child.id, bpId)}
               isDropTarget={dropTargetId === child.id}
               dropTargetId={dropTargetId}
               onStartElementDrag={onStartElementDrag}

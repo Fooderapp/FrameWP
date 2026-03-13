@@ -11,6 +11,7 @@ export default function TopBar() {
   const undo           = useEditorStore(s => s.undo);
   const redo           = useEditorStore(s => s.redo);
   const bpDefs         = useEditorStore(s => s.breakpointDefs);
+  const setVariablesModalOpen = useEditorStore(s => s.setVariablesModalOpen);
 
   const pct = Math.round(viewport.scale * 100);
 
@@ -77,6 +78,7 @@ export default function TopBar() {
         {statusLabel && (
           <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span>
         )}
+        <IconButton icon={UIIcons.variables} title="Edit variables" onClick={() => setVariablesModalOpen(true)} />
         <IconButton icon={UIIcons.save} title="Save layout" onClick={saveLayout} disabled={saveStatus === 'saving'} />
         <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-btn--accent" onClick={publishLayout} disabled={saveStatus === 'saving'} />
       </div>

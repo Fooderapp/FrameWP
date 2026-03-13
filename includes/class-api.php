@@ -56,6 +56,24 @@ class FrameBuilder_API {
 			'callback'            => [ __CLASS__, 'save_components' ],
 			'permission_callback' => [ __CLASS__, 'can_edit' ],
 		] );
+
+		register_rest_route( $ns, '/variables', [
+			'methods'             => 'GET',
+			'callback'            => [ __CLASS__, 'get_variables' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/variables', [
+			'methods'             => 'POST',
+			'callback'            => [ __CLASS__, 'save_variables' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/variable-sources', [
+			'methods'             => 'GET',
+			'callback'            => [ __CLASS__, 'get_variable_sources' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
 	}
 
 	/**
@@ -122,7 +140,7 @@ class FrameBuilder_API {
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
 			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
 		}
-		update_post_meta( $post_id, '_fb_layout', wp_json_encode( $layout ) );
+		update_post_meta( $post_id, '_fb_layout', wp_slash( wp_json_encode( $layout ) ) );
 		return rest_ensure_response( [ 'success' => true ] );
 	}
 
@@ -135,12 +153,12 @@ class FrameBuilder_API {
 		if ( ! current_user_can( 'publish_posts', $post_id ) ) {
 			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
 		}
-		update_post_meta( $post_id, '_fb_layout', wp_json_encode( $layout ) );
+		update_post_meta( $post_id, '_fb_layout', wp_slash( wp_json_encode( $layout ) ) );
 		$exporter = new FrameBuilder_Exporter( $layout );
 		$html     = $exporter->generate_html();
 		$css      = $exporter->generate_css();
-		update_post_meta( $post_id, '_fb_published_html', $html );
-		update_post_meta( $post_id, '_fb_published_css',  $css );
+		update_post_meta( $post_id, '_fb_published_html', wp_slash( $html ) );
+		update_post_meta( $post_id, '_fb_published_css',  wp_slash( $css ) );
 		wp_update_post( [ 'ID' => $post_id, 'post_status' => 'publish' ] );
 		return rest_ensure_response( [
 			'success'   => true,
@@ -253,5 +271,121 @@ class FrameBuilder_API {
 
 		update_option( '_fb_component_library', wp_json_encode( $clean ) );
 		return rest_ensure_response( [ 'success' => true ] );
+	}
+
+	private static function sanitize_variable_value( string $type, $value ) {
+		switch ( $type ) {
+			case 'boolean':
+				return (bool) $value;
+			case 'color':
+				return sanitize_text_field( is_string( $value ) ? $value : '#000000' );
+			case 'image':
+				return esc_url_raw( is_scalar( $value ) ? (string) $value : '' );
+			case 'number':
+				return is_numeric( $value ) ? (float) $value : 0;
+			case 'post':
+			case 'product':
+				if ( ! is_array( $value ) ) return null;
+				return [
+					'id'       => isset( $value['id'] ) ? absint( $value['id'] ) : 0,
+					'title'    => sanitize_text_field( $value['title'] ?? '' ),
+					'url'      => esc_url_raw( $value['url'] ?? '' ),
+					'postType' => sanitize_key( $value['postType'] ?? ( 'product' === $type ? 'product' : 'post' ) ),
+				];
+			case 'string':
+			default:
+				return sanitize_text_field( is_scalar( $value ) ? (string) $value : '' );
+		}
+	}
+
+	private static function sanitize_variables_list( $variables, string $scope = 'global' ): array {
+		if ( ! is_array( $variables ) ) return [];
+		$clean = [];
+		foreach ( $variables as $variable ) {
+			if ( ! is_array( $variable ) ) continue;
+			$type = sanitize_key( $variable['type'] ?? 'string' );
+			if ( ! in_array( $type, [ 'string', 'boolean', 'color', 'number', 'image', 'post', 'product' ], true ) ) $type = 'string';
+			$clean[] = [
+				'id'         => sanitize_text_field( $variable['id'] ?? wp_generate_uuid4() ),
+				'scope'      => 'page' === $scope ? 'page' : 'global',
+				'name'       => sanitize_text_field( $variable['name'] ?? 'Variable' ),
+				'category'   => sanitize_text_field( $variable['category'] ?? 'General' ),
+				'type'       => $type,
+				'persistent' => ! empty( $variable['persistent'] ),
+				'value'      => self::sanitize_variable_value( $type, $variable['value'] ?? null ),
+			];
+		}
+		return $clean;
+	}
+
+	public static function get_variables( WP_REST_Request $request ) {
+		$raw = get_option( '_fb_global_variables', '[]' );
+		$variables = json_decode( $raw, true );
+		if ( ! is_array( $variables ) ) $variables = [];
+		return rest_ensure_response( [ 'success' => true, 'variables' => $variables ] );
+	}
+
+	public static function save_variables( WP_REST_Request $request ) {
+		$variables = self::sanitize_variables_list( $request->get_param( 'variables' ), 'global' );
+		update_option( '_fb_global_variables', wp_json_encode( $variables ) );
+		return rest_ensure_response( [ 'success' => true, 'variables' => $variables ] );
+	}
+
+	public static function get_variable_sources( WP_REST_Request $request ) {
+		$pages = get_posts( [
+			'post_type'      => 'page',
+			'post_status'    => [ 'publish', 'draft', 'private' ],
+			'posts_per_page' => 100,
+			'orderby'        => 'menu_order title',
+			'order'          => 'ASC',
+		] );
+
+		$posts = get_posts( [
+			'post_type'      => 'post',
+			'post_status'    => [ 'publish', 'draft', 'private' ],
+			'posts_per_page' => 100,
+			'orderby'        => 'date',
+			'order'          => 'DESC',
+		] );
+
+		$products = [];
+		if ( post_type_exists( 'product' ) ) {
+			$product_posts = get_posts( [
+				'post_type'      => 'product',
+				'post_status'    => [ 'publish', 'draft', 'private' ],
+				'posts_per_page' => 100,
+				'orderby'        => 'date',
+				'order'          => 'DESC',
+			] );
+			$products = array_map( static function( $post ) {
+				return [
+					'id'       => $post->ID,
+					'title'    => get_the_title( $post ),
+					'url'      => get_permalink( $post ),
+					'postType' => 'product',
+				];
+			}, $product_posts );
+		}
+
+		return rest_ensure_response( [
+			'success'  => true,
+			'pages'    => array_map( static function( $post ) {
+				return [
+					'id'       => $post->ID,
+					'title'    => get_the_title( $post ),
+					'url'      => get_permalink( $post ),
+					'postType' => 'page',
+				];
+			}, $pages ),
+			'posts'    => array_map( static function( $post ) {
+				return [
+					'id'       => $post->ID,
+					'title'    => get_the_title( $post ),
+					'url'      => get_permalink( $post ),
+					'postType' => 'post',
+				];
+			}, $posts ),
+			'products' => $products,
+		] );
 	}
 }

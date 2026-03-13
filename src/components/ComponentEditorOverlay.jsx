@@ -72,9 +72,13 @@ export default function ComponentEditorOverlay() {
         </div>
       </div>
       <div className="fb-editor fb-component-editor-overlay__body">
-        <LeftPanel />
+        <div className="fb-side-shell fb-side-shell--left" style={{ width: 240 }}>
+          <LeftPanel />
+        </div>
         <InfiniteCanvas />
-        <PropertiesPanel />
+        <div className="fb-side-shell fb-side-shell--right" style={{ width: 312 }}>
+          <PropertiesPanel />
+        </div>
       </div>
       {playModeOpen ? (
         <ComponentPlayPreview

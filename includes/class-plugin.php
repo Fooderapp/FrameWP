@@ -6,6 +6,10 @@ class FrameBuilder_Plugin {
 	public static function init() {
 		add_action( 'admin_menu',             [ __CLASS__, 'add_menu' ] );
 		add_action( 'admin_enqueue_scripts',  [ __CLASS__, 'enqueue' ] );
+		add_action( 'admin_print_scripts',    [ __CLASS__, 'dequeue_builder_admin_scripts' ], PHP_INT_MAX );
+		add_action( 'admin_print_footer_scripts', [ __CLASS__, 'dequeue_builder_admin_scripts' ], PHP_INT_MAX );
+		add_action( 'admin_print_styles',     [ __CLASS__, 'dequeue_builder_admin_scripts' ], PHP_INT_MAX );
+		add_action( 'admin_print_footer_styles', [ __CLASS__, 'dequeue_builder_admin_scripts' ], PHP_INT_MAX );
 		add_filter( 'post_row_actions',       [ __CLASS__, 'row_action' ], 10, 2 );
 		add_filter( 'page_row_actions',       [ __CLASS__, 'row_action' ], 10, 2 );
 		add_action( 'wp_enqueue_scripts',     [ __CLASS__, 'enqueue_frontend' ] );
@@ -100,7 +104,6 @@ class FrameBuilder_Plugin {
 	// ── Asset enqueueing ──────────────────────────────────────
 
 	public static function enqueue( $hook ) {
-		// Only load on our admin pages
 		$page = isset( $_GET['page'] ) ? sanitize_key( $_GET['page'] ) : '';
 
 		// Media picker iframe page — enqueue the full media stack here (before wp_head).
@@ -109,9 +112,11 @@ class FrameBuilder_Plugin {
 			return;
 		}
 
-		if ( $page !== 'framebuilder' ) {
+		if ( ! self::is_builder_screen( $hook ) ) {
 			return;
 		}
+
+		self::dequeue_builder_admin_scripts();
 
 		wp_deregister_script( 'svg-painter' );
 		wp_deregister_script( 'heartbeat' );
@@ -149,6 +154,59 @@ class FrameBuilder_Plugin {
 			'adminUrl' => admin_url(),
 			'postId'   => isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0,
 		] );
+	}
+
+	private static function is_builder_screen( $hook = '' ): bool {
+		$page = isset( $_GET['page'] ) ? sanitize_key( $_GET['page'] ) : '';
+		if ( $page === 'framebuilder' ) {
+			return true;
+		}
+		if ( $hook === 'toplevel_page_framebuilder' ) {
+			return true;
+		}
+		if ( function_exists( 'get_current_screen' ) ) {
+			$screen = get_current_screen();
+			if ( $screen && $screen->id === 'toplevel_page_framebuilder' ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public static function dequeue_builder_admin_scripts() {
+		if ( ! self::is_builder_screen() ) {
+			return;
+		}
+
+		$allowed_script_handles = [
+			'framebuilder',
+		];
+		$allowed_style_handles = [
+			'framebuilder',
+		];
+
+		foreach ( [ 'svg-painter', 'heartbeat', 'wp-auth-check' ] as $handle ) {
+			wp_deregister_script( $handle );
+			wp_dequeue_script( $handle );
+		}
+
+		global $wp_scripts;
+		if ( $wp_scripts instanceof WP_Scripts ) {
+			foreach ( array_keys( $wp_scripts->registered ) as $handle ) {
+				if ( in_array( $handle, $allowed_script_handles, true ) ) continue;
+				wp_dequeue_script( $handle );
+				wp_deregister_script( $handle );
+			}
+		}
+
+		global $wp_styles;
+		if ( $wp_styles instanceof WP_Styles ) {
+			foreach ( array_keys( $wp_styles->registered ) as $handle ) {
+				if ( in_array( $handle, $allowed_style_handles, true ) ) continue;
+				wp_dequeue_style( $handle );
+				wp_deregister_style( $handle );
+			}
+		}
 	}
 
 	// ── "Edit with FrameBuilder" row action ───────────────────

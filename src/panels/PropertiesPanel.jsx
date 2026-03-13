@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useEditorStore, resolveElement, resolveBackground, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import { IconButton, UIIcons } from '../components/UIIcons';
@@ -19,6 +19,13 @@ function Section({ title, children, defaultOpen = true, action }) {
       {open && <div className="fb-prop-section__body">{children}</div>}
     </div>
   );
+}
+
+function getDefaultInteractionValue(variableType) {
+  if (variableType === 'boolean') return false;
+  if (variableType === 'color') return '#000000';
+  if (variableType === 'number') return 0;
+  return '';
 }
 
 function normalizeFiniteNumber(value, fallback = 0) {
@@ -68,6 +75,45 @@ function NumberInput({ value, onChange, label, unit = 'px', min, max, step = 1 }
       />
       {label && <label>{label}</label>}
     </div>
+  );
+}
+
+function MixedNumberInput({ value, onCommit, placeholder = 'Mixed', min, max, step = 1 }) {
+  const [draft, setDraft] = React.useState(value == null ? '' : formatNumericInputValue(value));
+  const [focused, setFocused] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!focused) setDraft(value == null ? '' : formatNumericInputValue(value));
+  }, [focused, value]);
+
+  return (
+    <input
+      className="fb-prop-input"
+      type="number"
+      value={draft}
+      placeholder={placeholder}
+      min={min}
+      max={max}
+      step={step}
+      onFocus={(e) => {
+        setFocused(true);
+        e.target.select();
+      }}
+      onBlur={() => {
+        setFocused(false);
+        if (draft === '' || draft === '-') {
+          setDraft(value == null ? '' : formatNumericInputValue(value));
+          return;
+        }
+        const numericValue = parseFloat(draft);
+        if (!Number.isFinite(numericValue)) {
+          setDraft(value == null ? '' : formatNumericInputValue(value));
+          return;
+        }
+        onCommit(numericValue);
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+    />
   );
 }
 
@@ -300,6 +346,235 @@ function ChoiceGroup({ value, onChange, options }) {
   );
 }
 
+function VariableBindingButton({ variables, binding, onSelect, onRemove, title = 'Bind variable' }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const handlePointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    window.addEventListener('mousedown', handlePointerDown);
+    return () => window.removeEventListener('mousedown', handlePointerDown);
+  }, [open]);
+
+  return (
+    <div className="fb-binding-btn-wrap" ref={rootRef}>
+      <button
+        type="button"
+        className={`fb-binding-btn${binding ? ' is-active' : ''}`}
+        title={title}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {UIIcons.plusCircle}
+      </button>
+      {open ? (
+        <div className="fb-binding-popover">
+          <div className="fb-binding-popover__title">Variable Binding</div>
+          {binding ? (
+            <button type="button" className="fb-binding-popover__item is-danger" onClick={() => { onRemove(); setOpen(false); }}>
+              Remove binding
+            </button>
+          ) : null}
+          {variables.length ? variables.map((variable) => (
+            <button
+              key={`${variable.scope}:${variable.id}`}
+              type="button"
+              className={`fb-binding-popover__item${binding?.variableId === variable.id && binding?.scope === variable.scope ? ' is-selected' : ''}`}
+              onClick={() => {
+                onSelect({ scope: variable.scope, variableId: variable.id });
+                setOpen(false);
+              }}
+            >
+              <span>{variable.name}</span>
+              <span className="fb-binding-popover__meta">{variable.scope} · {variable.type}</span>
+            </button>
+          )) : (
+            <div className="fb-binding-popover__empty">No compatible variables</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function VariableBindingLabel({ label, children }) {
+  return (
+    <span className="fb-prop-label fb-prop-label--with-action">
+      {children}
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function BoundVariableCta({ variable, fallbackLabel = 'Bound variable' }) {
+  return (
+    <div className="fb-bound-variable-cta">
+      <span className="fb-bound-variable-cta__name">{variable?.name || fallbackLabel}</span>
+      {variable ? <span className="fb-bound-variable-cta__meta">{variable.scope} · {variable.type}</span> : null}
+    </div>
+  );
+}
+
+function InteractionSection({ interactions, variableSources, interactionVariables, allVariables, updateInteraction, removeInteraction, addInteraction }) {
+  const interactionCount = interactions.length;
+  const title = (
+    <span className="fb-section-title-with-badge">
+      <span>Interactions</span>
+      {interactionCount ? <span className="fb-section-badge">{interactionCount} added</span> : null}
+    </span>
+  );
+
+  return (
+    <Section
+      title={title}
+      defaultOpen={interactionCount > 0}
+      action={<button type="button" className="fb-add-field fb-add-field--compact" onClick={addInteraction}>Add</button>}
+    >
+      {interactionCount ? interactions.map((interaction) => {
+        const selectedVariable = interaction.type === 'set-variable'
+          ? allVariables.find((variable) => variable.id === interaction.variableId && variable.scope === interaction.variableScope) ?? null
+          : null;
+        const operation = interaction.operation || 'set';
+        const usesDefaultValue = operation === 'default';
+        const usesToggle = selectedVariable?.type === 'boolean' && operation === 'toggle';
+        const showValueInput = !!selectedVariable && !usesDefaultValue && !usesToggle;
+
+        return (
+          <div key={interaction.id} className="fb-interaction-card">
+            <div className="fb-interaction-card__head">
+              <select
+                className="fb-prop-input"
+                value={interaction.type}
+                onChange={(event) => {
+                  if (event.target.value === 'navigate') {
+                    const nextPage = variableSources.pages[0] ?? null;
+                    updateInteraction(interaction.id, {
+                      type: 'navigate',
+                      pageId: nextPage?.id ?? 0,
+                      pageTitle: nextPage?.title ?? '',
+                      pageUrl: nextPage?.url ?? '',
+                    });
+                    return;
+                  }
+                  const nextVariable = interactionVariables[0] ?? null;
+                  updateInteraction(interaction.id, {
+                    type: 'set-variable',
+                    variableId: nextVariable?.id ?? '',
+                    variableScope: nextVariable?.scope ?? 'page',
+                    variableType: nextVariable?.type ?? 'string',
+                    operation: 'set',
+                    value: getDefaultInteractionValue(nextVariable?.type ?? 'string'),
+                  });
+                }}
+              >
+                <option value="navigate">Navigate to</option>
+                <option value="set-variable">Set variable</option>
+              </select>
+              <span className="fb-interaction-card__status">Added</span>
+              <IconButton icon={UIIcons.trash} title="Remove interaction" onClick={() => removeInteraction(interaction.id)} />
+            </div>
+
+            {interaction.type === 'navigate' ? (
+              <div className="fb-prop-row" style={{ marginBottom: 0 }}>
+                <span className="fb-prop-label">Page</span>
+                <select
+                  className="fb-prop-input"
+                  value={interaction.pageId || ''}
+                  onChange={(event) => {
+                    const nextPage = variableSources.pages.find((pageEntry) => String(pageEntry.id) === event.target.value) ?? null;
+                    updateInteraction(interaction.id, {
+                      pageId: nextPage?.id ?? 0,
+                      pageTitle: nextPage?.title ?? '',
+                      pageUrl: nextPage?.url ?? '',
+                    });
+                  }}
+                >
+                  <option value="">Select page</option>
+                  {variableSources.pages.map((pageEntry) => <option key={pageEntry.id} value={pageEntry.id}>{pageEntry.title}</option>)}
+                </select>
+              </div>
+            ) : (
+              <>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Variable</span>
+                  <select
+                    className="fb-prop-input"
+                    value={`${interaction.variableScope}:${interaction.variableId}`}
+                    onChange={(event) => {
+                      const nextVariable = allVariables.find((variable) => `${variable.scope}:${variable.id}` === event.target.value) ?? null;
+                      if (!nextVariable) return;
+                      updateInteraction(interaction.id, {
+                        variableId: nextVariable.id,
+                        variableScope: nextVariable.scope,
+                        variableType: nextVariable.type,
+                        operation: 'set',
+                        value: getDefaultInteractionValue(nextVariable.type),
+                      });
+                    }}
+                  >
+                    <option value="">Select variable</option>
+                    {interactionVariables.map((variable) => <option key={`${variable.scope}:${variable.id}`} value={`${variable.scope}:${variable.id}`}>{variable.name} ({variable.scope})</option>)}
+                  </select>
+                </div>
+
+                {selectedVariable?.type === 'number' ? (
+                  <div className="fb-quad" style={{ marginTop: 6 }}>
+                    <select className="fb-prop-input" value={operation} onChange={(event) => updateInteraction(interaction.id, { operation: event.target.value })}>
+                      <option value="set">Set exact</option>
+                      <option value="increment">Increase</option>
+                      <option value="decrement">Decrease</option>
+                      <option value="default">Set default value</option>
+                    </select>
+                    {showValueInput ? <input className="fb-prop-input" type="number" value={interaction.value ?? 0} onChange={(event) => updateInteraction(interaction.id, { value: parseFloat(event.target.value) || 0 })} /> : <div className="fb-interaction-card__hint">Uses the variable&apos;s default value</div>}
+                  </div>
+                ) : null}
+
+                {selectedVariable?.type === 'string' ? (
+                  <div className="fb-quad" style={{ marginTop: 6 }}>
+                    <select className="fb-prop-input" value={operation} onChange={(event) => updateInteraction(interaction.id, { operation: event.target.value })}>
+                      <option value="set">Set exact</option>
+                      <option value="default">Set default value</option>
+                    </select>
+                    {showValueInput ? <input className="fb-prop-input" type="text" value={interaction.value ?? ''} onChange={(event) => updateInteraction(interaction.id, { value: event.target.value })} /> : <div className="fb-interaction-card__hint">Uses the variable&apos;s default value</div>}
+                  </div>
+                ) : null}
+
+                {selectedVariable?.type === 'color' ? (
+                  <div className="fb-quad" style={{ marginTop: 6 }}>
+                    <select className="fb-prop-input" value={operation} onChange={(event) => updateInteraction(interaction.id, { operation: event.target.value })}>
+                      <option value="set">Set exact</option>
+                      <option value="default">Set default value</option>
+                    </select>
+                    {showValueInput ? <input className="fb-prop-input" type="color" value={interaction.value || '#000000'} onChange={(event) => updateInteraction(interaction.id, { value: event.target.value })} /> : <div className="fb-interaction-card__hint">Uses the variable&apos;s default value</div>}
+                  </div>
+                ) : null}
+
+                {selectedVariable?.type === 'boolean' ? (
+                  <div className="fb-quad" style={{ marginTop: 6 }}>
+                    <select className="fb-prop-input" value={operation} onChange={(event) => updateInteraction(interaction.id, { operation: event.target.value })}>
+                      <option value="set">Set exact</option>
+                      <option value="toggle">Toggle</option>
+                      <option value="default">Set default value</option>
+                    </select>
+                    {showValueInput ? (
+                      <select className="fb-prop-input" value={interaction.value ? 'true' : 'false'} onChange={(event) => updateInteraction(interaction.id, { value: event.target.value === 'true' })}>
+                        <option value="false">False</option>
+                        <option value="true">True</option>
+                      </select>
+                    ) : <div className="fb-interaction-card__hint">{usesToggle ? 'Flips the current value' : 'Uses the variable\'s default value'}</div>}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
+        );
+      }) : <div className="fb-artboard-bp-note">No interactions yet.</div>}
+    </Section>
+  );
+}
+
 function MediaPickerModal({ onSelect, onClose }) {
   const adminUrl = (window.fbData?.adminUrl ?? '').replace(/\/$/, '');
   const src = `${adminUrl}/admin.php?page=fb-media-picker`;
@@ -483,13 +758,22 @@ export default function PropertiesPanel() {
   const activeSurface       = useEditorStore(s => s.activeSurface);
   const componentEditor     = useEditorStore(s => s.componentEditor);
   const element             = useEditorStore(s => s.getSelectedElement());
+  const globalVariables     = useEditorStore(s => s.globalVariables);
   const components          = useEditorStore(s => s.components);
   const changeComponentInstanceVariant = useEditorStore(s => s.changeComponentInstanceVariant);
   const updateComponentEditorVariantInteraction = useEditorStore(s => s.updateComponentEditorVariantInteraction);
   const updateElementLayout = useEditorStore(s => s.updateElementLayout);
+  const updateElementsLayout = useEditorStore(s => s.updateElementsLayout);
   const updateStyles        = useEditorStore(s => s.updateElementStyles);
+  const updateElementsStyles = useEditorStore(s => s.updateElementsStyles);
   const pushHistory         = useEditorStore(s => s.pushHistory);
   const deleteElement       = useEditorStore(s => s.deleteElement);
+  const deleteElements      = useEditorStore(s => s.deleteElements);
+  const variableSources     = useEditorStore(s => s.variableSources);
+  const getCompatibleVariables = useEditorStore(s => s.getCompatibleVariables);
+  const getElementPropertyBinding = useEditorStore(s => s.getElementPropertyBinding);
+  const setElementPropertyBinding = useEditorStore(s => s.setElementPropertyBinding);
+  const setElementInteractions = useEditorStore(s => s.setElementInteractions);
   const allEls              = useEditorStore(s => s.getAllElements());
 
   // Artboard selection
@@ -500,14 +784,19 @@ export default function PropertiesPanel() {
   const setPagePadding          = useEditorStore(s => s.setPagePadding);
   const setPageLayout           = useEditorStore(s => s.setPageLayout);
   const page                    = useEditorStore(s => s.getCurrentPage());
+  const pageVariables           = Array.isArray(page?.variables) ? page.variables : [];
   // Remembers the last active layout per artboard bp before it was turned off,
   // so toggling back on restores gap/direction/etc. instead of resetting to defaults.
   const savedLayoutRef          = useRef({});
   const removeOverrideFn        = useEditorStore(s => s.removeOverride);
   const removeStyleOverrideFn   = useEditorStore(s => s.removeStyleOverride);
+  const selectionIds = getSelectionElementIds(selection);
   const selectedComponentMeta = activeSurface === 'page' && element?.componentInstance?.componentId
     ? components.find((component) => component.id === element.componentInstance?.componentId)
     : null;
+  const selectedElements = selectionIds.length
+    ? selectionIds.map((id) => allEls.find((candidate) => candidate.id === id)).filter(Boolean)
+    : [];
   const selectedComponentVariants = selectedComponentMeta?.variants ?? [];
   const hasSelectedComponentInstance = !!element?.componentInstance;
   const selectedElementId = element?.id ?? null;
@@ -515,6 +804,46 @@ export default function PropertiesPanel() {
   const normalizedSelectedVariantId = selectedComponentVariants.some((variant) => variant.id === element?.componentInstance?.variantId)
     ? element?.componentInstance?.variantId
     : selectedComponentMeta?.defaultVariantId ?? selectedComponentVariants[0]?.id ?? '';
+  const hasMultiSelection = selectionIds.length > 1;
+  const allVariables = [...pageVariables, ...globalVariables];
+  const variableLookup = new Map(allVariables.map((variable) => [`${variable.scope}:${variable.id}`, variable]));
+
+  const resolveBoundVariable = (binding) => binding ? (variableLookup.get(`${binding.scope}:${binding.variableId}`) ?? null) : null;
+  const getBindingForProperty = (propertyKey) => element ? getElementPropertyBinding(element.id, selection?.bpId || 'desktop', propertyKey) : null;
+  const getCompatibleBindingVariables = (propertyKey) => getCompatibleVariables(propertyKey);
+  const commitBinding = (propertyKey, binding, applyValue) => {
+    if (!element || !selection) return;
+    setElementPropertyBinding(element.id, selection.bpId || 'desktop', propertyKey, binding);
+    const variable = resolveBoundVariable(binding);
+    if (variable && typeof applyValue === 'function') applyValue(variable.value);
+    pushHistory();
+  };
+  const interactions = Array.isArray(element?.interactions) ? element.interactions : [];
+  const interactionVariables = allVariables.filter((variable) => ['string', 'number', 'color', 'boolean'].includes(variable.type));
+  const updateInteractions = (nextInteractions) => {
+    if (!element) return;
+    setElementInteractions(element.id, nextInteractions);
+    pushHistory();
+  };
+  const updateInteraction = (interactionId, updates) => {
+    updateInteractions(interactions.map((interaction) => (
+      interaction.id === interactionId ? { ...interaction, ...updates } : interaction
+    )));
+  };
+  const removeInteraction = (interactionId) => {
+    updateInteractions(interactions.filter((interaction) => interaction.id !== interactionId));
+  };
+  const addInteraction = () => {
+    const fallbackPage = variableSources.pages[0] ?? null;
+    const fallbackVariable = interactionVariables[0] ?? null;
+    const nextInteraction = fallbackPage
+      ? { type: 'navigate', pageId: fallbackPage.id, pageTitle: fallbackPage.title, pageUrl: fallbackPage.url }
+      : fallbackVariable
+        ? { type: 'set-variable', variableId: fallbackVariable.id, variableScope: fallbackVariable.scope, variableType: fallbackVariable.type, operation: 'set', value: getDefaultInteractionValue(fallbackVariable.type) }
+        : null;
+    if (!nextInteraction) return;
+    updateInteractions([...interactions, nextInteraction]);
+  };
 
   useEffect(() => {
     if (activeSurface !== 'page' || !hasSelectedComponentInstance || !selectedElementId || !selectedComponentMeta || !normalizedSelectedVariantId) return;
@@ -674,7 +1003,211 @@ export default function PropertiesPanel() {
   }
 
   const bpId = selection.bpId || 'desktop';
-  const resolved = resolveElement(element, bpId);
+
+  if (hasMultiSelection && selectedElements.length) {
+    const resolvedSelections = selectedElements.map((selected) => ({
+      element: selected,
+      resolved: resolveElementWithVariables(selected, bpId, pageVariables, globalVariables),
+    }));
+    const getSharedValue = (getter) => {
+      const first = getter(resolvedSelections[0]);
+      return resolvedSelections.every((entry) => Object.is(getter(entry), first)) ? first : null;
+    };
+    const getFirstValue = (getter, fallback = null) => {
+      const first = getter(resolvedSelections[0]);
+      return first ?? fallback;
+    };
+    const opacityValue = getSharedValue(({ resolved }) => resolved.styles?.opacity ?? 1);
+    const hiddenValue = getSharedValue(({ resolved }) => !!resolved.hidden);
+    const zIndexValue = getSharedValue(({ resolved }) => resolved.styles?.zIndex ?? 1);
+    const rotationValue = getSharedValue(({ resolved }) => resolved.rotation ?? 0);
+    const lockedValue = getSharedValue(({ element }) => !!element.base?.locked);
+    const allFrames = selectedElements.every((selected) => selected.type === 'frame' && !selected.componentInstance && !selected.componentRoot);
+    const allTexts = selectedElements.every((selected) => selected.type === 'text');
+    const frameFillValue = allFrames ? getSharedValue(({ resolved }) => resolved.styles?.backgroundColor ?? 'rgba(180,180,200,0.18)') : null;
+    const frameFillDisplayValue = allFrames
+      ? (frameFillValue ?? getFirstValue(({ resolved }) => resolved.styles?.backgroundColor, 'rgba(180,180,200,0.18)'))
+      : null;
+    const textColorValue = allTexts ? getSharedValue(({ resolved }) => resolved.styles?.color ?? '#000000') : null;
+    const textColorDisplayValue = allTexts
+      ? (textColorValue ?? getFirstValue(({ resolved }) => resolved.styles?.color, '#000000'))
+      : null;
+    const textFontFamilyValue = allTexts ? getSharedValue(({ resolved }) => resolved.styles?.fontFamily ?? 'Inter') : null;
+    const textFontFamilyDisplayValue = allTexts
+      ? (textFontFamilyValue ?? getFirstValue(({ resolved }) => resolved.styles?.fontFamily, 'Inter'))
+      : null;
+    const textFontWeightValue = allTexts ? getSharedValue(({ resolved }) => String(resolved.styles?.fontWeight ?? 400)) : null;
+    const textFontWeightDisplayValue = allTexts
+      ? (textFontWeightValue ?? String(getFirstValue(({ resolved }) => resolved.styles?.fontWeight, 400)))
+      : null;
+    const textFontStyleValue = allTexts ? getSharedValue(({ resolved }) => resolved.styles?.fontStyle ?? 'normal') : null;
+    const textDecorationValue = allTexts ? getSharedValue(({ resolved }) => resolved.styles?.textDecoration ?? 'none') : null;
+    const textAlignValue = allTexts ? getSharedValue(({ resolved }) => resolved.styles?.textAlign ?? 'left') : null;
+    const typeSummary = Array.from(new Set(selectedElements.map((selected) => (
+      selected.componentInstance ? 'component' : selected.type
+    )))).join(', ');
+    const applyLayout = (updates, targetBpId = bpId) => {
+      updateElementsLayout(selectionIds, targetBpId, updates);
+      pushHistory();
+    };
+    const applyStyles = (updates) => {
+      updateElementsStyles(selectionIds, bpId, updates);
+      pushHistory();
+    };
+
+    return (
+      <aside className="fb-right">
+        <div className="fb-right__header">
+          <span style={{ color: 'var(--text-primary)' }}>{selectionIds.length} elements</span>
+          <IconButton
+            icon={UIIcons.trash}
+            title="Delete selected elements"
+            className="fb-btn--sm"
+            onClick={() => { deleteElements(selectionIds); pushHistory(); }}
+          />
+        </div>
+
+        <div className="fb-panel-body">
+          <Section title="Selection">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Types</span>
+              <div className="fb-prop-value">{typeSummary || 'Mixed'}</div>
+            </div>
+            <div className="fb-artboard-bp-note">
+              Only batch-safe controls are shown here. Mixed values stay untouched until you set a replacement.
+            </div>
+          </Section>
+
+          <Section title="Visibility">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Visible</span>
+              <ChoiceGroup
+                value={hiddenValue == null ? '' : (hiddenValue ? 'no' : 'yes')}
+                onChange={(value) => applyLayout({ hidden: value === 'no' })}
+                options={[
+                  { value: 'yes', label: 'Yes' },
+                  { value: 'no', label: 'No' },
+                ]}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Opacity</span>
+              <MixedNumberInput
+                value={opacityValue}
+                min={0}
+                max={1}
+                step={0.01}
+                onCommit={(value) => applyStyles({ opacity: Math.max(0, Math.min(1, value)) })}
+              />
+            </div>
+          </Section>
+
+          {allFrames ? (
+            <Section title="Fill">
+              <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Fill</span>
+                <div style={{ width: '100%' }}>
+                  <FillPicker
+                    value={frameFillDisplayValue}
+                    onChange={(value) => applyStyles({ backgroundColor: value })}
+                  />
+                </div>
+              </div>
+              {frameFillValue == null ? (
+                <div className="fb-artboard-bp-note">Mixed frame fills. Picking a new fill will replace them for all selected frames.</div>
+              ) : null}
+            </Section>
+          ) : null}
+
+          {allTexts ? (
+            <Section title="Text">
+              <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Font</span>
+                <div style={{ flex: 1 }}>
+                  <GoogleFontPicker
+                    value={textFontFamilyDisplayValue}
+                    onChange={(value) => applyStyles({ fontFamily: value })}
+                  />
+                </div>
+              </div>
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Weight</span>
+                <select
+                  className="fb-prop-input"
+                  value={textFontWeightDisplayValue}
+                  onChange={(event) => applyStyles({ fontWeight: Number(event.target.value) })}
+                >
+                  {FONT_WEIGHT_OPTIONS.map((weight) => (
+                    <option key={weight} value={weight}>{weight}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="fb-prop-row" style={{ marginTop: 6 }}>
+                <span className="fb-prop-label">Style</span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <IconButton icon={UIIcons.regular} title="Regular" active={(textFontStyleValue ?? 'normal') === 'normal'} onClick={() => applyStyles({ fontStyle: 'normal' })} />
+                  <IconButton icon={UIIcons.italic} title="Italic" active={textFontStyleValue === 'italic'} onClick={() => applyStyles({ fontStyle: textFontStyleValue === 'italic' ? 'normal' : 'italic' })} />
+                  <IconButton icon={UIIcons.underline} title="Underline" active={(textDecorationValue ?? 'none') === 'underline'} onClick={() => applyStyles({ textDecoration: (textDecorationValue ?? 'none') === 'underline' ? 'none' : 'underline' })} />
+                </div>
+              </div>
+              <div className="fb-quad" style={{ marginTop: 6 }}>
+                <ColorInput value={textColorDisplayValue} onChange={(value) => applyStyles({ color: value })} />
+                <div />
+              </div>
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Align</span>
+                <IconGroup
+                  value={textAlignValue}
+                  onChange={(value) => applyStyles({ textAlign: value })}
+                  options={TEXT_ALIGN_OPTIONS}
+                />
+              </div>
+              {textFontFamilyValue == null || textFontWeightValue == null || textFontStyleValue == null || textDecorationValue == null || textColorValue == null || textAlignValue == null ? (
+                <div className="fb-artboard-bp-note">Some text values are mixed. Choosing a new value will overwrite that property for all selected text layers.</div>
+              ) : null}
+            </Section>
+          ) : null}
+
+          <Section title="Advanced">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Z Index</span>
+              <MixedNumberInput
+                value={zIndexValue}
+                step={1}
+                onCommit={(value) => applyStyles({ zIndex: Math.round(value) })}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Rotate</span>
+              <MixedNumberInput
+                value={rotationValue}
+                min={-360}
+                max={360}
+                step={1}
+                onCommit={(value) => applyLayout({ rotation: value })}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Lock</span>
+              <ChoiceGroup
+                value={lockedValue == null ? '' : (lockedValue ? 'yes' : 'no')}
+                onChange={(value) => {
+                  updateElementsLayout(selectionIds, 'desktop', { locked: value === 'yes' });
+                  pushHistory();
+                }}
+                options={[
+                  { value: 'no', label: 'No' },
+                  { value: 'yes', label: 'Yes' },
+                ]}
+              />
+            </div>
+          </Section>
+        </div>
+      </aside>
+    );
+  }
+
+  const resolved = resolveElementWithVariables(element, bpId, pageVariables, globalVariables);
   const s = resolved.styles || {};
   const textGrow = (resolved.widthMode === 'hug' && resolved.heightMode === 'hug')
     ? 'auto-width'
@@ -718,6 +1251,7 @@ export default function PropertiesPanel() {
   const isFlowInLayout = inAutoLayout && !resolved.absoluteInLayout;
   const isComponentRoot = activeSurface === 'component' && !element.parentId;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!element.componentInstance;
+  const allowVariableBindings = activeSurface === 'page';
   const componentMeta = isComponentInstanceOnPage ? selectedComponentMeta : null;
   const componentVariants = isComponentInstanceOnPage ? selectedComponentVariants : [];
   const componentVariantId = componentVariants.some((variant) => variant.id === element.componentInstance?.variantId)
@@ -817,6 +1351,22 @@ export default function PropertiesPanel() {
   const isSOv = (...keys) => bpId !== 'desktop' && keys.some(k => k in bpSOv);
   const resetOv  = (...keys) => { keys.forEach(k => removeOverrideFn(element.id, bpId, k)); commit(); };
   const resetSOv = (...keys) => { keys.forEach(k => removeStyleOverrideFn(element.id, bpId, k)); commit(); };
+  const textBinding = getBindingForProperty('text');
+  const fontFamilyBinding = getBindingForProperty('styles.fontFamily');
+  const textColorBinding = getBindingForProperty('styles.color');
+  const hiddenBinding = getBindingForProperty('hidden');
+  const fillBinding = getBindingForProperty('styles.backgroundColor');
+  const backgroundImageBinding = getBindingForProperty('styles.backgroundImage');
+  const sourceBinding = getBindingForProperty('src');
+  const zIndexBinding = getBindingForProperty('styles.zIndex');
+  const textBindingVariable = resolveBoundVariable(textBinding);
+  const fontFamilyBindingVariable = resolveBoundVariable(fontFamilyBinding);
+  const textColorBindingVariable = resolveBoundVariable(textColorBinding);
+  const hiddenBindingVariable = resolveBoundVariable(hiddenBinding);
+  const fillBindingVariable = resolveBoundVariable(fillBinding);
+  const backgroundImageBindingVariable = resolveBoundVariable(backgroundImageBinding);
+  const sourceBindingVariable = resolveBoundVariable(sourceBinding);
+  const zIndexBindingVariable = resolveBoundVariable(zIndexBinding);
 
   return (
     <aside className="fb-right">
@@ -833,6 +1383,18 @@ export default function PropertiesPanel() {
       </div>
 
       <div className="fb-panel-body">
+
+        {activeSurface === 'page' ? (
+          <InteractionSection
+            interactions={interactions}
+            variableSources={variableSources}
+            interactionVariables={interactionVariables}
+            allVariables={allVariables}
+            updateInteraction={updateInteraction}
+            removeInteraction={removeInteraction}
+            addInteraction={addInteraction}
+          />
+        ) : null}
 
         {isComponentInstanceOnPage && componentMeta ? (
           <Section title="Component">
@@ -1003,25 +1565,53 @@ export default function PropertiesPanel() {
 
         {element.type === 'text' && (
           <Section title="Text" action={<ResetBtn show={isOv('text') || isSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text'); resetSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
-            <div className="fb-prop-row--full" style={{ marginBottom: 8 }}>
-              <textarea
-                className="fb-prop-input"
-                value={resolved.text ?? 'Text'}
-                onChange={e => upd('text', e.target.value)}
-                onBlur={commit}
-                rows={4}
-                style={{ width: '100%', resize: 'vertical', minHeight: 92, lineHeight: 1.4 }}
-              />
+            <div className="fb-prop-row" style={{ marginBottom: 8 }}>
+              <VariableBindingLabel label="Content">
+                {allowVariableBindings ? (
+                  <VariableBindingButton
+                    variables={getCompatibleBindingVariables('text')}
+                    binding={textBinding}
+                    onSelect={(binding) => commitBinding('text', binding, (value) => updateElementLayout(element.id, bpId, { text: `${value ?? ''}` }))}
+                    onRemove={() => commitBinding('text', null)}
+                  />
+                ) : null}
+              </VariableBindingLabel>
+              {textBindingVariable ? <BoundVariableCta variable={textBindingVariable} fallbackLabel="Text source" /> : <div className="fb-prop-value">Text source</div>}
             </div>
-
-            <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
-              <span className="fb-prop-label">Font</span>
-              <div style={{ flex: 1 }}>
-                <GoogleFontPicker
-                  value={s.fontFamily ?? 'Inter'}
-                  onChange={value => { updS('fontFamily', value); commit(); }}
+            {textBindingVariable ? null : (
+              <div className="fb-prop-row--full" style={{ marginBottom: 8 }}>
+                <textarea
+                  className="fb-prop-input"
+                  value={resolved.text ?? 'Text'}
+                  onChange={e => upd('text', e.target.value)}
+                  onBlur={commit}
+                  rows={4}
+                  style={{ width: '100%', resize: 'vertical', minHeight: 92, lineHeight: 1.4 }}
                 />
               </div>
+            )}
+
+            <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+              <VariableBindingLabel label="Font">
+                {allowVariableBindings ? (
+                  <VariableBindingButton
+                    variables={getCompatibleBindingVariables('styles.fontFamily')}
+                    binding={fontFamilyBinding}
+                    onSelect={(binding) => commitBinding('styles.fontFamily', binding, (value) => updateStyles(element.id, bpId, { fontFamily: `${value ?? ''}` }))}
+                    onRemove={() => commitBinding('styles.fontFamily', null)}
+                  />
+                ) : null}
+              </VariableBindingLabel>
+              {fontFamilyBindingVariable ? (
+                <BoundVariableCta variable={fontFamilyBindingVariable} fallbackLabel="Font variable" />
+              ) : (
+                <div style={{ flex: 1 }}>
+                  <GoogleFontPicker
+                    value={s.fontFamily ?? 'Inter'}
+                    onChange={value => { updS('fontFamily', value); commit(); }}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="fb-prop-row" style={{ marginTop: 8 }}>
@@ -1053,7 +1643,21 @@ export default function PropertiesPanel() {
 
             <div className="fb-quad" style={{ marginTop: 6 }}>
               <NumberInput value={s.letterSpacing ?? 0} step={0.01} label="Track" onChange={v => { updS('letterSpacing', v); commit(); }} />
-              <ColorInput value={s.color ?? '#000000'} onChange={v => { updS('color', v); commit(); }} />
+              <div />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+              <VariableBindingLabel label="Color">
+                {allowVariableBindings ? (
+                  <VariableBindingButton
+                    variables={getCompatibleBindingVariables('styles.color')}
+                    binding={textColorBinding}
+                    onSelect={(binding) => commitBinding('styles.color', binding, (value) => updateStyles(element.id, bpId, { color: value || '#000000' }))}
+                    onRemove={() => commitBinding('styles.color', null)}
+                  />
+                ) : null}
+              </VariableBindingLabel>
+              {textColorBindingVariable ? <BoundVariableCta variable={textColorBindingVariable} fallbackLabel="Color variable" /> : <ColorInput value={s.color ?? '#000000'} onChange={v => { updS('color', v); commit(); }} />}
             </div>
 
             <div className="fb-prop-row" style={{ marginTop: 8 }}>
@@ -1222,22 +1826,46 @@ export default function PropertiesPanel() {
           </div>
 
           <div className="fb-prop-row">
-            <span className="fb-prop-label">Visible</span>
-            <ChoiceGroup
-              value={resolved.hidden ? 'no' : 'yes'}
-              onChange={v => { upd('hidden', v === 'no'); commit(); }}
-              options={[
-                { value: 'yes', label: 'Yes' },
-                { value: 'no', label: 'No' },
-              ]}
-            />
+            <VariableBindingLabel label="Visible">
+              {allowVariableBindings ? (
+                <VariableBindingButton
+                  variables={getCompatibleBindingVariables('hidden')}
+                  binding={hiddenBinding}
+                    onSelect={(binding) => commitBinding('hidden', binding, (value) => updateElementLayout(element.id, bpId, { hidden: !value }))}
+                  onRemove={() => commitBinding('hidden', null)}
+                />
+              ) : null}
+            </VariableBindingLabel>
+            {hiddenBindingVariable ? (
+              <BoundVariableCta variable={hiddenBindingVariable} fallbackLabel="Visibility variable" />
+            ) : (
+              <ChoiceGroup
+                value={resolved.hidden ? 'no' : 'yes'}
+                onChange={v => { upd('hidden', v === 'no'); commit(); }}
+                options={[
+                  { value: 'yes', label: 'Yes' },
+                  { value: 'no', label: 'No' },
+                ]}
+              />
+            )}
           </div>
 
           {!isComponentInstanceOnPage && (
           <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
-            <span className="fb-prop-label">Fill</span>
+            <VariableBindingLabel label="Fill">
+              {allowVariableBindings && element.type !== 'image' ? (
+                <VariableBindingButton
+                  variables={getCompatibleBindingVariables('styles.backgroundColor')}
+                  binding={fillBinding}
+                  onSelect={(binding) => commitBinding('styles.backgroundColor', binding, (value) => updateStyles(element.id, bpId, { backgroundColor: value || '#000000' }))}
+                  onRemove={() => commitBinding('styles.backgroundColor', null)}
+                />
+              ) : null}
+            </VariableBindingLabel>
             <div style={{ width: '100%' }}>
-              {element.type === 'image' ? (
+              {fillBindingVariable ? (
+                <BoundVariableCta variable={fillBindingVariable} fallbackLabel="Fill variable" />
+              ) : element.type === 'image' ? (
                 <MediaPickerButton value={resolved.src ?? ''} onChange={v => { upd('src', v); commit(); }} />
               ) : (
                 <FillPicker value={s.backgroundColor ?? '#ffffff'} onChange={v => { updS('backgroundColor', v); commit(); }} />
@@ -1248,8 +1876,31 @@ export default function PropertiesPanel() {
 
           {!isComponentInstanceOnPage && element.type === 'frame' && (
             <div className="fb-prop-row">
-              <span className="fb-prop-label">Image</span>
-              <MediaPickerButton value={s.backgroundImage ?? ''} onChange={v => { updS('backgroundImage', v); commit(); }} />
+              <VariableBindingLabel label="Image">
+                {allowVariableBindings ? (
+                  <VariableBindingButton
+                    variables={getCompatibleBindingVariables('styles.backgroundImage')}
+                    binding={backgroundImageBinding}
+                    onSelect={(binding) => commitBinding('styles.backgroundImage', binding, (value) => updateStyles(element.id, bpId, { backgroundImage: `${value ?? ''}` }))}
+                    onRemove={() => commitBinding('styles.backgroundImage', null)}
+                  />
+                ) : null}
+              </VariableBindingLabel>
+              {backgroundImageBindingVariable ? <BoundVariableCta variable={backgroundImageBindingVariable} fallbackLabel="Image variable" /> : <MediaPickerButton value={s.backgroundImage ?? ''} onChange={v => { updS('backgroundImage', v); commit(); }} />}
+            </div>
+          )}
+
+          {!isComponentInstanceOnPage && element.type === 'image' && allowVariableBindings && (
+            <div className="fb-prop-row">
+              <VariableBindingLabel label="Source">
+                <VariableBindingButton
+                  variables={getCompatibleBindingVariables('src')}
+                  binding={sourceBinding}
+                  onSelect={(binding) => commitBinding('src', binding, (value) => updateElementLayout(element.id, bpId, { src: `${value ?? ''}` }))}
+                  onRemove={() => commitBinding('src', null)}
+                />
+              </VariableBindingLabel>
+              {sourceBindingVariable ? <BoundVariableCta variable={sourceBindingVariable} fallbackLabel="Source variable" /> : <div className="fb-artboard-bp-note">Image source can be driven by an image variable.</div>}
             </div>
           )}
 
@@ -1337,21 +1988,34 @@ export default function PropertiesPanel() {
           )}
 
           <div className="fb-prop-row">
-            <span className="fb-prop-label">Z Index</span>
-            <div className="fb-stepper-field">
-              <input
-                className="fb-prop-input fb-stepper-field__value"
-                type="number"
-                step={1}
-                value={Math.round(s.zIndex ?? 1)}
-                onChange={e => updS('zIndex', Math.round(parseFloat(e.target.value) || 0))}
-                onBlur={commit}
-              />
-              <div className="fb-icon-group">
-                <IconButton icon={UIIcons.minus} title="Decrease z-index" onClick={() => { updS('zIndex', Math.round((s.zIndex ?? 1) - 1)); commit(); }} />
-                <IconButton icon={UIIcons.plus} title="Increase z-index" onClick={() => { updS('zIndex', Math.round((s.zIndex ?? 1) + 1)); commit(); }} />
+            <VariableBindingLabel label="Z Index">
+              {allowVariableBindings ? (
+                <VariableBindingButton
+                  variables={getCompatibleBindingVariables('styles.zIndex')}
+                  binding={zIndexBinding}
+                  onSelect={(binding) => commitBinding('styles.zIndex', binding, (value) => updateStyles(element.id, bpId, { zIndex: Math.round(parseFloat(value) || 0) }))}
+                  onRemove={() => commitBinding('styles.zIndex', null)}
+                />
+              ) : null}
+            </VariableBindingLabel>
+            {zIndexBindingVariable ? (
+              <BoundVariableCta variable={zIndexBindingVariable} fallbackLabel="Z-index variable" />
+            ) : (
+              <div className="fb-stepper-field">
+                <input
+                  className="fb-prop-input fb-stepper-field__value"
+                  type="number"
+                  step={1}
+                  value={Math.round(s.zIndex ?? 1)}
+                  onChange={e => updS('zIndex', Math.round(parseFloat(e.target.value) || 0))}
+                  onBlur={commit}
+                />
+                <div className="fb-icon-group">
+                  <IconButton icon={UIIcons.minus} title="Decrease z-index" onClick={() => { updS('zIndex', Math.round((s.zIndex ?? 1) - 1)); commit(); }} />
+                  <IconButton icon={UIIcons.plus} title="Increase z-index" onClick={() => { updS('zIndex', Math.round((s.zIndex ?? 1) + 1)); commit(); }} />
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </Section>
 

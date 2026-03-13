@@ -10,6 +10,9 @@ defined( 'ABSPATH' ) || exit;
 
 global $post;
 $html = get_post_meta( $post->ID, '_fb_published_html', true );
+$global_variables_raw = get_option( '_fb_global_variables', '[]' );
+$global_variables = json_decode( $global_variables_raw, true );
+if ( ! is_array( $global_variables ) ) $global_variables = [];
 ?><!DOCTYPE html>
 <html <?php language_attributes(); ?>>
 <head>
@@ -21,6 +24,10 @@ $html = get_post_meta( $post->ID, '_fb_published_html', true );
 	window.wp.hooks = window.wp.hooks || {
 		doAction: function() {}, addAction: function() {}, removeAction: function() {},
 		applyFilters: function(h, v) { return v; }, addFilter: function() {}, removeFilter: function() {}
+	};
+	window.fbRuntimeData = window.fbRuntimeData || {
+		postId: <?php echo (int) $post->ID; ?>,
+		globalVariables: <?php echo wp_json_encode( $global_variables ); ?>
 	};
 	</script>
 	<?php wp_head(); ?>

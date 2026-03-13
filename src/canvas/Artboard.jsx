@@ -1,5 +1,5 @@
 import React, { useState, useRef, useLayoutEffect } from 'react';
-import { useEditorStore, resolveBackground, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
+import { useEditorStore, resolveBackground, resolveElementWithVariables, resolvePagePadding, resolvePageLayout, isElementSelected } from '../store/editorStore';
 import CanvasElement from './CanvasElement';
 
 const HEADER_H = 36;
@@ -67,13 +67,15 @@ export default function Artboard({
   const resolvedLayout   = resolvePageLayout(page?.layout, bp.id);
   const layoutOn         = resolvedLayout !== null;
   const scale            = useEditorStore(s => s.viewport.scale);
+  const pageVariables    = Array.isArray(page?.variables) ? page.variables : [];
+  const globalVariables  = useEditorStore(s => s.globalVariables);
   const isComponentSurface = surfaceMode === 'component';
 
   // Root-level elements only (parentId === null)
   const rootEls = allElements.filter(e => !e.parentId);
 
   const isFlowRootAtBp = (el, targetBpId) => {
-    const r = resolveElement(el, targetBpId);
+    const r = resolveElementWithVariables(el, targetBpId, pageVariables, globalVariables);
     const targetLayout = resolvePageLayout(page?.layout, targetBpId);
     return !el.parentId && targetLayout !== null && !r.absoluteInLayout && r.positionType !== 'fixed';
   };
@@ -83,7 +85,7 @@ export default function Artboard({
   const desktopBp = breakpointDefs['desktop'];
   const isDesktopOffCanvas = (el) => {
     if (bp.id === 'desktop' || !desktopBp) return false;
-    const r = resolveElement(el, 'desktop');
+    const r = resolveElementWithVariables(el, 'desktop', pageVariables, globalVariables);
     if (r.hidden) return false; // hidden-on-desktop elements (bp-specific) are kept
     if (isFlowRootAtBp(el, 'desktop')) return false;
     return (r.x + r.width <= 0 || r.x >= desktopBp.width || r.y + r.height <= 0 || r.y >= desktopBp.height);
@@ -91,7 +93,7 @@ export default function Artboard({
 
   // Split into on-canvas and off-canvas for this bp, after excluding desktop-off-canvas
   const isOffCanvas = (el) => {
-    const r = resolveElement(el, bp.id);
+    const r = resolveElementWithVariables(el, bp.id, pageVariables, globalVariables);
     if (r.hidden) return false;
     if (isFlowRootAtBp(el, bp.id)) return false;
     return (r.x + r.width <= 0 || r.x >= bp.width || r.y + r.height <= 0 || r.y >= bp.height);
@@ -217,7 +219,7 @@ export default function Artboard({
                 <CanvasElement
                   elementId={el.id}
                   bpId={bp.id}
-                  isSelected={selection?.elementId === el.id && selection?.bpId === bp.id}
+                  isSelected={isElementSelected(selection, el.id, bp.id)}
                   isDropTarget={dropTargetId === el.id}
                   dropTargetId={dropTargetId}
                   artboardLayoutOn={layoutOn}
@@ -313,7 +315,7 @@ export default function Artboard({
                 key={el.id}
                 elementId={el.id}
                 bpId={bp.id}
-                isSelected={selection?.elementId === el.id && selection?.bpId === bp.id}
+                isSelected={isElementSelected(selection, el.id, bp.id)}
                 onStartElementDrag={onStartElementDrag}
                 onStartElementResize={onStartResize}
                 onStartElementRotate={onStartRotate}

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useEditorStore, resolveElement } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
 import { UIIcons } from '../components/UIIcons';
 
 const Icons = {
@@ -87,6 +87,8 @@ function checkOffCanvas(el, bpId, bpDef) {
 function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }) {
   const selection         = useEditorStore(s => s.selection);
   const setSelection      = useEditorStore(s => s.setSelection);
+  const toggleSelection   = useEditorStore(s => s.toggleSelection);
+  const setPrimarySelection = useEditorStore(s => s.setPrimarySelection);
   const hoveredId         = useEditorStore(s => s.hoveredId);
   const setHoveredId      = useEditorStore(s => s.setHoveredId);
   const toggleVisibility  = useEditorStore(s => s.toggleElementVisibility);
@@ -94,16 +96,23 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
   const openComponentEditor = useEditorStore(s => s.openComponentEditor);
   const activeSurface       = useEditorStore(s => s.activeSurface);
   const components          = useEditorStore(s => s.components);
-  const children          = useEditorStore(s => s.getChildElements(el.id));
+  const currentPage         = useEditorStore(s => s.pages.find((page) => page.id === s.currentPageId) ?? null);
+  const globalVariables     = useEditorStore(s => s.globalVariables);
+  const allElements         = useEditorStore(s => s.getAllElements());
   const [expanded, setExpanded] = useState(true);
+    const pageVariables = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
+    const children = el?.children?.length
+      ? el.children.map((childId) => allElements.find((candidate) => candidate.id === childId)).filter(Boolean)
+      : allElements.filter((candidate) => candidate.parentId === el.id);
+
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState('');
   const [dragOverPart, setDragOverPart] = useState(null); // 'before' | 'into' | 'after'
   const itemRef = useRef(null);
 
-  const isSel = selection?.elementId === el.id;
+  const isSel = isElementSelected(selection, el.id, bpId || 'desktop');
   const isHov = hoveredId === el.id;
-  const resolved = resolveElement(el, bpId || 'desktop');
+  const resolved = resolveElementWithVariables(el, bpId || 'desktop', pageVariables, globalVariables);
   const isMainSurfaceComponent = activeSurface === 'page' && !!el.componentInstance;
   const componentMeta = el.componentInstance?.componentId
     ? components.find((component) => component.id === el.componentInstance.componentId)
@@ -170,7 +179,18 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
         className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${isHov && !isSel ? ' fb-layer-item--hovered' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}${el.componentInstance ? ' fb-layer-item--component' : ''}${dragOverPart === 'before' ? ' fb-layer-item--drag-before' : ''}${dragOverPart === 'after' ? ' fb-layer-item--drag-after' : ''}${dragOverPart === 'into' ? ' fb-layer-item--drag-into' : ''}`}
         style={{ paddingLeft: 12 + depth * 16 }}
         draggable
-        onClick={() => setSelection({ elementId: el.id, bpId: bpId || 'desktop' })}
+        onClick={(e) => {
+          const nextSelection = { elementId: el.id, bpId: bpId || 'desktop' };
+          if (e.metaKey || e.ctrlKey || e.shiftKey) {
+            toggleSelection(nextSelection);
+            return;
+          }
+          if (isSel) {
+            setPrimarySelection(el.id);
+            return;
+          }
+          setSelection(nextSelection);
+        }}
         onMouseEnter={() => setHoveredId(el.id)}
         onMouseLeave={() => setHoveredId(null)}
         onDragStart={handleDragStart}

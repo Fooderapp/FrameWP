@@ -21,6 +21,20 @@ const LAYOUT_NUMERIC_KEYS = new Set([
   'widthPct', 'heightPct', 'widthFr', 'heightFr',
 ]);
 
+const VARIABLE_TYPES = new Set(['string', 'boolean', 'color', 'number', 'image', 'post', 'product']);
+const VARIABLE_SCOPES = new Set(['page', 'global']);
+const VARIABLE_BINDING_BREAKPOINTS = ['desktop', 'tablet', 'mobile'];
+const VARIABLE_PROPERTY_COMPATIBILITY = {
+  text: ['string', 'number'],
+  hidden: ['boolean'],
+  'styles.backgroundColor': ['color'],
+  'styles.backgroundImage': ['image'],
+  'styles.color': ['color'],
+  'styles.zIndex': ['number'],
+  'styles.fontFamily': ['string'],
+  src: ['image'],
+};
+
 function sanitizeLayoutUpdates(updates) {
   if (!updates || typeof updates !== 'object') return updates;
 
@@ -31,6 +45,190 @@ function sanitizeLayoutUpdates(updates) {
       return Number.isFinite(numericValue) ? [[key, numericValue]] : [];
     })
   );
+}
+
+function getDefaultVariableValue(type) {
+  switch (type) {
+    case 'boolean': return false;
+    case 'color': return '#000000';
+    case 'image': return '';
+    case 'number': return 0;
+    case 'post':
+    case 'product':
+      return null;
+    case 'string':
+    default:
+      return '';
+  }
+}
+
+function normalizeVariableValue(type, value) {
+  switch (type) {
+    case 'boolean':
+      return !!value;
+    case 'color':
+      return typeof value === 'string' && value ? value : '#000000';
+    case 'image':
+      return typeof value === 'string' ? value : `${value ?? ''}`;
+    case 'number': {
+      const parsed = typeof value === 'number' ? value : parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    case 'post':
+    case 'product':
+      if (!value || typeof value !== 'object') return null;
+      return {
+        id: typeof value.id === 'number' ? value.id : parseInt(value.id, 10) || 0,
+        title: typeof value.title === 'string' ? value.title : '',
+        url: typeof value.url === 'string' ? value.url : '',
+        postType: typeof value.postType === 'string' ? value.postType : (type === 'product' ? 'product' : 'post'),
+      };
+    case 'string':
+    default:
+      return typeof value === 'string' ? value : `${value ?? ''}`;
+  }
+}
+
+function normalizeVariableDefinition(variable, scope = 'page') {
+  const normalizedScope = VARIABLE_SCOPES.has(variable?.scope) ? variable.scope : scope;
+  const type = VARIABLE_TYPES.has(variable?.type) ? variable.type : 'string';
+  const name = typeof variable?.name === 'string' && variable.name.trim()
+    ? variable.name.trim()
+    : 'Variable';
+  const category = typeof variable?.category === 'string' && variable.category.trim()
+    ? variable.category.trim()
+    : 'General';
+  return {
+    id: typeof variable?.id === 'string' && variable.id ? variable.id : makeId('var'),
+    scope: normalizedScope,
+    type,
+    name,
+    category,
+    persistent: !!variable?.persistent,
+    value: normalizeVariableValue(type, variable?.value ?? getDefaultVariableValue(type)),
+  };
+}
+
+function normalizeVariableList(variables, scope = 'page') {
+  if (!Array.isArray(variables)) return [];
+  return variables.map((variable) => normalizeVariableDefinition(variable, scope));
+}
+
+function normalizeBindingDefinition(binding) {
+  if (!binding || typeof binding !== 'object') return null;
+  const scope = VARIABLE_SCOPES.has(binding.scope) ? binding.scope : 'page';
+  const variableId = typeof binding.variableId === 'string' && binding.variableId ? binding.variableId : null;
+  if (!variableId) return null;
+  return {
+    scope,
+    variableId,
+  };
+}
+
+function normalizeElementBindings(bindings) {
+  const normalized = { desktop: {}, tablet: {}, mobile: {} };
+  VARIABLE_BINDING_BREAKPOINTS.forEach((bpId) => {
+    const bpBindings = bindings?.[bpId];
+    if (!bpBindings || typeof bpBindings !== 'object') return;
+    Object.entries(bpBindings).forEach(([propertyKey, binding]) => {
+      const normalizedBinding = normalizeBindingDefinition(binding);
+      if (!normalizedBinding) return;
+      normalized[bpId][propertyKey] = normalizedBinding;
+    });
+  });
+  return normalized;
+}
+
+function resolveElementBinding(bindings, bpId, propertyKey) {
+  const normalized = normalizeElementBindings(bindings);
+  if (bpId === 'mobile') return normalized.mobile[propertyKey] ?? normalized.tablet[propertyKey] ?? normalized.desktop[propertyKey] ?? null;
+  if (bpId === 'tablet') return normalized.tablet[propertyKey] ?? normalized.desktop[propertyKey] ?? null;
+  return normalized.desktop[propertyKey] ?? null;
+}
+
+function normalizeElementInteraction(interaction) {
+  if (!interaction || typeof interaction !== 'object') return null;
+  const type = interaction.type === 'set-variable' ? 'set-variable' : (interaction.type === 'navigate' ? 'navigate' : null);
+  if (!type) return null;
+  if (type === 'navigate') {
+    const pageUrl = typeof interaction.pageUrl === 'string' ? interaction.pageUrl : '';
+    if (!pageUrl) return null;
+    return {
+      id: typeof interaction.id === 'string' && interaction.id ? interaction.id : makeId('int'),
+      type,
+      pageId: typeof interaction.pageId === 'number' ? interaction.pageId : parseInt(interaction.pageId, 10) || 0,
+      pageTitle: typeof interaction.pageTitle === 'string' ? interaction.pageTitle : '',
+      pageUrl,
+    };
+  }
+
+  const variableId = typeof interaction.variableId === 'string' && interaction.variableId ? interaction.variableId : '';
+  const variableScope = VARIABLE_SCOPES.has(interaction.variableScope) ? interaction.variableScope : 'page';
+  const variableType = VARIABLE_TYPES.has(interaction.variableType) ? interaction.variableType : 'string';
+  if (!variableId) return null;
+  return {
+    id: typeof interaction.id === 'string' && interaction.id ? interaction.id : makeId('int'),
+    type,
+    variableId,
+    variableScope,
+    variableType,
+    operation: typeof interaction.operation === 'string' ? interaction.operation : 'set',
+    value: normalizeVariableValue(variableType, interaction.value ?? getDefaultVariableValue(variableType)),
+  };
+}
+
+function normalizeElementInteractions(interactions) {
+  if (!Array.isArray(interactions)) return [];
+  return interactions.map(normalizeElementInteraction).filter(Boolean);
+}
+
+function normalizeElementDynamicFields(element) {
+  return {
+    ...element,
+    bindings: normalizeElementBindings(element?.bindings),
+    interactions: normalizeElementInteractions(element?.interactions),
+  };
+}
+
+function getVariableMap(pageVariables = [], globalVariables = []) {
+  const pageMap = new Map(normalizeVariableList(pageVariables, 'page').map((variable) => [variable.id, variable]));
+  const globalMap = new Map(normalizeVariableList(globalVariables, 'global').map((variable) => [variable.id, variable]));
+  return { page: pageMap, global: globalMap };
+}
+
+function applyVariableBindingValue(resolved, propertyKey, variable) {
+  if (!resolved || !propertyKey || !variable) return resolved;
+  const next = { ...resolved, styles: { ...(resolved.styles ?? {}) } };
+  const value = variable.value;
+  switch (propertyKey) {
+    case 'text':
+      next.text = value == null ? '' : `${value}`;
+      break;
+    case 'hidden':
+      next.hidden = !value;
+      break;
+    case 'styles.backgroundImage':
+      next.styles.backgroundImage = typeof value === 'string' ? value : `${value ?? ''}`;
+      break;
+    case 'styles.backgroundColor':
+      next.styles.backgroundColor = typeof value === 'string' ? value : '#000000';
+      break;
+    case 'styles.color':
+      next.styles.color = typeof value === 'string' ? value : '#000000';
+      break;
+    case 'styles.zIndex':
+      next.styles.zIndex = typeof value === 'number' ? value : parseFloat(value) || 0;
+      break;
+    case 'styles.fontFamily':
+      next.styles.fontFamily = typeof value === 'string' ? value : `${value ?? ''}`;
+      break;
+    case 'src':
+      next.src = typeof value === 'string' ? value : `${value ?? ''}`;
+      break;
+    default:
+      break;
+  }
+  return next;
 }
 
 // ── Breakpoint definitions ────────────────────────────────────
@@ -226,6 +424,14 @@ function clampFinite(value, fallback, min = -Infinity, max = Infinity) {
   const numericValue = typeof value === 'number' ? value : parseFloat(value);
   if (!Number.isFinite(numericValue)) return fallback;
   return Math.min(max, Math.max(min, numericValue));
+}
+
+function normalizeViewportValue(viewport, fallback = { x: 80, y: 80, scale: 0.55 }) {
+  return {
+    x: clampFinite(viewport?.x, fallback?.x ?? 80, -100000, 100000),
+    y: clampFinite(viewport?.y, fallback?.y ?? 80, -100000, 100000),
+    scale: clampFinite(viewport?.scale, fallback?.scale ?? 0.55, 0.08, 8),
+  };
 }
 
 function normalizeComponentBezier(bezier) {
@@ -635,6 +841,7 @@ const makeDefaultPage = () => ({
   padding: { desktop: { top: 0, right: 0, bottom: 0, left: 0 }, tablet: null, mobile: null },
   // layout: null per bp = inherit; object = { flexDirection, alignItems, justifyContent, flexWrap, gap }
   layout: { desktop: null, tablet: null, mobile: null },
+  variables: [],
   elements: [],
 });
 
@@ -678,8 +885,22 @@ function buildPersistableLayoutPayload(state) {
 
   return {
     ...page,
+    variables: normalizeVariableList(page?.variables, 'page'),
     _breakpointDefs: state.breakpointDefs,
     _componentLibrary: components,
+  };
+}
+
+function normalizePageData(page) {
+  const fallback = makeDefaultPage();
+  return {
+    ...fallback,
+    ...(page ?? {}),
+    background: { ...fallback.background, ...(page?.background ?? {}) },
+    padding: { ...fallback.padding, ...(page?.padding ?? {}) },
+    layout: { ...fallback.layout, ...(page?.layout ?? {}) },
+    variables: normalizeVariableList(page?.variables, 'page'),
+    elements: Array.isArray(page?.elements) ? page.elements.map(normalizeElementDynamicFields) : [],
   };
 }
 // ── Element factory ──────────────────────────────────────────
@@ -783,6 +1004,26 @@ export function resolveElement(el, bpId) {
   };
 }
 
+export function resolveElementWithVariables(el, bpId, pageVariables = [], globalVariables = []) {
+  const resolved = resolveElement(el, bpId);
+  const bindings = normalizeElementBindings(el?.bindings);
+  const variableMaps = getVariableMap(pageVariables, globalVariables);
+  let next = resolved;
+
+  Object.keys(bindings?.desktop ?? {})
+    .concat(Object.keys(bindings?.tablet ?? {}), Object.keys(bindings?.mobile ?? {}))
+    .filter((propertyKey, index, allKeys) => allKeys.indexOf(propertyKey) === index)
+    .forEach((propertyKey) => {
+      const binding = resolveElementBinding(bindings, bpId, propertyKey);
+      if (!binding) return;
+      const variable = variableMaps[binding.scope]?.get(binding.variableId) ?? null;
+      if (!variable) return;
+      next = applyVariableBindingValue(next, propertyKey, variable);
+    });
+
+  return next;
+}
+
 export function getRootElements(elements) { return elements.filter(e => !e.parentId); }
 
 // Cascade background: tablet/mobile inherit from parent breakpoint when null
@@ -818,6 +1059,64 @@ export function getChildEls(elements, parentId) {
   return elements.filter(e => e.parentId === parentId);
 }
 export function findEl(elements, id) { return elements.find(e => e.id === id) ?? null; }
+
+export function normalizeSelection(selection) {
+  if (!selection || typeof selection !== 'object') return null;
+
+  const seen = new Set();
+  const ids = [];
+  const pushId = (value) => {
+    if (typeof value !== 'string' || !value || seen.has(value)) return;
+    seen.add(value);
+    ids.push(value);
+  };
+
+  pushId(selection.elementId);
+  (selection.elementIds ?? []).forEach(pushId);
+
+  if (!ids.length) return null;
+
+  const primaryId = typeof selection.elementId === 'string' && ids.includes(selection.elementId)
+    ? selection.elementId
+    : ids[0];
+  const orderedIds = [primaryId, ...ids.filter((id) => id !== primaryId)];
+
+  return {
+    ...selection,
+    elementId: primaryId,
+    elementIds: orderedIds,
+    bpId: selection.bpId ?? 'desktop',
+  };
+}
+
+export function getSelectionElementIds(selection) {
+  return normalizeSelection(selection)?.elementIds ?? [];
+}
+
+export function isElementSelected(selection, elementId, bpId = null) {
+  if (!elementId) return false;
+  const normalized = normalizeSelection(selection);
+  if (!normalized) return false;
+  if (bpId && normalized.bpId !== bpId) return false;
+  return normalized.elementIds.includes(elementId);
+}
+
+function buildSelection(elementIds, bpId = 'desktop', primaryId = null) {
+  const ids = Array.from(new Set((elementIds ?? []).filter((id) => typeof id === 'string' && id)));
+  if (!ids.length) return null;
+  const anchorId = primaryId && ids.includes(primaryId) ? primaryId : ids[0];
+  return normalizeSelection({ elementId: anchorId, elementIds: ids, bpId });
+}
+
+function removeSelectionIds(selection, idsToRemove) {
+  const normalized = normalizeSelection(selection);
+  if (!normalized) return null;
+
+  const blocked = new Set(idsToRemove ?? []);
+  const nextIds = normalized.elementIds.filter((id) => !blocked.has(id));
+  if (!nextIds.length) return null;
+  return buildSelection(nextIds, normalized.bpId, nextIds[0]);
+}
 
 function collectSubtree(elements, rootId) {
   const subtree = [];
@@ -1045,11 +1344,14 @@ export const useEditorStore = create((set, get) => {
     // ── Viewport ───────────────────────────────────────────
     viewport: { x: 80, y: 80, scale: 0.55 },
     setViewport: (vp) => set(state => ({
-      viewport: typeof vp === 'function' ? vp(state.viewport) : vp,
+      viewport: normalizeViewportValue(
+        typeof vp === 'function' ? vp(state.viewport) : vp,
+        state.viewport,
+      ),
     })),
 
     // ── Pages ──────────────────────────────────────────────
-    pages: [makeDefaultPage()],
+    pages: [normalizePageData(makeDefaultPage())],
     currentPageId: 'page-1',
     breakpointDefs: BREAKPOINTS,
     activeSurface: 'page',
@@ -1058,6 +1360,203 @@ export const useEditorStore = create((set, get) => {
     // ── Color styles (site-wide) ───────────────────────────
     colorStyles: [],
     setColorStyles: (styles) => set({ colorStyles: styles }),
+
+    // ── Variables (page + site-wide) ──────────────────────
+    globalVariables: [],
+    setGlobalVariables: (variables) => set({ globalVariables: normalizeVariableList(variables, 'global') }),
+    variableSources: { pages: [], posts: [], products: [] },
+    setVariableSources: (sources) => set({
+      variableSources: {
+        pages: Array.isArray(sources?.pages) ? sources.pages : [],
+        posts: Array.isArray(sources?.posts) ? sources.posts : [],
+        products: Array.isArray(sources?.products) ? sources.products : [],
+      },
+    }),
+    variablesModalOpen: false,
+    setVariablesModalOpen: (open) => set({ variablesModalOpen: !!open }),
+
+    getCurrentPageVariables() {
+      return normalizeVariableList(getActivePage()?.variables, 'page');
+    },
+
+    getAllVariables() {
+      return [
+        ...normalizeVariableList(get().getCurrentPageVariables(), 'page'),
+        ...normalizeVariableList(get().globalVariables, 'global'),
+      ];
+    },
+
+    getCompatibleVariables(propertyKey) {
+      const allowedTypes = VARIABLE_PROPERTY_COMPATIBILITY[propertyKey] ?? [];
+      return get().getAllVariables().filter((variable) => allowedTypes.includes(variable.type));
+    },
+
+    async loadGlobalVariables() {
+      try {
+        if (window.fbData?.restUrl) {
+          const nonce = window.fbData.nonce;
+          const url = window.fbData.restUrl + 'variables?_wpnonce=' + encodeURIComponent(nonce);
+          const res = await fetch(url, {
+            credentials: 'same-origin',
+            headers: { 'X-WP-Nonce': nonce },
+          });
+          const data = await res.json();
+          if (data.success && Array.isArray(data.variables)) {
+            set({ globalVariables: normalizeVariableList(data.variables, 'global') });
+          }
+        } else {
+          const stored = localStorage.getItem('fb_global_variables');
+          if (stored) set({ globalVariables: normalizeVariableList(JSON.parse(stored), 'global') });
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] loadGlobalVariables failed', e);
+      }
+    },
+
+    async saveGlobalVariables(variables) {
+      const normalizedVariables = normalizeVariableList(variables, 'global');
+      set({ globalVariables: normalizedVariables });
+      try {
+        if (window.fbData?.restUrl) {
+          const nonce = window.fbData.nonce;
+          const url = window.fbData.restUrl + 'variables?_wpnonce=' + encodeURIComponent(nonce);
+          await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce },
+            body: JSON.stringify({ variables: normalizedVariables }),
+          });
+        } else {
+          localStorage.setItem('fb_global_variables', JSON.stringify(normalizedVariables));
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] saveGlobalVariables failed', e);
+      }
+    },
+
+    async loadVariableSources() {
+      try {
+        if (window.fbData?.restUrl) {
+          const nonce = window.fbData.nonce;
+          const url = window.fbData.restUrl + 'variable-sources?_wpnonce=' + encodeURIComponent(nonce);
+          const res = await fetch(url, {
+            credentials: 'same-origin',
+            headers: { 'X-WP-Nonce': nonce },
+          });
+          const data = await res.json();
+          if (data.success) {
+            set({
+              variableSources: {
+                pages: Array.isArray(data.pages) ? data.pages : [],
+                posts: Array.isArray(data.posts) ? data.posts : [],
+                products: Array.isArray(data.products) ? data.products : [],
+              },
+            });
+          }
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] loadVariableSources failed', e);
+      }
+    },
+
+    upsertPageVariable(variable) {
+      const normalizedVariable = normalizeVariableDefinition(variable, 'page');
+      set((state) => ({
+        pages: state.pages.map((page) => (
+          page.id !== state.currentPageId
+            ? page
+            : {
+                ...page,
+                variables: (() => {
+                  const currentVariables = normalizeVariableList(page.variables, 'page');
+                  const existingIndex = currentVariables.findIndex((entry) => entry.id === normalizedVariable.id);
+                  if (existingIndex === -1) return [...currentVariables, normalizedVariable];
+                  return currentVariables.map((entry, index) => index === existingIndex ? normalizedVariable : entry);
+                })(),
+              }
+        )),
+      }));
+    },
+
+    removePageVariable(variableId) {
+      set((state) => ({
+        pages: state.pages.map((page) => (
+          page.id !== state.currentPageId
+            ? page
+            : {
+                ...page,
+                variables: normalizeVariableList(page.variables, 'page').filter((variable) => variable.id !== variableId),
+                elements: (page.elements ?? []).map((element) => ({
+                  ...element,
+                  bindings: normalizeElementBindings(
+                    Object.fromEntries(VARIABLE_BINDING_BREAKPOINTS.map((bpId) => [bpId, Object.fromEntries(
+                      Object.entries(element.bindings?.[bpId] ?? {}).filter(([, binding]) => !(binding.scope === 'page' && binding.variableId === variableId))
+                    )]))
+                  ),
+                  interactions: normalizeElementInteractions((element.interactions ?? []).filter((interaction) => !(interaction.type === 'set-variable' && interaction.variableScope === 'page' && interaction.variableId === variableId))),
+                })),
+              }
+        )),
+      }));
+    },
+
+    upsertGlobalVariable(variable) {
+      const normalizedVariable = normalizeVariableDefinition(variable, 'global');
+      const currentVariables = normalizeVariableList(get().globalVariables, 'global');
+      const existingIndex = currentVariables.findIndex((entry) => entry.id === normalizedVariable.id);
+      const nextVariables = existingIndex === -1
+        ? [...currentVariables, normalizedVariable]
+        : currentVariables.map((entry, index) => index === existingIndex ? normalizedVariable : entry);
+      get().saveGlobalVariables(nextVariables);
+    },
+
+    removeGlobalVariable(variableId) {
+      const nextVariables = normalizeVariableList(get().globalVariables, 'global').filter((variable) => variable.id !== variableId);
+      set((state) => ({
+        pages: state.pages.map((page) => ({
+          ...page,
+          elements: (page.elements ?? []).map((element) => ({
+            ...element,
+            bindings: normalizeElementBindings(
+              Object.fromEntries(VARIABLE_BINDING_BREAKPOINTS.map((bpId) => [bpId, Object.fromEntries(
+                Object.entries(element.bindings?.[bpId] ?? {}).filter(([, binding]) => !(binding.scope === 'global' && binding.variableId === variableId))
+              )]))
+            ),
+            interactions: normalizeElementInteractions((element.interactions ?? []).filter((interaction) => !(interaction.type === 'set-variable' && interaction.variableScope === 'global' && interaction.variableId === variableId))),
+          })),
+        })),
+      }));
+      get().saveGlobalVariables(nextVariables);
+    },
+
+    setElementPropertyBinding(elementId, bpId, propertyKey, binding) {
+      withPage((els) => els.map((el) => {
+        if (el.id !== elementId) return el;
+        const nextBindings = normalizeElementBindings(el.bindings);
+        const normalizedBinding = normalizeBindingDefinition(binding);
+        if (normalizedBinding) nextBindings[bpId] = { ...(nextBindings[bpId] ?? {}), [propertyKey]: normalizedBinding };
+        else {
+          const scopedBindings = { ...(nextBindings[bpId] ?? {}) };
+          delete scopedBindings[propertyKey];
+          nextBindings[bpId] = scopedBindings;
+        }
+        return { ...el, bindings: nextBindings };
+      }));
+    },
+
+    getElementPropertyBinding(elementId, bpId, propertyKey) {
+      const element = findEl(getEls(), elementId);
+      if (!element) return null;
+      return resolveElementBinding(element.bindings, bpId, propertyKey);
+    },
+
+    setElementInteractions(elementId, interactions) {
+      withPage((els) => els.map((el) => (
+        el.id === elementId
+          ? { ...el, interactions: normalizeElementInteractions(interactions) }
+          : el
+      )));
+    },
 
     // ── Components (site-wide) ─────────────────────────────
     components: [],
@@ -1145,7 +1644,7 @@ export const useEditorStore = create((set, get) => {
         el.id === wrapperRoot?.id ? preserveComponentRootPlacement(el, rootEl) : el
       ));
       withPage(els => replaceSubtree(els, elementId, patched));
-      set({ selection: { elementId, bpId: get().selection?.bpId ?? 'desktop' }, artboardSel: null });
+      set({ selection: buildSelection([elementId], get().selection?.bpId ?? 'desktop', elementId), artboardSel: null });
 
       return { componentId };
     },
@@ -1176,7 +1675,7 @@ export const useEditorStore = create((set, get) => {
         }
         return next;
       });
-      set({ selection: { elementId: root.id, bpId } });
+      set({ selection: buildSelection([root.id], bpId, root.id) });
       return root.id;
     },
 
@@ -1231,11 +1730,13 @@ export const useEditorStore = create((set, get) => {
         return replaceSubtree(els, rootEl.id, patched);
       });
 
-      set((state) => ({
-        selection: state.selection?.elementId === elementId
-          ? { ...state.selection, elementId }
-          : state.selection,
-      }));
+      set((state) => {
+        const current = normalizeSelection(state.selection);
+        if (!current?.elementIds.includes(elementId)) return state;
+        return {
+          selection: buildSelection(current.elementIds, current.bpId, elementId),
+        };
+      });
     },
 
     setComponentEditorActiveVariant(variantId) {
@@ -1264,7 +1765,7 @@ export const useEditorStore = create((set, get) => {
       if (state.componentEditor?.isOpen && state.componentEditor.componentId === componentId) {
         set({
           activeSurface: 'page',
-          selection: state.componentEditor.uiRestore?.selection ?? null,
+          selection: normalizeSelection(state.componentEditor.uiRestore?.selection),
           artboardSel: state.componentEditor.uiRestore?.artboardSel ?? null,
           hoveredId: state.componentEditor.uiRestore?.hoveredId ?? null,
           drilledContainerId: state.componentEditor.uiRestore?.drilledContainerId ?? null,
@@ -1300,7 +1801,7 @@ export const useEditorStore = create((set, get) => {
         activeSurface: 'component',
         breakpointDefs: deepClone(componentBreakpoints),
         leftTab: 'layers',
-        selection: initialRoot ? { elementId: initialRoot.id, bpId: 'desktop' } : null,
+        selection: initialRoot ? buildSelection([initialRoot.id], 'desktop', initialRoot.id) : null,
         artboardSel: null,
         hoveredId: null,
         drilledContainerId: null,
@@ -1326,7 +1827,7 @@ export const useEditorStore = create((set, get) => {
         if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
         const root = getEditorVariantRoot(state.componentEditor.page?.elements ?? [], variantId);
         return {
-          selection: root ? { elementId: root.id, bpId: 'desktop' } : state.selection,
+          selection: root ? buildSelection([root.id], 'desktop', root.id) : normalizeSelection(state.selection),
           componentEditor: {
             ...state.componentEditor,
             activeVariantId: variantId,
@@ -1382,7 +1883,7 @@ export const useEditorStore = create((set, get) => {
         const newRoot = getEditorVariantRoot(editorCanvas.elements, newVariant.id);
         return {
           breakpointDefs: deepClone(nextBreakpoints),
-          selection: newRoot ? { elementId: newRoot.id, bpId: 'desktop' } : state.selection,
+          selection: newRoot ? buildSelection([newRoot.id], 'desktop', newRoot.id) : normalizeSelection(state.selection),
           componentEditor: {
             ...state.componentEditor,
             activeVariantId: newVariant.id,
@@ -1415,7 +1916,7 @@ export const useEditorStore = create((set, get) => {
         if (existingState) {
           const existingRoot = getEditorVariantRoot(state.componentEditor.page?.elements ?? [], existingState.id);
           return {
-            selection: existingRoot ? { elementId: existingRoot.id, bpId: 'desktop' } : state.selection,
+            selection: existingRoot ? buildSelection([existingRoot.id], 'desktop', existingRoot.id) : normalizeSelection(state.selection),
             componentEditor: {
               ...state.componentEditor,
               activeVariantId: existingState.id,
@@ -1436,7 +1937,7 @@ export const useEditorStore = create((set, get) => {
 
         return {
           breakpointDefs: deepClone(nextBreakpoints),
-          selection: nextRoot ? { elementId: nextRoot.id, bpId: 'desktop' } : state.selection,
+          selection: nextRoot ? buildSelection([nextRoot.id], 'desktop', nextRoot.id) : normalizeSelection(state.selection),
           componentEditor: {
             ...state.componentEditor,
             activeVariantId: nextStateVariant.id,
@@ -1469,7 +1970,7 @@ export const useEditorStore = create((set, get) => {
       ));
       set({
         activeSurface: 'page',
-        selection: current.uiRestore?.selection ?? null,
+        selection: normalizeSelection(current.uiRestore?.selection),
         artboardSel: current.uiRestore?.artboardSel ?? null,
         hoveredId: current.uiRestore?.hoveredId ?? null,
         drilledContainerId: current.uiRestore?.drilledContainerId ?? null,
@@ -1527,8 +2028,63 @@ export const useEditorStore = create((set, get) => {
     // ── UI state ───────────────────────────────────────────
     leftTab: 'layers',
     setLeftTab: (tab) => set({ leftTab: tab }),
-    selection: null,   // { elementId, bpId }
-    setSelection: (sel) => set({ selection: sel }),
+    selection: null,   // { elementId, elementIds, bpId }
+    setSelection: (sel) => set({ selection: normalizeSelection(sel) }),
+    clearSelection: () => set({ selection: null }),
+    selectOnly(sel) {
+      set({ selection: normalizeSelection(sel) });
+    },
+    addToSelection(sel) {
+      set((state) => {
+        const nextSelection = normalizeSelection(sel);
+        if (!nextSelection) return state;
+        const current = normalizeSelection(state.selection);
+        if (!current || current.bpId !== nextSelection.bpId) {
+          return { selection: nextSelection };
+        }
+        if (current.elementIds.includes(nextSelection.elementId)) {
+          return { selection: buildSelection(current.elementIds, current.bpId, nextSelection.elementId) };
+        }
+        return {
+          selection: buildSelection(
+            [...current.elementIds, nextSelection.elementId],
+            current.bpId,
+            nextSelection.elementId,
+          ),
+        };
+      });
+    },
+    toggleSelection(sel) {
+      set((state) => {
+        const nextSelection = normalizeSelection(sel);
+        if (!nextSelection) return { selection: null };
+        const current = normalizeSelection(state.selection);
+        if (!current || current.bpId !== nextSelection.bpId) {
+          return { selection: nextSelection };
+        }
+        if (!current.elementIds.includes(nextSelection.elementId)) {
+          return {
+            selection: buildSelection(
+              [...current.elementIds, nextSelection.elementId],
+              current.bpId,
+              nextSelection.elementId,
+            ),
+          };
+        }
+        return {
+          selection: removeSelectionIds(current, [nextSelection.elementId]),
+        };
+      });
+    },
+    setPrimarySelection(elementId) {
+      set((state) => {
+        const current = normalizeSelection(state.selection);
+        if (!current?.elementIds.includes(elementId)) return state;
+        return {
+          selection: buildSelection(current.elementIds, current.bpId, elementId),
+        };
+      });
+    },
     hoveredId: null,   // elementId hovered in layers panel
     setHoveredId: (id) => set({ hoveredId: id }),
     drilledContainerId: null, // element whose direct children are single-click selectable (null = artboard root)
@@ -1552,7 +2108,13 @@ export const useEditorStore = create((set, get) => {
     getSelectedElement() {
       const { selection } = get();
       if (!selection) return null;
-      return findEl(getEls(), selection.elementId) ?? null;
+      return findEl(getEls(), normalizeSelection(selection)?.elementId) ?? null;
+    },
+    getSelectedElements() {
+      const selectionIds = getSelectionElementIds(get().selection);
+      if (!selectionIds.length) return [];
+      const elements = getEls();
+      return selectionIds.map((id) => findEl(elements, id)).filter(Boolean);
     },
 
     // ── Element mutations ──────────────────────────────────
@@ -1581,7 +2143,7 @@ export const useEditorStore = create((set, get) => {
         }
         return next;
       });
-      set({ selection: { elementId: el.id, bpId: bpId ?? 'desktop' } });
+      set({ selection: buildSelection([el.id], bpId ?? 'desktop', el.id) });
     },
 
     /** Update base (desktop) non-style props: name, locked, etc. */
@@ -1591,11 +2153,40 @@ export const useEditorStore = create((set, get) => {
       );
     },
 
+    updateElementsBase(elementIds, updates) {
+      const targetIds = new Set((elementIds ?? []).filter(Boolean));
+      if (!targetIds.size) return;
+      withPage((els) => els.map((el) => (
+        targetIds.has(el.id)
+          ? { ...el, base: { ...el.base, ...updates } }
+          : el
+      )));
+    },
+
     /** Update style props for a breakpoint.
      *  Desktop → base.styles. Tablet/Mobile → overrides[bpId].styles */
     updateElementStyles(elementId, bpId, styleUpdates) {
       withPage(els => els.map(el => {
         if (el.id !== elementId) return el;
+        if (bpId === 'desktop') {
+          return { ...el, base: { ...el.base, styles: { ...el.base.styles, ...styleUpdates } } };
+        }
+        const ov = el.overrides?.[bpId] ?? {};
+        return {
+          ...el,
+          overrides: {
+            ...el.overrides,
+            [bpId]: { ...ov, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
+          },
+        };
+      }));
+    },
+
+    updateElementsStyles(elementIds, bpId, styleUpdates) {
+      const targetIds = new Set((elementIds ?? []).filter(Boolean));
+      if (!targetIds.size) return;
+      withPage((els) => els.map((el) => {
+        if (!targetIds.has(el.id)) return el;
         if (bpId === 'desktop') {
           return { ...el, base: { ...el.base, styles: { ...el.base.styles, ...styleUpdates } } };
         }
@@ -1633,6 +2224,25 @@ export const useEditorStore = create((set, get) => {
       }
     },
 
+    updateElementsLayout(elementIds, bpId, updates) {
+      const targetIds = new Set((elementIds ?? []).filter(Boolean));
+      const safeUpdates = sanitizeLayoutUpdates(updates);
+      if (!targetIds.size || !safeUpdates || !Object.keys(safeUpdates).length) return;
+      withPage((els) => els.map((el) => {
+        if (!targetIds.has(el.id)) return el;
+        if (bpId === 'desktop') return { ...el, base: { ...el.base, ...safeUpdates } };
+        const ov = el.overrides?.[bpId] ?? {};
+        return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } };
+      }));
+
+      if (safeUpdates?.hidden === true) {
+        const currentDrilled = get().drilledContainerId;
+        if (currentDrilled && targetIds.has(currentDrilled)) {
+          set({ drilledContainerId: null });
+        }
+      }
+    },
+
     /** Remove a per-breakpoint override key, reverting to desktop value */
     removeOverride(elementId, bpId, key) {
       if (bpId === 'desktop') return;
@@ -1658,6 +2268,10 @@ export const useEditorStore = create((set, get) => {
 
     /** Delete element and all its descendants */
     deleteElement(elementId) {
+      get().deleteElements([elementId]);
+    },
+
+    deleteElements(elementIds) {
       const els = getEls();
       const toDelete = new Set();
       const collect = (id) => {
@@ -1665,13 +2279,14 @@ export const useEditorStore = create((set, get) => {
         const el = findEl(els, id);
         (el?.children ?? []).forEach(collect);
       };
-      collect(elementId);
+      (elementIds ?? []).forEach(collect);
+      if (!toDelete.size) return;
       withPage(currEls => currEls
         .filter(e => !toDelete.has(e.id))
         .map(e => ({ ...e, children: (e.children ?? []).filter(c => !toDelete.has(c)) }))
       );
       set(state => ({
-        selection: toDelete.has(state.selection?.elementId) ? null : state.selection,
+        selection: removeSelectionIds(state.selection, toDelete),
       }));
     },
 
@@ -1974,7 +2589,7 @@ export const useEditorStore = create((set, get) => {
             set(state => ({
               pages: state.pages.map(p =>
                 p.id === state.currentPageId
-                  ? { ...cleanLayout, id: state.currentPageId }
+                  ? normalizePageData({ ...cleanLayout, id: state.currentPageId })
                   : p
               ),
               ...(_breakpointDefs ? { breakpointDefs: _breakpointDefs } : {}),
@@ -1986,7 +2601,7 @@ export const useEditorStore = create((set, get) => {
             const { _breakpointDefs, ...cleanLayout } = JSON.parse(stored);
             set(state => ({
               pages: state.pages.map(p =>
-                p.id === state.currentPageId ? { ...cleanLayout, id: state.currentPageId } : p
+                p.id === state.currentPageId ? normalizePageData({ ...cleanLayout, id: state.currentPageId }) : p
               ),
               ...(_breakpointDefs ? { breakpointDefs: _breakpointDefs } : {}),
             }));

@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useState } from 'react';
-import { useEditorStore, createFrame, createImage, createText, resolveElement, resolvePagePadding, resolvePageLayout } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage, createText, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected } from '../store/editorStore';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
 
@@ -72,13 +72,14 @@ function getInsertBeforeIdFromDom(parentDom, siblingIds, clientX, clientY, axis 
 }
 
 function getNodeWorldRect(node, boardDom, bp, scale) {
-  if (!node || !boardDom || !bp || !scale) return null;
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  if (!node || !boardDom || !bp) return null;
   const rect = node.getBoundingClientRect();
   const boardRect = boardDom.getBoundingClientRect();
-  const left = bp.x + (rect.left - boardRect.left) / scale;
-  const top = bp.y + (rect.top - boardRect.top) / scale;
-  const width = rect.width / scale;
-  const height = rect.height / scale;
+  const left = bp.x + (rect.left - boardRect.left) / safeScale;
+  const top = bp.y + (rect.top - boardRect.top) / safeScale;
+  const width = rect.width / safeScale;
+  const height = rect.height / safeScale;
   return {
     left,
     top,
@@ -427,6 +428,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const setSelection           = useEditorStore(s => s.setSelection);
   const viewport               = useEditorStore(s => s.viewport);
   const [measuredRect, setMeasuredRect] = useState(null);
+  const selectionIds = getSelectionElementIds(selection);
 
   const selectedElementId = selection?.elementId ?? null;
   const selectedBpId = selection?.bpId ?? null;
@@ -471,8 +473,45 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
 
   const bp = bpDefs[selection.bpId];
   if (!bp) return null;
-  const scale = viewport.scale ?? 1;
+  const scale = Math.max(MIN_SCALE, Number.isFinite(viewport.scale) ? viewport.scale : 1);
   const boardDom = document.querySelector(`.fb-artboard[data-bp="${bp.id}"]`);
+  if (selectionIds.length > 1 && boardDom) {
+    const boardRect = boardDom.getBoundingClientRect();
+    const rects = selectionIds
+      .map((id) => boardDom.querySelector(`[data-id="${id}"]`)?.getBoundingClientRect() ?? null)
+      .filter(Boolean);
+    if (!rects.length) return null;
+    const union = rects.reduce((acc, rect) => ({
+      left: Math.min(acc.left, rect.left),
+      top: Math.min(acc.top, rect.top),
+      right: Math.max(acc.right, rect.right),
+      bottom: Math.max(acc.bottom, rect.bottom),
+    }), {
+      left: rects[0].left,
+      top: rects[0].top,
+      right: rects[0].right,
+      bottom: rects[0].bottom,
+    });
+    const left = bp.x + (union.left - boardRect.left) / scale;
+    const top = bp.y + (union.top - boardRect.top) / scale;
+    const width = (union.right - union.left) / scale;
+    const height = (union.bottom - union.top) / scale;
+    return (
+      <div
+        className="fb-sel-overlay fb-sel-overlay--group"
+        style={{
+          left,
+          top,
+          width,
+          height,
+          pointerEvents: 'none',
+          borderColor: activeSurface === 'component' ? 'var(--component-accent)' : 'var(--accent-light)',
+          boxShadow: 'none',
+          background: 'transparent',
+        }}
+      />
+    );
+  }
   const metrics = getElementWorldMetrics({ el, bpId: selection.bpId, bp, page, boardDom, scale });
   const resolved = metrics?.resolved ?? resolveElement(el, selection.bpId);
   if (resolved.hidden) return null;
@@ -1494,10 +1533,10 @@ export default function InfiniteCanvas() {
       if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditableTarget) {
         const { selection } = useEditorStore.getState();
         if (!selection) return;
-        const selectedEl = useEditorStore.getState().getAllElements().find((el) => el.id === selection.elementId);
-        if (!selectedEl || selectedEl.locked) return;
+        const allSelected = useEditorStore.getState().getSelectedElements().filter((el) => !el.locked);
+        if (!allSelected.length) return;
         e.preventDefault();
-        deleteElement(selection.elementId);
+        useEditorStore.getState().deleteElements(allSelected.map((el) => el.id));
         pushHistory();
         return;
       }
@@ -1506,16 +1545,18 @@ export default function InfiniteCanvas() {
         const { selection } = useEditorStore.getState();
         if (!selection) return;
         e.preventDefault();
-        const nudgeEl = useEditorStore.getState().getAllElements().find(el => el.id === selection.elementId);
-        if (!nudgeEl || nudgeEl.locked) return;
-        const nudgeRes = resolveElement(nudgeEl, selection.bpId);
-        if (nudgeRes.positionType === 'relative') return;
+        const selectedElements = useEditorStore.getState().getSelectedElements().filter((el) => !el.locked);
+        if (!selectedElements.length) return;
         const step = e.shiftKey ? 10 : 1;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp'   ? -step : e.key === 'ArrowDown'  ? step : 0;
-        useEditorStore.getState().updateElementLayout(selection.elementId, selection.bpId, {
-          x: (nudgeRes.x ?? 0) + dx,
-          y: (nudgeRes.y ?? 0) + dy,
+        selectedElements.forEach((nudgeEl) => {
+          const nudgeRes = resolveElement(nudgeEl, selection.bpId);
+          if (nudgeRes.positionType === 'relative') return;
+          useEditorStore.getState().updateElementLayout(nudgeEl.id, selection.bpId, {
+            x: (nudgeRes.x ?? 0) + dx,
+            y: (nudgeRes.y ?? 0) + dy,
+          });
         });
         useEditorStore.getState().pushHistory();
       }
@@ -1646,7 +1687,7 @@ export default function InfiniteCanvas() {
     const localX = bp ? Math.max(0, Math.round(worldX - bp.x - (pad?.left ?? 0))) : 80;
     const localY = bp ? Math.max(0, Math.round(worldY - bp.y - (pad?.top ?? 0))) : 80;
 
-    if (elementId) {
+    if (elementId && !isElementSelected(useEditorStore.getState().selection, elementId, bpId)) {
       setSelection({ elementId, bpId });
       setArtboardSel(null);
     }
@@ -1765,6 +1806,16 @@ export default function InfiniteCanvas() {
       setReorderGhost(preview.hint === 'Auto' ? preview.ghost : null);
       setAlignmentGuides(preview.alignmentGuides ?? []);
       setDragHint({ label: preview.hint, clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'multi-element-drag') {
+      const hasMoved = Math.abs(e.clientX - drag.current.startMX) > 4 ||
+        Math.abs(e.clientY - drag.current.startMY) > 4;
+      if (hasMoved) drag.current.hasMoved = true;
+      drag.current.items.forEach((item) => {
+        useEditorStore.getState().updateElementLayout(item.id, bpId, {
+          x: item.startX + dxWorld,
+          y: item.startY + dyWorld,
+        });
+      });
     } else if (type === 'artboard-move') {
       useEditorStore.getState().updateBreakpointDef(bpId, {
         x: drag.current.startBpX + dxWorld,
@@ -1941,6 +1992,9 @@ export default function InfiniteCanvas() {
         setInteracting(false);
         return;
       }
+      if (drag.current.type === 'multi-element-drag') {
+        shouldPushHistory = !!drag.current.hasMoved;
+      }
       if (drag.current.type === 'element-drag') {
         const session = drag.current;
         shouldPushHistory = !!session.hasMoved;
@@ -2051,6 +2105,12 @@ export default function InfiniteCanvas() {
         setTextSizeDragInfo(null);
       }
       if (drag.current.type === 'element-drag') {
+        setDragHint(null);
+        setReorderGhost(null);
+        setDragOverlay(null);
+        setAlignmentGuides([]);
+      }
+      if (drag.current.type === 'multi-element-drag') {
         setDragHint(null);
         setReorderGhost(null);
         setDragOverlay(null);
@@ -2292,7 +2352,9 @@ export default function InfiniteCanvas() {
     const { getAllElements } = useEditorStore.getState();
     const clickedEl = getAllElements().find(ee => ee.id === element.id) ?? element;
     const activeSelection = useEditorStore.getState().selection;
-    const dragElementId = activeSelection?.elementId === clickedEl.id ? activeSelection.elementId : clickedEl.id;
+    const selectedIds = activeSelection?.bpId === bpId ? getSelectionElementIds(activeSelection) : [];
+    const dragSelectionIds = selectedIds.includes(clickedEl.id) ? selectedIds : [clickedEl.id];
+    const dragElementId = dragSelectionIds[0] ?? clickedEl.id;
     const el = getAllElements().find(ee => ee.id === dragElementId) ?? clickedEl;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
     const page0 = useEditorStore.getState().getCurrentPage();
@@ -2306,8 +2368,40 @@ export default function InfiniteCanvas() {
       scale: useEditorStore.getState().viewport.scale,
     });
     const pointerWorld = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
-    if (dragElementId !== activeSelection?.elementId || activeSelection?.bpId !== bpId) {
+    if (!isElementSelected(activeSelection, clickedEl.id, bpId)) {
       setSelection({ elementId: dragElementId, bpId });
+    }
+
+    if (dragSelectionIds.length > 1) {
+      const groupItems = dragSelectionIds
+        .map((id) => getAllElements().find((candidate) => candidate.id === id))
+        .filter(Boolean)
+        .map((item) => {
+          const itemResolved = resolveElement(item, bpId);
+          const groupIsFlow = ((itemResolved.positionType ?? 'absolute') === 'relative')
+            || (!item.parentId && page0?.layout?.[bpId] != null && !itemResolved.absoluteInLayout && itemResolved.positionType !== 'fixed');
+          return {
+            id: item.id,
+            locked: !!item.locked,
+            hasRotation: Math.abs(parseFloat(itemResolved.rotation) || 0) > 0.01,
+            isFlow: groupIsFlow,
+            startX: itemResolved.x ?? item.base?.x ?? 0,
+            startY: itemResolved.y ?? item.base?.y ?? 0,
+          };
+        });
+      const canGroupDrag = groupItems.length > 1 && groupItems.every((item) => !item.locked && !item.hasRotation && !item.isFlow);
+      if (canGroupDrag) {
+        drag.current = {
+          type: 'multi-element-drag',
+          bpId,
+          elementIds: dragSelectionIds,
+          startMX: e.clientX,
+          startMY: e.clientY,
+          items: groupItems,
+        };
+        setInteracting(true);
+        return;
+      }
     }
     const domEl = document.querySelector(`.fb-artboard[data-bp="${bpId}"] [data-id="${dragElementId}"]`) ?? e.currentTarget;
     const computedPosition = domEl ? window.getComputedStyle(domEl).position : null;

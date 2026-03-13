@@ -34,6 +34,10 @@ class FrameBuilder_Exporter {
 	private array  $page_layout = [];
 	/** @var array<string,array> Component library indexed by component ID */
 	private array $component_library = [];
+	/** @var array<int,array> Page-scoped variable definitions */
+	private array $page_variables = [];
+	/** @var array<int,array> Global variable definitions */
+	private array $global_variables = [];
 
 	/** @var array<string,float|null> Per-breakpoint viewport fold height (null = auto-compute) */
 	private array $viewport_fold_h = [ 'desktop' => null, 'tablet' => null, 'mobile' => null ];
@@ -42,6 +46,11 @@ class FrameBuilder_Exporter {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
 		$this->component_library = $this->load_component_library();
+		$this->page_variables = $this->normalize_variable_list( $layout['variables'] ?? [], 'page' );
+		$this->global_variables = $this->normalize_variable_list(
+			json_decode( get_option( '_fb_global_variables', '[]' ), true ),
+			'global'
+		);
 
 		// Override default bp_cfg with saved artboard dimensions if present
 		$defs = $layout['_breakpointDefs'] ?? null;
@@ -218,7 +227,7 @@ class FrameBuilder_Exporter {
 	 * @param float $ch  Design height of the containing context in px.
 	 */
 	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): string {
-		$resolved = $this->resolve( $el, $bpId );
+		$resolved = $this->resolve_element_with_variables( $el, $bpId );
 		if ( ! empty( $resolved['hidden'] ) ) return '';
 
 		$id     = preg_replace( '/[^a-zA-Z0-9_-]/', '', $el['id'] ?? '' );
@@ -348,14 +357,23 @@ class FrameBuilder_Exporter {
 
 		$component_instance = is_array( $el['componentInstance'] ?? null ) ? $el['componentInstance'] : null;
 		$component_id = sanitize_text_field( $component_instance['componentId'] ?? '' );
+		$bindings_json = ! empty( $el['bindings'] ) ? esc_attr( wp_json_encode( $this->normalize_bindings( $el['bindings'] ) ) ) : '';
+		$interactions_json = ! empty( $el['interactions'] ) ? esc_attr( wp_json_encode( $el['interactions'] ) ) : '';
+		$runtime_attrs = '';
+		if ( $bindings_json !== '' ) {
+			$runtime_attrs .= ' data-fb-bindings="' . $bindings_json . '"';
+		}
+		if ( $interactions_json !== '' ) {
+			$runtime_attrs .= ' data-fb-interactions="' . $interactions_json . '"';
+		}
 		if ( $component_id && $this->get_component_definition( $component_id ) ) {
-			$html = '<div class="' . esc_attr( $class . ' fb-component-instance' ) . '" style="' . esc_attr( $layout_inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '" data-fb-component-id="' . esc_attr( $component_id ) . '" data-fb-active-variant="' . esc_attr( sanitize_text_field( $component_instance['variantId'] ?? '' ) ) . '">';
+			$html = '<div class="' . esc_attr( $class . ' fb-component-instance' ) . '" style="' . esc_attr( $layout_inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '" data-fb-component-id="' . esc_attr( $component_id ) . '" data-fb-active-variant="' . esc_attr( sanitize_text_field( $component_instance['variantId'] ?? '' ) ) . '"' . $runtime_attrs . '>';
 			$html .= $this->render_component_instance_variants( $el, $resolved, $bpId );
 			$html .= '</div>';
 			return $html;
 		}
 		// Emit the div with all accumulated inline styles
-		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '">';
+		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '"' . $runtime_attrs . '>';
 
 		// Image element: render <img> tag filling the div (added after div opening)
 		if ( ( $el['type'] ?? '' ) === 'image' ) {
@@ -421,7 +439,7 @@ class FrameBuilder_Exporter {
 	 * @param float $ch  Design height of containing context in px.
 	 */
 	private function collect_element_css( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): void {
-		$resolved = $this->resolve( $el, $bpId );
+		$resolved = $this->resolve_element_with_variables( $el, $bpId );
 		if ( ! empty( $resolved['hidden'] ) ) return;
 
 		$id       = preg_replace( '/[^a-zA-Z0-9_-]/', '', $el['id'] ?? '' );
@@ -651,6 +669,160 @@ class FrameBuilder_Exporter {
 	}
 
 	// ── Helpers ───────────────────────────────────────────────
+
+	private function normalize_variable_value( string $type, $value ) {
+		switch ( $type ) {
+			case 'boolean':
+				return (bool) $value;
+			case 'color':
+				return is_string( $value ) && $value !== '' ? $value : '#000000';
+			case 'image':
+				return is_string( $value ) ? $value : (string) ( $value ?? '' );
+			case 'number':
+				return is_numeric( $value ) ? (float) $value : 0;
+			case 'post':
+			case 'product':
+				if ( ! is_array( $value ) ) return null;
+				return [
+					'id'       => isset( $value['id'] ) ? (int) $value['id'] : 0,
+					'title'    => isset( $value['title'] ) ? sanitize_text_field( $value['title'] ) : '',
+					'url'      => isset( $value['url'] ) ? esc_url_raw( $value['url'] ) : '',
+					'postType' => isset( $value['postType'] ) ? sanitize_key( $value['postType'] ) : ( $type === 'product' ? 'product' : 'post' ),
+				];
+			case 'string':
+			default:
+				return is_string( $value ) ? $value : (string) ( $value ?? '' );
+		}
+	}
+
+	private function normalize_variable_list( $variables, string $scope ): array {
+		if ( ! is_array( $variables ) ) return [];
+
+		$normalized = [];
+		foreach ( $variables as $variable ) {
+			if ( ! is_array( $variable ) ) continue;
+			$id = isset( $variable['id'] ) ? sanitize_text_field( (string) $variable['id'] ) : '';
+			if ( $id === '' ) continue;
+			$type = isset( $variable['type'] ) ? sanitize_key( (string) $variable['type'] ) : 'string';
+			$normalized[] = [
+				'id'         => $id,
+				'scope'      => $scope,
+				'type'       => $type,
+				'name'       => isset( $variable['name'] ) ? sanitize_text_field( $variable['name'] ) : 'Variable',
+				'category'   => isset( $variable['category'] ) ? sanitize_text_field( $variable['category'] ) : 'General',
+				'persistent' => ! empty( $variable['persistent'] ),
+				'value'      => $this->normalize_variable_value( $type, $variable['value'] ?? null ),
+			];
+		}
+
+		return $normalized;
+	}
+
+	private function get_variable_map(): array {
+		$page_map = [];
+		foreach ( $this->page_variables as $variable ) {
+			$page_map[ $variable['id'] ] = $variable;
+		}
+		$global_map = [];
+		foreach ( $this->global_variables as $variable ) {
+			$global_map[ $variable['id'] ] = $variable;
+		}
+
+		return [
+			'page'   => $page_map,
+			'global' => $global_map,
+		];
+	}
+
+	private function normalize_bindings( $bindings ): array {
+		$normalized = [ 'desktop' => [], 'tablet' => [], 'mobile' => [] ];
+		if ( ! is_array( $bindings ) ) return $normalized;
+
+		foreach ( [ 'desktop', 'tablet', 'mobile' ] as $bp_id ) {
+			$bp_bindings = $bindings[ $bp_id ] ?? null;
+			if ( ! is_array( $bp_bindings ) ) continue;
+			foreach ( $bp_bindings as $property_key => $binding ) {
+				if ( ! is_array( $binding ) ) continue;
+				$scope = isset( $binding['scope'] ) ? sanitize_key( (string) $binding['scope'] ) : 'page';
+				$variable_id = isset( $binding['variableId'] ) ? sanitize_text_field( (string) $binding['variableId'] ) : '';
+				if ( $variable_id === '' ) continue;
+				$normalized[ $bp_id ][ $property_key ] = [
+					'scope'      => $scope === 'global' ? 'global' : 'page',
+					'variableId' => $variable_id,
+				];
+			}
+		}
+
+		return $normalized;
+	}
+
+	private function resolve_binding( array $bindings, string $bp_id, string $property_key ): ?array {
+		if ( $bp_id === 'mobile' ) {
+			return $bindings['mobile'][ $property_key ] ?? $bindings['tablet'][ $property_key ] ?? $bindings['desktop'][ $property_key ] ?? null;
+		}
+		if ( $bp_id === 'tablet' ) {
+			return $bindings['tablet'][ $property_key ] ?? $bindings['desktop'][ $property_key ] ?? null;
+		}
+		return $bindings['desktop'][ $property_key ] ?? null;
+	}
+
+	private function apply_variable_binding_value( array $resolved, string $property_key, array $variable ): array {
+		$next = $resolved;
+		$next['styles'] = is_array( $resolved['styles'] ?? null ) ? $resolved['styles'] : [];
+		$value = $variable['value'] ?? null;
+
+		switch ( $property_key ) {
+			case 'text':
+				$next['text'] = $value === null ? '' : (string) $value;
+				break;
+			case 'hidden':
+				$next['hidden'] = empty( $value );
+				break;
+			case 'styles.backgroundImage':
+				$next['styles']['backgroundImage'] = is_string( $value ) ? $value : (string) ( $value ?? '' );
+				break;
+			case 'styles.backgroundColor':
+				$next['styles']['backgroundColor'] = is_string( $value ) ? $value : '#000000';
+				break;
+			case 'styles.color':
+				$next['styles']['color'] = is_string( $value ) ? $value : '#000000';
+				break;
+			case 'styles.zIndex':
+				$next['styles']['zIndex'] = is_numeric( $value ) ? (float) $value : 0;
+				break;
+			case 'styles.fontFamily':
+				$next['styles']['fontFamily'] = is_string( $value ) ? $value : (string) ( $value ?? '' );
+				break;
+			case 'src':
+				$next['src'] = is_string( $value ) ? $value : (string) ( $value ?? '' );
+				break;
+		}
+
+		return $next;
+	}
+
+	private function resolve_element_with_variables( array $el, string $bp_id ): array {
+		$resolved = $this->resolve( $el, $bp_id );
+		$bindings = $this->normalize_bindings( $el['bindings'] ?? [] );
+		$variable_map = $this->get_variable_map();
+		$property_keys = array_values( array_unique( array_merge(
+			array_keys( $bindings['desktop'] ?? [] ),
+			array_keys( $bindings['tablet'] ?? [] ),
+			array_keys( $bindings['mobile'] ?? [] )
+		) ) );
+
+		foreach ( $property_keys as $property_key ) {
+			$binding = $this->resolve_binding( $bindings, $bp_id, $property_key );
+			if ( ! $binding ) continue;
+			$scope = $binding['scope'] ?? 'page';
+			$variable_id = $binding['variableId'] ?? '';
+			$variable = $variable_map[ $scope ][ $variable_id ] ?? null;
+			if ( ! is_array( $variable ) ) continue;
+			$resolved = $this->apply_variable_binding_value( $resolved, $property_key, $variable );
+		}
+
+		return $resolved;
+	}
 
 	/**
 	 * Merge base + per-breakpoint overrides into a flat resolved array.
@@ -1014,20 +1186,253 @@ class FrameBuilder_Exporter {
 
 	private function get_component_runtime_assets(): string {
 		$bid = esc_attr( $this->build_id );
+		$page_variables_json = wp_json_encode( $this->page_variables );
+		$global_variables_json = wp_json_encode( $this->global_variables );
 		$css = ".{$bid} .fb-component-instance{position:relative;overflow:hidden;}"
 			. ".{$bid} .fb-component-variant{position:absolute;inset:0;visibility:hidden;opacity:0;pointer-events:none;}"
 			. ".{$bid} .fb-component-variant.is-active,.{$bid} .fb-component-variant.is-present{visibility:visible;}"
 			. ".{$bid} .fb-component-variant.is-active{opacity:1;pointer-events:auto;}"
 			. ".{$bid} .fb-component-variant > .fb-el{pointer-events:auto;}";
 
-		$script = <<<SCRIPT
+		$script = <<<'SCRIPT'
 <script>
 (function(){
 	var gsap = window.gsap || null;
 	var Flip = window.Flip || (gsap && gsap.plugins ? gsap.plugins.Flip : null) || null;
 	if (gsap && Flip && gsap.registerPlugin) gsap.registerPlugin(Flip);
-	var scope = document.querySelector('.fb-page.{$bid}');
+	var scope = document.querySelector('.fb-page.__FB_BUILD_ID__');
 	if (!scope) return;
+	var embeddedPageVariables = __FB_PAGE_VARIABLES__ || [];
+	var embeddedGlobalVariables = __FB_GLOBAL_VARIABLES__ || [];
+	var runtimeData = window.fbRuntimeData || {};
+	var pageContextId = String(runtimeData.postId || '__FB_BUILD_ID__');
+	var cloneValue = function(value) {
+		return value == null ? value : JSON.parse(JSON.stringify(value));
+	};
+	var parseJsonAttr = function(value, fallback) {
+		if (!value) return fallback;
+		try {
+			return JSON.parse(value);
+		} catch (error) {
+			return fallback;
+		}
+	};
+	var getCurrentBreakpoint = function() {
+		var width = window.innerWidth || document.documentElement.clientWidth || 1024;
+		if (width <= 375) return 'mobile';
+		if (width <= 768) return 'tablet';
+		return 'desktop';
+	};
+	var normalizeVariableValue = function(type, value) {
+		if (type === 'boolean') return !!value;
+		if (type === 'color') return typeof value === 'string' && value ? value : '#000000';
+		if (type === 'image') return typeof value === 'string' ? value : String(value == null ? '' : value);
+		if (type === 'number') {
+			var parsed = typeof value === 'number' ? value : parseFloat(value);
+			return Number.isFinite(parsed) ? parsed : 0;
+		}
+		if (type === 'post' || type === 'product') {
+			if (!value || typeof value !== 'object') return null;
+			return {
+				id: typeof value.id === 'number' ? value.id : parseInt(value.id, 10) || 0,
+				title: typeof value.title === 'string' ? value.title : '',
+				url: typeof value.url === 'string' ? value.url : '',
+				postType: typeof value.postType === 'string' ? value.postType : (type === 'product' ? 'product' : 'post')
+			};
+		}
+		return typeof value === 'string' ? value : String(value == null ? '' : value);
+	};
+	var normalizeVariables = function(list, fallbackScope) {
+		if (!Array.isArray(list)) return [];
+		return list.map(function(variable) {
+			if (!variable || typeof variable !== 'object' || !variable.id) return null;
+			var type = typeof variable.type === 'string' ? variable.type : 'string';
+			var defaultValue = normalizeVariableValue(type, variable.value);
+			return {
+				id: String(variable.id),
+				scope: variable.scope === 'global' ? 'global' : fallbackScope,
+				type: type,
+				name: typeof variable.name === 'string' ? variable.name : 'Variable',
+				category: typeof variable.category === 'string' ? variable.category : 'General',
+				persistent: !!variable.persistent,
+				defaultValue: defaultValue,
+				value: defaultValue
+			};
+		}).filter(Boolean);
+	};
+	var pageVariables = normalizeVariables(embeddedPageVariables, 'page');
+	var globalVariables = normalizeVariables(
+		Array.isArray(runtimeData.globalVariables) && runtimeData.globalVariables.length ? runtimeData.globalVariables : embeddedGlobalVariables,
+		'global'
+	);
+	var variableState = {
+		page: new Map(pageVariables.map(function(variable) { return [variable.id, variable]; })),
+		global: new Map(globalVariables.map(function(variable) { return [variable.id, variable]; }))
+	};
+	var getStorageKey = function(scopeName) {
+		return scopeName === 'global' ? 'fb:variables:global' : 'fb:variables:page:' + pageContextId;
+	};
+	var restorePersistentVariables = function(scopeName) {
+		var map = variableState[scopeName];
+		if (!map || !window.localStorage) return;
+		try {
+			var raw = window.localStorage.getItem(getStorageKey(scopeName));
+			if (!raw) return;
+			var saved = JSON.parse(raw);
+			if (!saved || typeof saved !== 'object') return;
+			map.forEach(function(variable, variableId) {
+				if (!variable.persistent || !Object.prototype.hasOwnProperty.call(saved, variableId)) return;
+				variable.value = normalizeVariableValue(variable.type, saved[variableId]);
+			});
+		} catch (error) {
+			return;
+		}
+	};
+	var persistVariables = function(scopeName) {
+		var map = variableState[scopeName];
+		if (!map || !window.localStorage) return;
+		var payload = {};
+		map.forEach(function(variable, variableId) {
+			if (!variable.persistent) return;
+			payload[variableId] = variable.value;
+		});
+		try {
+			window.localStorage.setItem(getStorageKey(scopeName), JSON.stringify(payload));
+		} catch (error) {
+			return;
+		}
+	};
+	var getVariable = function(scopeName, variableId) {
+		var map = variableState[scopeName === 'global' ? 'global' : 'page'];
+		return map ? (map.get(variableId) || null) : null;
+	};
+	var setVariableValue = function(scopeName, variableId, nextValue) {
+		var variable = getVariable(scopeName, variableId);
+		if (!variable) return;
+		variable.value = normalizeVariableValue(variable.type, nextValue);
+		persistVariables(variable.scope || scopeName);
+	};
+	var bindingToText = function(value) {
+		if (value && typeof value === 'object') {
+			if (typeof value.title === 'string' && value.title) return value.title;
+			if (typeof value.url === 'string' && value.url) return value.url;
+		}
+		return value == null ? '' : String(value);
+	};
+	var resolveBindingForBreakpoint = function(bindings, bpId, propertyKey) {
+		if (!bindings || typeof bindings !== 'object') return null;
+		var desktop = bindings.desktop || {};
+		var tablet = bindings.tablet || {};
+		var mobile = bindings.mobile || {};
+		if (bpId === 'mobile') return mobile[propertyKey] || tablet[propertyKey] || desktop[propertyKey] || null;
+		if (bpId === 'tablet') return tablet[propertyKey] || desktop[propertyKey] || null;
+		return desktop[propertyKey] || null;
+	};
+	var applyBindingToNode = function(node, propertyKey, variable) {
+		if (!node || !variable) return;
+		var value = variable.value;
+		var textNode = node.querySelector('.fb-text-content');
+		if (propertyKey === 'text') {
+			if (textNode) textNode.textContent = bindingToText(value);
+			return;
+		}
+		if (propertyKey === 'hidden') {
+			node.style.display = value ? '' : 'none';
+			return;
+		}
+		if (propertyKey === 'styles.backgroundImage') {
+			node.style.backgroundImage = value ? 'url(' + String(value).replace(/\)/g, '\\)') + ')' : '';
+			return;
+		}
+		if (propertyKey === 'src') {
+			var imageNode = node.tagName === 'IMG' ? node : node.querySelector('img');
+			if (imageNode) imageNode.setAttribute('src', value ? String(value) : '');
+			return;
+		}
+		if (propertyKey === 'styles.backgroundColor') {
+			node.style.backgroundColor = typeof value === 'string' ? value : '#000000';
+			return;
+		}
+		if (propertyKey === 'styles.color') {
+			(textNode || node).style.color = typeof value === 'string' ? value : '#000000';
+			return;
+		}
+		if (propertyKey === 'styles.zIndex') {
+			node.style.zIndex = String(typeof value === 'number' ? value : (parseFloat(value) || 0));
+			return;
+		}
+		if (propertyKey === 'styles.fontFamily') {
+			(textNode || node).style.fontFamily = bindingToText(value);
+		}
+	};
+	var applyNodeBindings = function(node) {
+		var bindings = parseJsonAttr(node.dataset.fbBindings, null);
+		if (!bindings) return;
+		var bpId = getCurrentBreakpoint();
+		var keys = Object.keys(bindings.desktop || {}).concat(Object.keys(bindings.tablet || {}), Object.keys(bindings.mobile || {}))
+			.filter(function(propertyKey, index, allKeys) { return allKeys.indexOf(propertyKey) === index; });
+		keys.forEach(function(propertyKey) {
+			var binding = resolveBindingForBreakpoint(bindings, bpId, propertyKey);
+			if (!binding || !binding.variableId) return;
+			var variable = getVariable(binding.scope || 'page', binding.variableId);
+			if (!variable) return;
+			applyBindingToNode(node, propertyKey, variable);
+		});
+	};
+	var applyAllBindings = function() {
+		scope.querySelectorAll('[data-fb-bindings]').forEach(applyNodeBindings);
+	};
+	var executeInteraction = function(interaction) {
+		if (!interaction || typeof interaction !== 'object') return;
+		if (interaction.type === 'navigate') {
+			if (interaction.pageUrl) window.location.href = interaction.pageUrl;
+			return;
+		}
+		if (interaction.type !== 'set-variable' || !interaction.variableId) return;
+		var variable = getVariable(interaction.variableScope || 'page', interaction.variableId);
+		if (!variable) return;
+		var operation = interaction.operation || 'set';
+		var nextValue = cloneValue(variable.value);
+		if (operation === 'default') {
+			nextValue = cloneValue(variable.defaultValue);
+		} else if (variable.type === 'boolean') {
+			nextValue = operation === 'toggle' ? !variable.value : !!interaction.value;
+		} else if (variable.type === 'number') {
+			var step = typeof interaction.value === 'number' ? interaction.value : parseFloat(interaction.value);
+			step = Number.isFinite(step) ? step : 0;
+			if (operation === 'increment') nextValue = (Number(variable.value) || 0) + step;
+			else if (operation === 'decrement') nextValue = (Number(variable.value) || 0) - step;
+			else nextValue = step;
+		} else {
+			nextValue = cloneValue(interaction.value);
+		}
+		setVariableValue(variable.scope || interaction.variableScope || 'page', variable.id, nextValue);
+		applyAllBindings();
+	};
+	var bindInteractions = function(node) {
+		if (!node || node.dataset.fbInteractionsBound === '1') return;
+		var interactions = parseJsonAttr(node.dataset.fbInteractions, []);
+		if (!Array.isArray(interactions) || !interactions.length) return;
+		node.dataset.fbInteractionsBound = '1';
+		node.style.cursor = 'pointer';
+		node.addEventListener('click', function(event) {
+			event.stopPropagation();
+			interactions.forEach(function(interaction) {
+				executeInteraction(interaction);
+			});
+		});
+	};
+	restorePersistentVariables('page');
+	restorePersistentVariables('global');
+	applyAllBindings();
+	scope.querySelectorAll('[data-fb-interactions]').forEach(bindInteractions);
+	var bindingResizeFrame = null;
+	window.addEventListener('resize', function() {
+		if (bindingResizeFrame) window.cancelAnimationFrame(bindingResizeFrame);
+		bindingResizeFrame = window.requestAnimationFrame(function() {
+			applyAllBindings();
+		});
+	});
 	var instances = scope.querySelectorAll('.fb-component-instance[data-fb-component-id]');
 	var prefersReducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 	var EASE_CURVES = {
@@ -1471,6 +1876,8 @@ class FrameBuilder_Exporter {
 
 	instances.forEach(function(instance) {
 		var timer = null;
+		var activeVariantId = instance.dataset.fbActiveVariant || '';
+		var baseVariantId = '';
 		var clearTimer = function() {
 			if (!timer) return;
 			window.clearTimeout(timer);
@@ -1481,12 +1888,12 @@ class FrameBuilder_Exporter {
 		};
 		var getBaseVariantId = function(variantId) {
 			var node = findVariant(instance, variantId);
-			if (!node) return instance.dataset.fbBaseVariant || variantId || '';
+			if (!node) return baseVariantId || instance.dataset.fbBaseVariant || variantId || '';
 			if (isDefaultVariantNode(node)) return node.dataset.fbVariantId || variantId || '';
-			return node.dataset.fbParentVariantId || instance.dataset.fbBaseVariant || variantId || '';
+			return node.dataset.fbParentVariantId || baseVariantId || instance.dataset.fbBaseVariant || variantId || '';
 		};
 		var getBaseVariantNode = function() {
-			var baseId = instance.dataset.fbBaseVariant || getBaseVariantId(instance.dataset.fbActiveVariant || '');
+			var baseId = baseVariantId || instance.dataset.fbBaseVariant || getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || '');
 			return findVariant(instance, baseId) || getActive();
 		};
 		var findStateVariant = function(baseVariantId, mode) {
@@ -1507,18 +1914,21 @@ class FrameBuilder_Exporter {
 			var queueAfter = options && Object.prototype.hasOwnProperty.call(options, 'queueAppear')
 				? !!options.queueAppear
 				: setBase;
+			var nextBaseVariantId = setBase ? getBaseVariantId(variantId) : (baseVariantId || getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || ''));
 			animateVariantSwitch(instance, current, next, transition || parseTransition(current || next), function() {
-				instance.dataset.fbActiveVariant = variantId;
-				if (setBase) instance.dataset.fbBaseVariant = getBaseVariantId(variantId);
+				activeVariantId = variantId;
+				baseVariantId = nextBaseVariantId || baseVariantId;
+				instance.dataset.fbActiveVariant = activeVariantId;
+				instance.dataset.fbBaseVariant = baseVariantId;
 				if (queueAfter) queueAppear();
 			});
 		};
 		var applyVisualState = function(mode) {
-			var baseId = instance.dataset.fbBaseVariant || getBaseVariantId(instance.dataset.fbActiveVariant || '');
+			var baseId = baseVariantId || instance.dataset.fbBaseVariant || getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || '');
 			if (!baseId) return;
 			var targetNode = mode ? findStateVariant(baseId, mode) : findVariant(instance, baseId);
 			var targetId = targetNode ? targetNode.dataset.fbVariantId : baseId;
-			if (!targetId || targetId === instance.dataset.fbActiveVariant) return;
+			if (!targetId || targetId === activeVariantId) return;
 			showVariant(targetId, {
 				type: 'ease',
 				duration: 0.18,
@@ -1559,12 +1969,17 @@ class FrameBuilder_Exporter {
 			}
 			showVariant(target, transition);
 		};
-		instance.addEventListener('click', function() { runTrigger('click'); });
-		instance.addEventListener('pointerdown', function() {
+		instance.addEventListener('click', function(event) {
+			event.stopPropagation();
+			runTrigger('click');
+		});
+		instance.addEventListener('pointerdown', function(event) {
+			event.stopPropagation();
 			applyVisualState('pressed');
 			runTrigger('click-start');
 		});
-		instance.addEventListener('pointerup', function() {
+		instance.addEventListener('pointerup', function(event) {
+			event.stopPropagation();
 			if (instance.matches(':hover')) applyVisualState('hover');
 			else applyVisualState(null);
 		});
@@ -1577,12 +1992,24 @@ class FrameBuilder_Exporter {
 			applyVisualState(null);
 			runTrigger('mouse-leave');
 		});
-		instance.dataset.fbBaseVariant = getBaseVariantId(instance.dataset.fbActiveVariant || '');
+		activeVariantId = activeVariantId || (getActive() ? (getActive().dataset.fbVariantId || '') : '');
+		baseVariantId = getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || '');
+		instance.dataset.fbActiveVariant = activeVariantId;
+		instance.dataset.fbBaseVariant = baseVariantId;
 		queueAppear();
 	});
 })();
 </script>
 SCRIPT;
+
+		$script = strtr(
+			$script,
+			[
+				'__FB_BUILD_ID__' => $bid,
+				'__FB_PAGE_VARIABLES__' => $page_variables_json,
+				'__FB_GLOBAL_VARIABLES__' => $global_variables_json,
+			]
+		);
 
 		return '<style>' . $css . '</style>' . $script;
 	}
