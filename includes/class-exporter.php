@@ -113,6 +113,195 @@ class FrameBuilder_Exporter {
 		return preg_replace( '/<svg\b/i', '<svg width="100%" height="100%" preserveAspectRatio="xMidYMid meet"', $clean, 1 ) ?? '';
 	}
 
+	private function plain_text_to_rich_text_html( string $text ): string {
+		return nl2br( esc_html( $text ) );
+	}
+
+	private function sanitize_rich_text_style_value( string $style_key, string $style_value ): string {
+		$normalized_value = trim( $style_value );
+		if ( $normalized_value === '' ) return '';
+
+		if ( 'font-weight' === $style_key ) {
+			return preg_match( '/^(normal|bold|bolder|lighter|[1-9]00)$/i', $normalized_value ) ? $normalized_value : '';
+		}
+
+		if ( 'font-style' === $style_key ) {
+			return preg_match( '/^(normal|italic|oblique)$/i', $normalized_value ) ? $normalized_value : '';
+		}
+
+		if ( 'text-decoration' === $style_key ) {
+			$decorations = array_values(
+				array_filter(
+					preg_split( '/\s+/', strtolower( $normalized_value ) ) ?: [],
+					static fn( $token ) => in_array( $token, [ 'underline', 'line-through', 'none' ], true )
+				)
+			);
+			return ! empty( $decorations ) ? implode( ' ', $decorations ) : '';
+		}
+
+		if ( 'font-size' === $style_key ) {
+			if ( ! preg_match( '/^([0-9]+(?:\.[0-9]+)?)\s*(px)?$/i', $normalized_value, $matches ) ) return '';
+			$clamped = max( 8, min( 144, (float) $matches[1] ) );
+			$rounded = round( $clamped, 1 );
+			if ( floor( $rounded ) === $rounded ) {
+				return sprintf( '%dpx', (int) $rounded );
+			}
+			return rtrim( rtrim( sprintf( '%.1f', $rounded ), '0' ), '.' ) . 'px';
+		}
+
+		if ( 'color' === $style_key ) {
+			if ( preg_match( '/^#[0-9a-f]{3}([0-9a-f]{3})?$/i', $normalized_value ) ) return $normalized_value;
+			if ( preg_match( '/^rgba?\(([^)]+)\)$/i', $normalized_value ) ) return $normalized_value;
+			if ( preg_match( '/^hsla?\(([^)]+)\)$/i', $normalized_value ) ) return $normalized_value;
+			if ( preg_match( '/^[a-z]+$/i', $normalized_value ) ) return $normalized_value;
+			return '';
+		}
+
+		if ( 'font-family' === $style_key ) {
+			$families = array_values(
+				array_filter(
+					array_map(
+						static function( $entry ) {
+							$clean = trim( trim( $entry ), "\"'" );
+							if ( $clean === '' ) return '';
+							if ( ! preg_match( '/^[a-z0-9\s-]+$/i', $clean ) ) return '';
+							return preg_match( '/^[a-z-]+$/i', $clean ) ? $clean : sprintf( "'%s'", $clean );
+						},
+						explode( ',', $normalized_value )
+					)
+				)
+			);
+			return ! empty( $families ) ? implode( ', ', $families ) : '';
+		}
+
+		return '';
+	}
+
+	private function sanitize_rich_text_style_attribute( string $style_value ): string {
+		$allowed_style_keys = [ 'font-weight', 'font-style', 'text-decoration', 'font-size', 'color', 'font-family' ];
+		$entries = preg_split( '/;/', $style_value ) ?: [];
+		$sanitized = [];
+		foreach ( $entries as $entry ) {
+			$parts = explode( ':', $entry, 2 );
+			if ( count( $parts ) !== 2 ) continue;
+			$style_key = strtolower( trim( $parts[0] ) );
+			if ( ! in_array( $style_key, $allowed_style_keys, true ) ) continue;
+			$next_value = $this->sanitize_rich_text_style_value( $style_key, $parts[1] );
+			if ( '' === $next_value ) continue;
+			$sanitized[] = sprintf( '%s:%s', $style_key, $next_value );
+		}
+		return implode( '; ', $sanitized );
+	}
+
+	private function get_rich_text_inner_html( DOMNode $node ): string {
+		$html = '';
+		foreach ( $node->childNodes as $child ) {
+			$html .= $node->ownerDocument->saveHTML( $child );
+		}
+		return $html;
+	}
+
+	private function sanitize_rich_text_dom_node( DOMNode $node, DOMDocument $document ): void {
+		for ( $index = $node->childNodes->length - 1; $index >= 0; $index-- ) {
+			$child = $node->childNodes->item( $index );
+			if ( ! $child ) continue;
+			if ( XML_TEXT_NODE === $child->nodeType ) continue;
+			if ( XML_ELEMENT_NODE !== $child->nodeType ) {
+				$node->removeChild( $child );
+				continue;
+			}
+
+			$tag_name = strtolower( $child->nodeName );
+			if ( in_array( $tag_name, [ 'div', 'p' ], true ) ) {
+				$this->sanitize_rich_text_dom_node( $child, $document );
+				$fragment = $document->createDocumentFragment();
+				while ( $child->firstChild ) {
+					$fragment->appendChild( $child->firstChild );
+				}
+				$last_child = $fragment->lastChild;
+				if ( ! $last_child || strtolower( $last_child->nodeName ) !== 'br' ) {
+					$fragment->appendChild( $document->createElement( 'br' ) );
+				}
+				$node->replaceChild( $fragment, $child );
+				continue;
+			}
+
+			if ( ! in_array( $tag_name, [ 'br', 'strong', 'b', 'em', 'i', 'u', 'span' ], true ) ) {
+				$this->sanitize_rich_text_dom_node( $child, $document );
+				$fragment = $document->createDocumentFragment();
+				while ( $child->firstChild ) {
+					$fragment->appendChild( $child->firstChild );
+				}
+				$node->replaceChild( $fragment, $child );
+				continue;
+			}
+
+			if ( $child->hasAttributes() ) {
+				$attributes_to_remove = [];
+				foreach ( $child->attributes as $attribute ) {
+					if ( strtolower( $attribute->nodeName ) !== 'style' ) {
+						$attributes_to_remove[] = $attribute->nodeName;
+						continue;
+					}
+					$sanitized_style = $this->sanitize_rich_text_style_attribute( html_entity_decode( $attribute->nodeValue, ENT_QUOTES, 'UTF-8' ) );
+					if ( '' === $sanitized_style ) {
+						$attributes_to_remove[] = $attribute->nodeName;
+						continue;
+					}
+					$child->setAttribute( 'style', $sanitized_style );
+				}
+				foreach ( $attributes_to_remove as $attribute_name ) {
+					$child->removeAttribute( $attribute_name );
+				}
+			}
+
+			$this->sanitize_rich_text_dom_node( $child, $document );
+		}
+	}
+
+	private function sanitize_rich_text_html( $markup ): string {
+		if ( ! is_string( $markup ) || trim( $markup ) === '' ) return '';
+		if ( ! class_exists( 'DOMDocument' ) ) {
+			return trim( wp_kses( $markup, [
+				'br' => [],
+				'strong' => [ 'style' => true ],
+				'b' => [ 'style' => true ],
+				'em' => [ 'style' => true ],
+				'i' => [ 'style' => true ],
+				'u' => [ 'style' => true ],
+				'span' => [ 'style' => true ],
+			] ) );
+		}
+
+		libxml_use_internal_errors( true );
+		$document = new DOMDocument( '1.0', 'UTF-8' );
+		$loaded = $document->loadHTML(
+			'<?xml encoding="utf-8" ?><div>' . $markup . '</div>',
+			LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD
+		);
+		if ( ! $loaded ) {
+			libxml_clear_errors();
+			return '';
+		}
+		$root = $document->getElementsByTagName( 'div' )->item( 0 );
+		if ( ! $root ) {
+			libxml_clear_errors();
+			return '';
+		}
+
+		$this->sanitize_rich_text_dom_node( $root, $document );
+		$clean = trim( preg_replace( '/(?:<br>\s*)+$/i', '', $this->get_rich_text_inner_html( $root ) ) ?? '' );
+		libxml_clear_errors();
+		$clean = preg_replace( '/<(strong|em|u|span|b|i)\b[^>]*>\s*<\/\1>/i', '', $clean );
+		return is_string( $clean ) ? trim( $clean ) : '';
+	}
+
+	private function get_resolved_rich_text_html( array $resolved ): string {
+		$rich_text = $this->sanitize_rich_text_html( $resolved['richTextHtml'] ?? '' );
+		if ( $rich_text !== '' ) return $rich_text;
+		return $this->plain_text_to_rich_text_html( (string) ( $resolved['text'] ?? 'Text' ) );
+	}
+
 	public function __construct( array $layout ) {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
@@ -504,7 +693,7 @@ class FrameBuilder_Exporter {
 			$text_style .= 'color:' . $text_color . ';';
 			$text_style .= 'white-space:' . $white_space . ';';
 			$text_style .= 'word-break:break-word;';
-			$text_value = nl2br( esc_html( (string) ( $resolved['text'] ?? 'Text' ) ) );
+			$text_value = $this->get_resolved_rich_text_html( $resolved );
 			$html .= '<div class="fb-text-content" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="' . esc_attr( $text_style ) . '">' . $text_value . '</div>';
 		}
 
@@ -1490,6 +1679,15 @@ class FrameBuilder_Exporter {
 		}
 		return value == null ? '' : String(value);
 	};
+	var bindingTextToHtml = function(value) {
+		return bindingToText(value)
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;')
+			.replace(/\n/g, '<br>');
+	};
 	var resolveBindingForBreakpoint = function(bindings, bpId, propertyKey) {
 		if (!bindings || typeof bindings !== 'object') return null;
 		var desktop = bindings.desktop || {};
@@ -1504,7 +1702,7 @@ class FrameBuilder_Exporter {
 		var value = variable.value;
 		var textNode = node.querySelector('.fb-text-content');
 		if (propertyKey === 'text') {
-			if (textNode) textNode.textContent = bindingToText(value);
+			if (textNode) textNode.innerHTML = bindingTextToHtml(value);
 			return;
 		}
 		if (propertyKey === 'hidden') {

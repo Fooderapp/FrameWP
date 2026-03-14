@@ -967,6 +967,91 @@ html, body, #framebuilder-root {
   cursor: pointer;
 }
 
+.fb-inline-text-toolbar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(123, 227, 0, 0.25);
+  background: rgba(20, 20, 28, 0.96);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.28);
+  z-index: 10005;
+}
+
+.fb-inline-text-toolbar__btn {
+  min-width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+}
+
+.fb-inline-text-toolbar__btn.is-active {
+  border-color: var(--accent-light);
+  background: var(--accent-dim);
+  color: var(--accent-light);
+}
+
+.fb-inline-text-toolbar__select {
+  min-width: 76px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 0 8px;
+}
+
+.fb-inline-text-toolbar__select--font {
+  min-width: 132px;
+  max-width: 180px;
+}
+
+.fb-inline-text-toolbar__font-picker {
+  width: 152px;
+}
+
+.fb-inline-text-toolbar__font-picker .fb-font-picker__trigger {
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.fb-inline-text-toolbar__font-picker .fb-font-picker__popover {
+  width: 220px;
+  right: auto;
+}
+
+.fb-inline-text-toolbar__color {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--bg-input);
+}
+
+.fb-inline-text-toolbar__color input[type=color] {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
 .fb-component-variant-state-controls {
   position: absolute;
   display: inline-flex;
@@ -3075,6 +3160,17 @@ html, body, #framebuilder-root {
   line-height: 1.2;
 }
 .fb-text-content {
+  white-space: inherit;
+}
+
+.fb-text-content span,
+.fb-text-content strong,
+.fb-text-content em,
+.fb-text-content u,
+.fb-component-play-preview__text span,
+.fb-component-play-preview__text strong,
+.fb-component-play-preview__text em,
+.fb-component-play-preview__text u {
   white-space: inherit;
 }
 

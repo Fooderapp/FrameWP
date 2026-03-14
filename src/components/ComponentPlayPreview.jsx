@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { gsap, Flip } from 'gsap/all';
 import { resolveElement } from '../store/editorStore';
 import { familyToFontStack } from './googleFonts';
+import { getResolvedRichTextHtml } from './richText';
 
 gsap.registerPlugin(Flip);
 
@@ -554,7 +555,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
         />
       ) : null}
       {element.type === 'text' ? (
-        <div className="fb-component-play-preview__text" data-flip-id={`${element.id}__content`} style={textStyle}>{resolved?.text ?? 'Text'}</div>
+        <div className="fb-component-play-preview__text" data-flip-id={`${element.id}__content`} style={textStyle} dangerouslySetInnerHTML={{ __html: getResolvedRichTextHtml(resolved, 'Text') }} />
       ) : null}
       {(element.children ?? []).map((childId) => {
         const child = indexById.get(childId);

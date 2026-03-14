@@ -4,6 +4,7 @@ import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import { IconButton, UIIcons } from '../components/UIIcons';
 import { getSvgStrokeWidth, hasSvgVisibleStroke, sanitizeSvgMarkup, setSvgStrokeWidth } from '../components/iconLibrary';
+import { getRichTextInlineStyleValues } from '../components/richText';
 import VariantTransitionModal from '../components/VariantTransitionModal';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -27,6 +28,16 @@ function getDefaultInteractionValue(variableType) {
   if (variableType === 'color') return '#000000';
   if (variableType === 'number') return 0;
   return '';
+}
+
+function getTextColorMeta(resolved, fallback = '#000000') {
+  const baseColor = resolved?.styles?.color ?? fallback;
+  const inlineColors = getRichTextInlineStyleValues(resolved?.richTextHtml ?? '', 'color');
+  const distinctColors = Array.from(new Set([baseColor, ...inlineColors].filter(Boolean)));
+  return {
+    baseColor,
+    mixed: distinctColors.length > 1,
+  };
 }
 
 function getMediaUrl(value) {
@@ -165,23 +176,44 @@ function NullableNumberInput({ value, onChange, label, placeholder = '', min, st
   );
 }
 
-function ColorInput({ value, onChange }) {
+function ColorInput({ value, onChange, mixed = false, mixedLabel = 'Mixed' }) {
   const hex = rgbaToHex(value ?? '#cccccc');
+  const [draft, setDraft] = React.useState(mixed ? mixedLabel : (value ?? ''));
+  const [focused, setFocused] = React.useState(false);
+
+  React.useEffect(() => {
+    if (focused) return;
+    setDraft(mixed ? mixedLabel : (value ?? ''));
+  }, [focused, mixed, mixedLabel, value]);
 
   return (
     <div className="fb-color-row">
-      <div className="fb-color-swatch" style={{ background: value }}>
+      <div className="fb-color-swatch" style={{ background: mixed ? 'repeating-linear-gradient(135deg, rgba(255,255,255,0.14) 0 6px, rgba(255,255,255,0.03) 6px 12px)' : value }}>
         <input
           type="color"
           value={hex}
-          onChange={e => onChange(e.target.value)}
+          onChange={e => {
+            setDraft(e.target.value);
+            onChange(e.target.value);
+          }}
         />
       </div>
       <input
         className="fb-prop-input fb-color-hex"
         type="text"
-        value={value ?? ''}
-        onChange={e => onChange(e.target.value)}
+        value={draft}
+        onFocus={() => {
+          setFocused(true);
+          if (mixed) setDraft('');
+        }}
+        onBlur={() => {
+          setFocused(false);
+          if (!draft.trim()) setDraft(mixed ? mixedLabel : (value ?? ''));
+        }}
+        onChange={e => {
+          setDraft(e.target.value);
+          onChange(e.target.value);
+        }}
         spellCheck={false}
       />
     </div>
@@ -789,6 +821,7 @@ function ResetBtn({ show, onReset }) {
 
 export default function PropertiesPanel() {
   const [transitionModalState, setTransitionModalState] = useState(null);
+  const fontPreviewSnapshotRef = useRef(null);
   const selection           = useEditorStore(s => s.selection);
   const activeSurface       = useEditorStore(s => s.activeSurface);
   const componentEditor     = useEditorStore(s => s.componentEditor);
@@ -844,6 +877,57 @@ export default function PropertiesPanel() {
   const hasMultiSelection = selectionIds.length > 1;
   const allVariables = [...pageVariables, ...globalVariables];
   const variableLookup = new Map(allVariables.map((variable) => [`${variable.scope}:${variable.id}`, variable]));
+
+  const captureFontPreviewSnapshot = (elementIds, currentBpId) => {
+    if (fontPreviewSnapshotRef.current) return;
+    const snapshots = (elementIds ?? [])
+      .map((id) => {
+        const target = allEls.find((candidate) => candidate.id === id);
+        if (!target) return null;
+        if (currentBpId === 'desktop') {
+          return {
+            id,
+            hasExplicit: true,
+            value: target.base?.styles?.fontFamily ?? 'Inter',
+            bpId: currentBpId,
+          };
+        }
+        const overrideStyles = target.overrides?.[currentBpId]?.styles ?? {};
+        return {
+          id,
+          hasExplicit: Object.prototype.hasOwnProperty.call(overrideStyles, 'fontFamily'),
+          value: overrideStyles.fontFamily ?? null,
+          bpId: currentBpId,
+        };
+      })
+      .filter(Boolean);
+    if (!snapshots.length) return;
+    fontPreviewSnapshotRef.current = snapshots;
+  };
+
+  const resetFontPreview = () => {
+    const snapshot = fontPreviewSnapshotRef.current;
+    if (!snapshot?.length) return;
+    snapshot.forEach((entry) => {
+      if (entry.bpId === 'desktop' || entry.hasExplicit) updateStyles(entry.id, entry.bpId, { fontFamily: entry.value || 'Inter' });
+      else removeStyleOverrideFn(entry.id, entry.bpId, 'fontFamily');
+    });
+    fontPreviewSnapshotRef.current = null;
+  };
+
+  const previewFontFamily = (elementIds, currentBpId, family) => {
+    if (!family) return;
+    captureFontPreviewSnapshot(elementIds, currentBpId);
+    updateElementsStyles(elementIds, currentBpId, { fontFamily: family });
+  };
+
+  const commitFontFamily = (elementIds, currentBpId, family) => {
+    fontPreviewSnapshotRef.current = null;
+    updateElementsStyles(elementIds, currentBpId, { fontFamily: family });
+    pushHistory();
+  };
+
+  useEffect(() => () => resetFontPreview(), []);
 
   const resolveBoundVariable = (binding) => binding ? (variableLookup.get(`${binding.scope}:${binding.variableId}`) ?? null) : null;
   const getBindingForProperty = (propertyKey) => element ? getElementPropertyBinding(element.id, selection?.bpId || 'desktop', propertyKey) : null;
@@ -1119,10 +1203,12 @@ export default function PropertiesPanel() {
     const frameFillDisplayValue = allFrames
       ? (frameFillValue ?? getFirstValue(({ resolved }) => resolved.styles?.backgroundColor, 'rgba(180,180,200,0.18)'))
       : null;
-    const textColorValue = allTexts ? getSharedValue(({ resolved }) => resolved.styles?.color ?? '#000000') : null;
-    const textColorDisplayValue = allTexts
-      ? (textColorValue ?? getFirstValue(({ resolved }) => resolved.styles?.color, '#000000'))
+    const textColorEntries = allTexts ? resolvedSelections.map(({ resolved }) => getTextColorMeta(resolved)) : [];
+    const textColorValue = allTexts && textColorEntries.length && textColorEntries.every((entry) => !entry.mixed && entry.baseColor === textColorEntries[0].baseColor)
+      ? textColorEntries[0].baseColor
       : null;
+    const textColorDisplayValue = allTexts ? (textColorEntries[0]?.baseColor ?? '#000000') : null;
+    const textColorMixed = allTexts ? textColorEntries.some((entry) => entry.mixed) || textColorValue == null : false;
     const textFontFamilyValue = allTexts ? getSharedValue(({ resolved }) => resolved.styles?.fontFamily ?? 'Inter') : null;
     const textFontFamilyDisplayValue = allTexts
       ? (textFontFamilyValue ?? getFirstValue(({ resolved }) => resolved.styles?.fontFamily, 'Inter'))
@@ -1242,7 +1328,9 @@ export default function PropertiesPanel() {
                 <div style={{ flex: 1 }}>
                   <GoogleFontPicker
                     value={textFontFamilyDisplayValue}
-                    onChange={(value) => applyStyles({ fontFamily: value })}
+                    onChange={(value) => commitFontFamily(selectionIds, bpId, value)}
+                    onPreviewChange={(value) => previewFontFamily(selectionIds, bpId, value)}
+                    onPreviewReset={resetFontPreview}
                   />
                 </div>
               </div>
@@ -1267,7 +1355,7 @@ export default function PropertiesPanel() {
                 </div>
               </div>
               <div className="fb-quad" style={{ marginTop: 6 }}>
-                <ColorInput value={textColorDisplayValue} onChange={(value) => applyStyles({ color: value })} />
+                <ColorInput value={textColorDisplayValue} mixed={textColorMixed} onChange={(value) => applyStyles({ color: value })} />
                 <div />
               </div>
               <div className="fb-prop-row" style={{ marginTop: 8 }}>
@@ -1325,6 +1413,7 @@ export default function PropertiesPanel() {
 
   const resolved = resolveElementWithVariables(element, bpId, pageVariables, globalVariables);
   const s = resolved.styles || {};
+  const textColorMeta = element.type === 'text' ? getTextColorMeta(resolved) : { baseColor: s.color ?? '#000000', mixed: false };
   const hasVisibleIconStroke = element?.type === 'icon' && hasSvgVisibleStroke(resolved?.svgMarkup ?? '');
   const textGrow = (resolved.widthMode === 'hug' && resolved.heightMode === 'hug')
     ? 'auto-width'
@@ -1693,7 +1782,7 @@ export default function PropertiesPanel() {
         </Section>
 
         {element.type === 'text' && (
-          <Section title="Text" action={<ResetBtn show={isOv('text') || isSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text'); resetSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
+          <Section title="Text" action={<ResetBtn show={isOv('text','richTextHtml') || isSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text','richTextHtml'); resetSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
             <div className="fb-prop-row" style={{ marginBottom: 8 }}>
               <VariableBindingLabel label="Content">
                 {allowVariableBindings ? (
@@ -1737,7 +1826,9 @@ export default function PropertiesPanel() {
                 <div style={{ flex: 1 }}>
                   <GoogleFontPicker
                     value={s.fontFamily ?? 'Inter'}
-                    onChange={value => { updS('fontFamily', value); commit(); }}
+                    onChange={value => commitFontFamily([element.id], bpId, value)}
+                    onPreviewChange={(value) => previewFontFamily([element.id], bpId, value)}
+                    onPreviewReset={resetFontPreview}
                   />
                 </div>
               )}
@@ -1786,7 +1877,7 @@ export default function PropertiesPanel() {
                   />
                 ) : null}
               </VariableBindingLabel>
-              {textColorBindingVariable ? <BoundVariableCta variable={textColorBindingVariable} fallbackLabel="Color variable" /> : <ColorInput value={s.color ?? '#000000'} onChange={v => { updS('color', v); commit(); }} />}
+              {textColorBindingVariable ? <BoundVariableCta variable={textColorBindingVariable} fallbackLabel="Color variable" /> : <ColorInput value={textColorMeta.baseColor} mixed={textColorMeta.mixed} onChange={v => { updS('color', v); commit(); }} />}
             </div>
 
             <div className="fb-prop-row" style={{ marginTop: 8 }}>

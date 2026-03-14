@@ -8,6 +8,7 @@ import {
   sanitizeSvgMarkup,
   setSvgStrokeWidth,
 } from '../components/iconLibrary';
+import { clearRichTextInlineStyle, plainTextToRichTextHtml, richTextHtmlToPlainText, sanitizeRichTextHtml } from '../components/richText';
 
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
@@ -147,8 +148,33 @@ function sanitizeLayoutUpdates(updates) {
 function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
   return elements.map((el) => {
     if (el.id !== elementId) return el;
-    if (bpId === 'desktop') return { ...el, base: { ...el.base, ...safeUpdates } };
+    if (bpId === 'desktop') {
+      if (el.type === 'text') {
+        return {
+          ...el,
+          base: {
+            ...el.base,
+            ...safeUpdates,
+            ...normalizeTextFields({ ...el.base, ...safeUpdates }),
+          },
+        };
+      }
+      return { ...el, base: { ...el.base, ...safeUpdates } };
+    }
     const ov = el.overrides?.[bpId] ?? {};
+    if (el.type === 'text') {
+      return {
+        ...el,
+        overrides: {
+          ...el.overrides,
+          [bpId]: {
+            ...ov,
+            ...safeUpdates,
+            ...normalizeTextFields({ ...el.base, ...ov, ...safeUpdates }),
+          },
+        },
+      };
+    }
     return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } };
   });
 }
@@ -317,6 +343,61 @@ function normalizeIconFields(source = {}) {
   };
 }
 
+function normalizeTextFields(source = {}) {
+  const hasExplicitText = typeof source?.text === 'string';
+  const hasExplicitRichText = typeof source?.richTextHtml === 'string';
+  const text = hasExplicitText
+    ? source.text
+    : (hasExplicitRichText ? richTextHtmlToPlainText(source.richTextHtml) : 'Text');
+  const richTextHtml = sanitizeRichTextHtml(source?.richTextHtml ?? '') || plainTextToRichTextHtml(text);
+  return {
+    text,
+    richTextHtml,
+  };
+}
+
+function normalizeTextElementFields(element) {
+  if (!element || element.type !== 'text') return element;
+
+  const normalizedBase = {
+    ...(element.base ?? {}),
+    ...normalizeTextFields(element.base ?? {}),
+  };
+  const normalizedOverrides = { ...(element.overrides ?? {}) };
+
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const bpOverride = normalizedOverrides[bpId];
+    if (!bpOverride) return;
+    const hasTextField = bpOverride.text != null || bpOverride.richTextHtml != null;
+    if (!hasTextField) return;
+    normalizedOverrides[bpId] = {
+      ...bpOverride,
+      ...normalizeTextFields({
+        ...normalizedBase,
+        ...bpOverride,
+      }),
+    };
+  });
+
+  return {
+    ...element,
+    base: normalizedBase,
+    overrides: normalizedOverrides,
+  };
+}
+
+function getTextStyleDrivenFieldUpdates(element, bpId, styleUpdates) {
+  if (!element || element.type !== 'text' || styleUpdates?.color == null) return {};
+  const rawSource = bpId === 'desktop'
+    ? (element.base ?? {})
+    : { ...(element.base ?? {}), ...(element.overrides?.[bpId] ?? {}) };
+  const fallbackText = typeof rawSource.text === 'string' ? rawSource.text : 'Text';
+  const sourceRichTextHtml = sanitizeRichTextHtml(rawSource.richTextHtml ?? '') || plainTextToRichTextHtml(fallbackText);
+  return {
+    richTextHtml: clearRichTextInlineStyle(sourceRichTextHtml, 'color') || plainTextToRichTextHtml(fallbackText),
+  };
+}
+
 function normalizeIconElementFields(element) {
   if (!element || element.type !== 'icon') return element;
 
@@ -348,7 +429,7 @@ function normalizeIconElementFields(element) {
 }
 
 function normalizeElementDynamicFields(element) {
-  const normalizedElement = normalizeIconElementFields(element);
+  const normalizedElement = normalizeIconElementFields(normalizeTextElementFields(element));
   return {
     ...normalizedElement,
     bindings: normalizeElementBindings(element?.bindings),
@@ -369,6 +450,7 @@ function applyVariableBindingValue(resolved, propertyKey, variable) {
   switch (propertyKey) {
     case 'text':
       next.text = value == null ? '' : `${value}`;
+      next.richTextHtml = plainTextToRichTextHtml(next.text);
       break;
     case 'hidden':
       next.hidden = !value;
@@ -1155,6 +1237,7 @@ export function createIcon(x = 80, y = 80, name) {
 }
 
 export function createText(x = 80, y = 80, name) {
+  const defaultText = 'Text';
   return {
     id: `txt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     type: 'text',
@@ -1166,7 +1249,8 @@ export function createText(x = 80, y = 80, name) {
       widthMode: 'hug', heightMode: 'hug',
       minW: null, maxW: null, minH: null, maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
-      text: 'Text',
+      text: defaultText,
+      richTextHtml: plainTextToRichTextHtml(defaultText),
       styles: {
         backgroundColor: 'transparent',
         color: '#000000',
@@ -2470,15 +2554,23 @@ export const useEditorStore = create((set, get) => {
     updateElementStyles(elementId, bpId, styleUpdates) {
       withPage(els => els.map(el => {
         if (el.id !== elementId) return el;
+        const textFieldUpdates = getTextStyleDrivenFieldUpdates(el, bpId, styleUpdates);
         if (bpId === 'desktop') {
-          return { ...el, base: { ...el.base, styles: { ...el.base.styles, ...styleUpdates } } };
+          return {
+            ...el,
+            base: {
+              ...el.base,
+              ...textFieldUpdates,
+              styles: { ...el.base.styles, ...styleUpdates },
+            },
+          };
         }
         const ov = el.overrides?.[bpId] ?? {};
         return {
           ...el,
           overrides: {
             ...el.overrides,
-            [bpId]: { ...ov, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
+            [bpId]: { ...ov, ...textFieldUpdates, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
           },
         };
       }));
@@ -2489,15 +2581,23 @@ export const useEditorStore = create((set, get) => {
       if (!targetIds.size) return;
       withPage((els) => els.map((el) => {
         if (!targetIds.has(el.id)) return el;
+        const textFieldUpdates = getTextStyleDrivenFieldUpdates(el, bpId, styleUpdates);
         if (bpId === 'desktop') {
-          return { ...el, base: { ...el.base, styles: { ...el.base.styles, ...styleUpdates } } };
+          return {
+            ...el,
+            base: {
+              ...el.base,
+              ...textFieldUpdates,
+              styles: { ...el.base.styles, ...styleUpdates },
+            },
+          };
         }
         const ov = el.overrides?.[bpId] ?? {};
         return {
           ...el,
           overrides: {
             ...el.overrides,
-            [bpId]: { ...ov, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
+            [bpId]: { ...ov, ...textFieldUpdates, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
           },
         };
       }));
