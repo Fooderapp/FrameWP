@@ -2,6 +2,16 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { sanitizeSvgMarkup } from '../iconLibrary';
 
+const REACT_FORWARD_REF_TYPE = Symbol.for('react.forward_ref');
+const REACT_MEMO_TYPE = Symbol.for('react.memo');
+
+export function isRenderableIconComponent(Component) {
+  if (typeof Component === 'function') return true;
+  if (!Component || typeof Component !== 'object') return false;
+  if (Component.$$typeof === REACT_FORWARD_REF_TYPE || Component.$$typeof === REACT_MEMO_TYPE) return true;
+  return typeof Component.render === 'function';
+}
+
 export function prettifyIconName(name, prefixes = []) {
   const stripped = prefixes.reduce((acc, prefix) => acc.replace(new RegExp(`^${prefix}`), ''), name);
   return stripped
@@ -13,9 +23,7 @@ export function prettifyIconName(name, prefixes = []) {
 export function moduleToIconList(moduleMap, { packId, prefixes = [], excludes = new Set(), filter }) {
   return Object.entries(moduleMap)
     .filter(([name, Component]) => {
-      const isRenderableComponent = typeof Component === 'function'
-        || (typeof Component === 'object' && Component !== null && ('$$typeof' in Component || 'render' in Component));
-      return isRenderableComponent && !excludes.has(name) && filter(name);
+      return isRenderableIconComponent(Component) && !excludes.has(name) && filter(name);
     })
     .map(([name, Component]) => ({
       value: `${packId}:${name}`,
@@ -33,8 +41,10 @@ export function getPackRenderProps(packId, size = 24) {
 }
 
 export function getLibraryIconMarkup(Component, packId) {
-  const isRenderableComponent = typeof Component === 'function'
-    || (typeof Component === 'object' && Component !== null && ('$$typeof' in Component || 'render' in Component));
-  if (!isRenderableComponent) return '';
-  return sanitizeSvgMarkup(renderToStaticMarkup(createElement(Component, getPackRenderProps(packId, 24))));
+  if (!isRenderableIconComponent(Component)) return '';
+  try {
+    return sanitizeSvgMarkup(renderToStaticMarkup(createElement(Component, getPackRenderProps(packId, 24))));
+  } catch {
+    return '';
+  }
 }

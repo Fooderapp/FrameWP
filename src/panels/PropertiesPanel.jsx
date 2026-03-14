@@ -1861,10 +1861,14 @@ export default function PropertiesPanel() {
                     <button
                       type="button"
                       className="fb-secondary-btn"
-                      onClick={(event) => {
+                      onMouseDown={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
                         openIconLibraryModal({ targetId: element.id, bpId });
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
                       }}
                       style={{ flex: 1, justifyContent: 'center' }}
                     >

@@ -6,7 +6,7 @@ import PropertiesPanel from './panels/PropertiesPanel';
 import ComponentEditorOverlay from './components/ComponentEditorOverlay';
 import IconLibraryModal from './components/IconLibraryModal';
 import VariablesModal from './components/VariablesModal';
-import { getSvgStrokeWidth, hasSvgVisibleStroke, removeSvgStroke, setSvgStrokeWidth } from './components/iconLibrary';
+import { ICON_PACK_MANIFEST, warmIconPackPreviewCache } from './components/iconCatalog';
 import { useEditorStore } from './store/editorStore';
 
 export default function App() {
@@ -26,7 +26,7 @@ export default function App() {
   const variablesModalOpen = useEditorStore(s => s.variablesModalOpen);
   const iconLibraryModal = useEditorStore(s => s.iconLibraryModal);
   const closeIconLibraryModal = useEditorStore(s => s.closeIconLibraryModal);
-  const updateElementLayout = useEditorStore(s => s.updateElementLayout);
+  const applyIconLibrarySelection = useEditorStore(s => s.applyIconLibrarySelection);
   const getAllElements = useEditorStore(s => s.getAllElements);
   const [leftWidth, setLeftWidth] = useState(240);
   const [rightWidth, setRightWidth] = useState(312);
@@ -50,6 +50,22 @@ export default function App() {
 
   useEffect(() => () => {
     if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    const warmPacks = () => {
+      ICON_PACK_MANIFEST.forEach((pack) => {
+        warmIconPackPreviewCache(pack.id, 64).catch(() => {});
+      });
+    };
+
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      const idleId = window.requestIdleCallback(warmPacks, { timeout: 1200 });
+      return () => window.cancelIdleCallback?.(idleId);
+    }
+
+    const timer = window.setTimeout(warmPacks, 300);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -109,22 +125,7 @@ export default function App() {
     : null;
 
   const handleIconLibrarySelect = (icon) => {
-    const modalState = useEditorStore.getState().iconLibraryModal;
-    if (!modalState?.targetId) return;
-    const currentTarget = useEditorStore.getState().getAllElements().find((element) => element.id === modalState.targetId) ?? null;
-    if (!currentTarget || currentTarget.type !== 'icon') return;
-    const currentStrokeWidth = getSvgStrokeWidth(currentTarget.base?.svgMarkup ?? '') ?? null;
-    const pickedIconHasStroke = hasSvgVisibleStroke(icon.markup);
-    const nextMarkup = !pickedIconHasStroke
-      ? removeSvgStroke(icon.markup)
-      : (currentStrokeWidth ? setSvgStrokeWidth(icon.markup, currentStrokeWidth) : icon.markup);
-    updateElementLayout(currentTarget.id, modalState.bpId ?? 'desktop', {
-      iconSource: 'preset',
-      iconName: icon.value,
-      svgMarkup: nextMarkup,
-    });
-    pushHistory();
-    closeIconLibraryModal();
+    applyIconLibrarySelection(icon);
   };
 
   return (

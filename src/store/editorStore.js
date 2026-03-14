@@ -1,5 +1,13 @@
 import { create } from 'zustand';
-import { getDefaultPackedIcon, getIconPresetMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
+import {
+  getDefaultPackedIcon,
+  getIconPresetMarkup,
+  getSvgStrokeWidth,
+  hasSvgVisibleStroke,
+  removeSvgStroke,
+  sanitizeSvgMarkup,
+  setSvgStrokeWidth,
+} from '../components/iconLibrary';
 
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
@@ -134,6 +142,15 @@ function sanitizeLayoutUpdates(updates) {
       return Number.isFinite(numericValue) ? [[key, numericValue]] : [];
     })
   );
+}
+
+function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
+  return elements.map((el) => {
+    if (el.id !== elementId) return el;
+    if (bpId === 'desktop') return { ...el, base: { ...el.base, ...safeUpdates } };
+    const ov = el.overrides?.[bpId] ?? {};
+    return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } };
+  });
 }
 
 function getDefaultVariableValue(type) {
@@ -2301,15 +2318,87 @@ export const useEditorStore = create((set, get) => {
     saveStatus: null,
     setSaveStatus: (s) => set({ saveStatus: s }),
     iconLibraryModal: null,
-    openIconLibraryModal: (payload) => set({
-      iconLibraryModal: payload?.targetId
-        ? {
-            targetId: payload.targetId,
-            bpId: payload.bpId ?? 'desktop',
-          }
-        : null,
+    openIconLibraryModal: (payload) => set((state) => {
+      const fallbackSelection = normalizeSelection(state.selection);
+      const fallbackTargetId = payload?.targetId ?? fallbackSelection?.elementId ?? null;
+      if (!fallbackTargetId) return { iconLibraryModal: null };
+      return {
+        iconLibraryModal: {
+          targetId: fallbackTargetId,
+          bpId: payload?.bpId ?? fallbackSelection?.bpId ?? 'desktop',
+        },
+      };
     }),
     closeIconLibraryModal: () => set({ iconLibraryModal: null }),
+    applyIconLibrarySelection(icon) {
+      if (!icon?.value || !icon?.markup) return;
+
+      set((state) => {
+        const modalState = state.iconLibraryModal;
+        if (!modalState?.targetId) return {};
+
+        const targetBpId = modalState.bpId ?? 'desktop';
+        const isComponentSurface = state.activeSurface === 'component' && state.componentEditor?.isOpen;
+        const currentElements = isComponentSurface
+          ? (state.componentEditor?.page?.elements ?? [])
+          : (state.pages.find((page) => page.id === state.currentPageId)?.elements ?? []);
+        const currentTarget = findEl(currentElements, modalState.targetId);
+        if (!currentTarget || currentTarget.type !== 'icon') {
+          return { iconLibraryModal: null };
+        }
+
+        const currentMarkup = targetBpId === 'desktop'
+          ? (currentTarget.base?.svgMarkup ?? '')
+          : (currentTarget.overrides?.[targetBpId]?.svgMarkup ?? currentTarget.base?.svgMarkup ?? '');
+        const currentStrokeWidth = getSvgStrokeWidth(currentMarkup) ?? null;
+        const pickedIconHasStroke = hasSvgVisibleStroke(icon.markup);
+        const nextMarkup = !pickedIconHasStroke
+          ? removeSvgStroke(icon.markup)
+          : (currentStrokeWidth ? setSvgStrokeWidth(icon.markup, currentStrokeWidth) : icon.markup);
+        const safeUpdates = sanitizeLayoutUpdates({
+          iconSource: 'preset',
+          iconName: icon.value,
+          svgMarkup: nextMarkup,
+        });
+        const nextElements = applyElementLayoutUpdate(currentElements, currentTarget.id, targetBpId, safeUpdates);
+
+        if (isComponentSurface) {
+          const nextComponentEditor = {
+            ...state.componentEditor,
+            page: {
+              ...state.componentEditor.page,
+              elements: nextElements,
+            },
+          };
+          const snap = snapshotComponentEditorState({
+            ...state,
+            componentEditor: nextComponentEditor,
+            iconLibraryModal: null,
+          });
+          const trimmed = state.componentHistory.slice(0, state.componentHistoryIndex + 1);
+          const nextHistory = [...trimmed, snap].slice(-MAX_HISTORY);
+          return {
+            componentEditor: nextComponentEditor,
+            iconLibraryModal: null,
+            componentHistory: nextHistory,
+            componentHistoryIndex: nextHistory.length - 1,
+          };
+        }
+
+        const nextPages = state.pages.map((page) => (
+          page.id === state.currentPageId ? { ...page, elements: nextElements } : page
+        ));
+        const snap = snapshotPages(nextPages);
+        const trimmed = state.history.slice(0, state.historyIndex + 1);
+        const nextHistory = [...trimmed, snap].slice(-MAX_HISTORY);
+        return {
+          pages: nextPages,
+          iconLibraryModal: null,
+          history: nextHistory,
+          historyIndex: nextHistory.length - 1,
+        };
+      });
+    },
 
     // ── Getters ────────────────────────────────────────────
     getCurrentPage() {
@@ -2419,12 +2508,7 @@ export const useEditorStore = create((set, get) => {
     updateElementLayout(elementId, bpId, updates) {
       const safeUpdates = sanitizeLayoutUpdates(updates);
       if (!safeUpdates || !Object.keys(safeUpdates).length) return;
-      withPage(els => els.map(el => {
-        if (el.id !== elementId) return el;
-        if (bpId === 'desktop') return { ...el, base: { ...el.base, ...safeUpdates } };
-        const ov = el.overrides?.[bpId] ?? {};
-        return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } };
-      }));
+      withPage(els => applyElementLayoutUpdate(els, elementId, bpId, safeUpdates));
       if (safeUpdates?.hidden === true) {
         const currentDrilled = get().drilledContainerId;
         const nextUiState = {};

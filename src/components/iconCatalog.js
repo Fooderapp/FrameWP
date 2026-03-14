@@ -1,4 +1,10 @@
 const iconPackCache = new Map();
+const iconPreviewCache = new Map();
+
+function getPreviewBucket(packId) {
+  if (!iconPreviewCache.has(packId)) iconPreviewCache.set(packId, new Map());
+  return iconPreviewCache.get(packId);
+}
 
 export const ICON_PACK_MANIFEST = [
   {
@@ -52,6 +58,31 @@ export async function loadIconPack(packId) {
   return pack;
 }
 
+export function getCachedIconPreviewMarkup(packId, iconValue) {
+  if (!packId || !iconValue) return '';
+  return getPreviewBucket(packId).get(iconValue) || '';
+}
+
+export function setCachedIconPreviewMarkup(packId, iconValue, markup) {
+  if (!packId || !iconValue || !markup) return markup || '';
+  getPreviewBucket(packId).set(iconValue, markup);
+  return markup;
+}
+
+export async function warmIconPackPreviewCache(packId, limit = 64) {
+  const pack = await loadIconPack(packId);
+  if (!pack) return null;
+
+  const previewBucket = getPreviewBucket(pack.id);
+  pack.icons.slice(0, limit).forEach((icon) => {
+    if (previewBucket.has(icon.value)) return;
+    const markup = pack.getIconMarkup(icon.Component) || '';
+    if (markup) previewBucket.set(icon.value, markup);
+  });
+
+  return pack;
+}
+
 export function getManifestPack(packId) {
   return ICON_PACK_MANIFEST.find((pack) => pack.id === packId) ?? ICON_PACK_MANIFEST[0] ?? null;
 }
@@ -60,5 +91,7 @@ export function filterPackIcons(pack, searchTerm = '', limit = 320) {
   const normalized = `${searchTerm || ''}`.trim().toLowerCase();
   const icons = pack?.icons ?? [];
   if (!normalized) return icons.slice(0, limit);
-  return icons.filter((icon) => icon.label.toLowerCase().includes(normalized) || icon.name.toLowerCase().includes(normalized));
+  return icons
+    .filter((icon) => icon.label.toLowerCase().includes(normalized) || icon.name.toLowerCase().includes(normalized))
+    .slice(0, limit);
 }

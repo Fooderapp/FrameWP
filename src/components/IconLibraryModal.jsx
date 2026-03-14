@@ -1,14 +1,26 @@
 import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { filterPackIcons, getManifestPack, ICON_PACK_MANIFEST, loadIconPack } from './iconCatalog';
-import { getPackRenderProps } from './iconPacks/shared';
+import {
+  filterPackIcons,
+  getCachedIconPreviewMarkup,
+  getManifestPack,
+  ICON_PACK_MANIFEST,
+  loadIconPack,
+  setCachedIconPreviewMarkup,
+} from './iconCatalog';
 import { IconButton, UIIcons } from './UIIcons';
+
+const MAX_VISIBLE_ICONS = 160;
+const PREVIEW_BATCH_SIZE = 24;
+const SYNC_PREVIEW_BATCH_SIZE = 48;
 
 export default function IconLibraryModal({ onSelect, onClose, isTargetMissing = false }) {
   const [loadedPacks, setLoadedPacks] = useState({});
   const [packErrors, setPackErrors] = useState({});
   const [activePackId, setActivePackId] = useState('material');
   const [search, setSearch] = useState('');
+  const [selectionError, setSelectionError] = useState('');
+  const [previewMarkup, setPreviewMarkup] = useState({});
   const [portalReady, setPortalReady] = useState(false);
   const deferredSearch = useDeferredValue(search);
   const searchInputRef = useRef(null);
@@ -35,6 +47,7 @@ export default function IconLibraryModal({ onSelect, onClose, isTargetMissing = 
 
   useEffect(() => {
     let cancelled = false;
+    setSelectionError('');
 
     loadIconPack(activePackId)
       .then((pack) => {
@@ -80,19 +93,72 @@ export default function IconLibraryModal({ onSelect, onClose, isTargetMissing = 
   const activeError = packErrors[activePackId] || '';
 
   const visibleIcons = useMemo(
-    () => (activePack ? filterPackIcons(activePack, deferredSearch) : []),
+    () => (activePack ? filterPackIcons(activePack, deferredSearch, MAX_VISIBLE_ICONS) : []),
     [activePack, deferredSearch],
   );
-  const visibleIconCards = useMemo(
-    () => visibleIcons.map((icon) => ({
-      ...icon,
-      previewMarkup: activePack ? activePack.getIconMarkup(icon.Component) : '',
-    })),
-    [activePack, visibleIcons],
-  );
+
+  const seededPreviewMarkup = useMemo(() => {
+    if (!activePack || !visibleIcons.length) return {};
+
+    return Object.fromEntries(
+      visibleIcons.slice(0, SYNC_PREVIEW_BATCH_SIZE).map((icon) => {
+        const cachedMarkup = getCachedIconPreviewMarkup(activePack.id, icon.value);
+        const markup = cachedMarkup || setCachedIconPreviewMarkup(activePack.id, icon.value, activePack.getIconMarkup(icon.Component) || '');
+        return [icon.value, markup];
+      }),
+    );
+  }, [activePack, visibleIcons]);
+
+  useEffect(() => {
+    if (!Object.keys(seededPreviewMarkup).length) return;
+    setPreviewMarkup((current) => ({ ...seededPreviewMarkup, ...current }));
+  }, [seededPreviewMarkup]);
+
+  useEffect(() => {
+    if (!activePack || !visibleIcons.length) return undefined;
+
+    const missingIcons = visibleIcons.filter((icon) => !(previewMarkup[icon.value] || seededPreviewMarkup[icon.value]));
+    if (!missingIcons.length) return undefined;
+
+    let cancelled = false;
+
+    const warmBatch = (startIndex) => {
+      if (cancelled) return;
+      const batch = missingIcons.slice(startIndex, startIndex + PREVIEW_BATCH_SIZE);
+      if (!batch.length) return;
+
+      const nextEntries = {};
+      batch.forEach((icon) => {
+        const cachedMarkup = getCachedIconPreviewMarkup(activePack.id, icon.value);
+        nextEntries[icon.value] = cachedMarkup || setCachedIconPreviewMarkup(activePack.id, icon.value, activePack.getIconMarkup(icon.Component) || '');
+      });
+
+      setPreviewMarkup((current) => ({ ...current, ...nextEntries }));
+
+      if (startIndex + PREVIEW_BATCH_SIZE < missingIcons.length) {
+        window.setTimeout(() => warmBatch(startIndex + PREVIEW_BATCH_SIZE), 0);
+      }
+    };
+
+    warmBatch(0);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activePack, previewMarkup, seededPreviewMarkup, visibleIcons]);
+
   const handleSelect = (icon) => {
     if (!activePack) return;
-    onSelect({ ...icon, markup: icon.previewMarkup || activePack.getIconMarkup(icon.Component) });
+    const markup = previewMarkup[icon.value]
+      || seededPreviewMarkup[icon.value]
+      || getCachedIconPreviewMarkup(activePack.id, icon.value)
+      || setCachedIconPreviewMarkup(activePack.id, icon.value, activePack.getIconMarkup(icon.Component) || '');
+    if (!markup) {
+      setSelectionError('This icon could not be rendered. Please choose a different icon.');
+      return;
+    }
+    setSelectionError('');
+    onSelect({ ...icon, markup });
   };
 
   const modal = (
@@ -136,25 +202,40 @@ export default function IconLibraryModal({ onSelect, onClose, isTargetMissing = 
           {isTargetMissing ? <div className="fb-artboard-bp-note">The original icon target is no longer available. Re-select an icon element and reopen the library.</div> : null}
           {!activePack && !activeError ? <div className="fb-artboard-bp-note">Loading {packMeta?.label || 'icon'} library...</div> : null}
           {activeError ? <div className="fb-artboard-bp-note">{activeError}</div> : null}
+          {selectionError ? <div className="fb-artboard-bp-note">{selectionError}</div> : null}
           {activePack && !isTargetMissing ? (
             <div className="fb-icon-browser__grid">
-              {visibleIconCards.map((icon) => (
-                <button
-                  key={icon.value}
-                  type="button"
-                  className="fb-icon-browser__icon-card"
-                  title={icon.label}
-                  onClick={() => handleSelect(icon)}
-                >
-                  <div className="fb-icon-browser__icon-glyph">
-                    <icon.Component {...getPackRenderProps(activePack.id, 24)} />
-                  </div>
-                  <div className="fb-icon-browser__icon-name">{icon.label}</div>
-                </button>
-              ))}
+              {visibleIcons.map((icon) => {
+                const iconMarkup = previewMarkup[icon.value] || seededPreviewMarkup[icon.value] || '';
+                const isReady = !!iconMarkup;
+
+                return (
+                  <button
+                    key={icon.value}
+                    type="button"
+                    className="fb-icon-browser__icon-card"
+                    title={icon.label}
+                    disabled={!isReady}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      handleSelect(icon);
+                    }}
+                  >
+                    <div className="fb-icon-browser__icon-glyph">
+                      {isReady ? (
+                        <div dangerouslySetInnerHTML={{ __html: iconMarkup }} />
+                      ) : (
+                        <div className="fb-icon-browser__icon-placeholder" aria-hidden="true" />
+                      )}
+                    </div>
+                    <div className="fb-icon-browser__icon-name">{icon.label}</div>
+                  </button>
+                );
+              })}
             </div>
           ) : null}
-          {activePack && !isTargetMissing && !visibleIconCards.length ? <div className="fb-artboard-bp-note">No icons matched that search.</div> : null}
+          {activePack && !isTargetMissing && !visibleIcons.length ? <div className="fb-artboard-bp-note">No icons matched that search.</div> : null}
         </div>
       </div>
     </div>
