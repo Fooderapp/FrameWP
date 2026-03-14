@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getDefaultPackedIcon, getIconPresetMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
 
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
@@ -277,9 +278,62 @@ function normalizeElementInteractions(interactions) {
   return interactions.map(normalizeElementInteraction).filter(Boolean);
 }
 
-function normalizeElementDynamicFields(element) {
+function getElementIdPrefix(type) {
+  if (type === 'text') return 'txt';
+  if (type === 'image') return 'img';
+  if (type === 'icon') return 'ico';
+  return 'fr';
+}
+
+function normalizeIconFields(source = {}) {
+  const fallbackIcon = getDefaultPackedIcon();
+  const iconSource = source?.iconSource === 'custom' ? 'custom' : 'preset';
+  const iconName = typeof source?.iconName === 'string' && source.iconName.trim()
+    ? source.iconName.trim()
+    : fallbackIcon.value;
+  const presetMarkup = getIconPresetMarkup(iconName);
+  const svgMarkup = sanitizeSvgMarkup(source?.svgMarkup ?? '') || presetMarkup;
+  return {
+    iconSource,
+    iconName,
+    svgMarkup,
+  };
+}
+
+function normalizeIconElementFields(element) {
+  if (!element || element.type !== 'icon') return element;
+
+  const normalizedBase = {
+    ...(element.base ?? {}),
+    ...normalizeIconFields(element.base ?? {}),
+  };
+  const normalizedOverrides = { ...(element.overrides ?? {}) };
+
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const bpOverride = normalizedOverrides[bpId];
+    if (!bpOverride) return;
+    const hasIconField = bpOverride.iconSource != null || bpOverride.iconName != null || bpOverride.svgMarkup != null;
+    if (!hasIconField) return;
+    normalizedOverrides[bpId] = {
+      ...bpOverride,
+      ...normalizeIconFields({
+        ...normalizedBase,
+        ...bpOverride,
+      }),
+    };
+  });
+
   return {
     ...element,
+    base: normalizedBase,
+    overrides: normalizedOverrides,
+  };
+}
+
+function normalizeElementDynamicFields(element) {
+  const normalizedElement = normalizeIconElementFields(element);
+  return {
+    ...normalizedElement,
     bindings: normalizeElementBindings(element?.bindings),
     interactions: normalizeElementInteractions(element?.interactions),
   };
@@ -756,7 +810,7 @@ function instantiateEditorVariantSnapshot(snapshot, variant, order, rootX, rootY
 
   const idMap = {};
   snapshot.forEach((el) => {
-    idMap[el.id] = makeId(el.type === 'text' ? 'txt' : el.type === 'image' ? 'img' : 'fr');
+    idMap[el.id] = makeId(getElementIdPrefix(el.type));
   });
 
   return deepClone(snapshot).map((el) => {
@@ -1054,6 +1108,35 @@ export function createImage(x = 80, y = 80, name) {
   };
 }
 
+export function createIcon(x = 80, y = 80, name) {
+  const defaultIcon = getDefaultPackedIcon();
+  const iconName = defaultIcon.value;
+  return {
+    id: `ico-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'icon',
+    name: name || 'Icon',
+    parentId: null,
+    children: [],
+    base: {
+      x, y, width: 48, height: 48, rotation: 0, locked: false, hidden: false,
+      widthMode: 'fixed', heightMode: 'fixed',
+      minW: null, maxW: null, minH: null, maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      iconSource: 'preset',
+      iconName,
+      svgMarkup: defaultIcon.markup,
+      styles: {
+        backgroundColor: 'transparent',
+        color: '#111827',
+        opacity: 1,
+        boxShadow: '',
+        zIndex: 1,
+      },
+    },
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
 export function createText(x = 80, y = 80, name) {
   return {
     id: `txt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -1259,7 +1342,7 @@ function instantiateComponentSnapshot(snapshot, {
 
   const idMap = {};
   snapshot.forEach((el) => {
-    idMap[el.id] = el.id === root.id && targetRootId ? targetRootId : makeId(el.type === 'text' ? 'txt' : el.type === 'image' ? 'img' : 'fr');
+    idMap[el.id] = el.id === root.id && targetRootId ? targetRootId : makeId(getElementIdPrefix(el.type));
   });
 
   return deepClone(snapshot).map((el) => {
@@ -2217,6 +2300,16 @@ export const useEditorStore = create((set, get) => {
     setInteracting: (v) => set({ interacting: v }),
     saveStatus: null,
     setSaveStatus: (s) => set({ saveStatus: s }),
+    iconLibraryModal: null,
+    openIconLibraryModal: (payload) => set({
+      iconLibraryModal: payload?.targetId
+        ? {
+            targetId: payload.targetId,
+            bpId: payload.bpId ?? 'desktop',
+          }
+        : null,
+    }),
+    closeIconLibraryModal: () => set({ iconLibraryModal: null }),
 
     // ── Getters ────────────────────────────────────────────
     getCurrentPage() {

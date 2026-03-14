@@ -32,6 +32,11 @@ const Icons = {
       <path d="M1 12l4-3.5 3 2.5 2.5-2 4.5 4"/>
     </svg>
   ),
+  icon: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+      <path d="M8 1.8l1.93 3.91 4.32.63-3.12 3.04.74 4.3L8 11.65 4.13 13.68l.74-4.3-3.12-3.04 4.32-.63L8 1.8z"/>
+    </svg>
+  ),
   desktop: (
     <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <rect x="1" y="2" width="14" height="9" rx="1"/>

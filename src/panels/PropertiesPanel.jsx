@@ -3,6 +3,7 @@ import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBac
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import { IconButton, UIIcons } from '../components/UIIcons';
+import { getSvgStrokeWidth, hasSvgVisibleStroke, sanitizeSvgMarkup, setSvgStrokeWidth } from '../components/iconLibrary';
 import VariantTransitionModal from '../components/VariantTransitionModal';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -810,6 +811,7 @@ export default function PropertiesPanel() {
   const setElementInteractions = useEditorStore(s => s.setElementInteractions);
   const allEls              = useEditorStore(s => s.getAllElements());
   const viewportScale       = useEditorStore(s => s.viewport.scale);
+  const openIconLibraryModal = useEditorStore(s => s.openIconLibraryModal);
 
   // Artboard selection
   const artboardSel         = useEditorStore(s => s.artboardSel);
@@ -853,6 +855,7 @@ export default function PropertiesPanel() {
     if (variable && typeof applyValue === 'function') applyValue(variable.value);
     pushHistory();
   };
+
   const interactions = Array.isArray(element?.interactions) ? element.interactions : [];
   const interactionVariables = allVariables.filter((variable) => ['string', 'number', 'color', 'boolean'].includes(variable.type));
   const updateInteractions = (nextInteractions) => {
@@ -1322,6 +1325,7 @@ export default function PropertiesPanel() {
 
   const resolved = resolveElementWithVariables(element, bpId, pageVariables, globalVariables);
   const s = resolved.styles || {};
+  const hasVisibleIconStroke = element?.type === 'icon' && hasSvgVisibleStroke(resolved?.svgMarkup ?? '');
   const textGrow = (resolved.widthMode === 'hug' && resolved.heightMode === 'hug')
     ? 'auto-width'
     : resolved.heightMode === 'hug'
@@ -1476,6 +1480,7 @@ export default function PropertiesPanel() {
   const textBinding = getBindingForProperty('text');
   const fontFamilyBinding = getBindingForProperty('styles.fontFamily');
   const textColorBinding = getBindingForProperty('styles.color');
+  const iconColorBinding = getBindingForProperty('styles.color');
   const hiddenBinding = getBindingForProperty('hidden');
   const fillBinding = getBindingForProperty('styles.backgroundColor');
   const backgroundImageBinding = getBindingForProperty('styles.backgroundImage');
@@ -1484,6 +1489,7 @@ export default function PropertiesPanel() {
   const textBindingVariable = resolveBoundVariable(textBinding);
   const fontFamilyBindingVariable = resolveBoundVariable(fontFamilyBinding);
   const textColorBindingVariable = resolveBoundVariable(textColorBinding);
+  const iconColorBindingVariable = resolveBoundVariable(iconColorBinding);
   const hiddenBindingVariable = resolveBoundVariable(hiddenBinding);
   const fillBindingVariable = resolveBoundVariable(fillBinding);
   const backgroundImageBindingVariable = resolveBoundVariable(backgroundImageBinding);
@@ -1491,6 +1497,7 @@ export default function PropertiesPanel() {
   const zIndexBindingVariable = resolveBoundVariable(zIndexBinding);
 
   return (
+    <>
     <aside className="fb-right">
       <div className="fb-right__header">
         <span style={{ color: 'var(--text-primary)' }}>
@@ -1808,6 +1815,100 @@ export default function PropertiesPanel() {
                 options={TEXT_GROW_OPTIONS}
               />
             </div>
+          </Section>
+        )}
+
+        {element.type === 'icon' && (
+          <Section title="Icon / SVG" action={<ResetBtn show={isOv('iconSource','iconName','svgMarkup') || isSOv('color')} onReset={() => { resetOv('iconSource','iconName','svgMarkup'); resetSOv('color'); }} />}>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Source</span>
+              <ChoiceGroup
+                value={resolved.iconSource ?? 'preset'}
+                onChange={(value) => {
+                  upd('iconSource', value);
+                  commit();
+                }}
+                options={[
+                  { value: 'preset', label: 'Preset' },
+                  { value: 'custom', label: 'Custom SVG' },
+                ]}
+              />
+            </div>
+
+            {hasVisibleIconStroke ? (
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Stroke</span>
+                <NumberInput
+                  value={getSvgStrokeWidth(resolved.svgMarkup ?? '') ?? 2}
+                  min={0.1}
+                  step={0.1}
+                  unit="px"
+                  label="px"
+                  onChange={v => {
+                    upd('svgMarkup', setSvgStrokeWidth(resolved.svgMarkup ?? '', v));
+                    commit();
+                  }}
+                />
+              </div>
+            ) : null}
+
+            {(resolved.iconSource ?? 'preset') === 'preset' ? (
+              <>
+                <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                  <span className="fb-prop-label">Library</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+                    <div style={{ width: 28, height: 28, display: 'grid', placeItems: 'center', color: s.color ?? '#111827', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--panel-2)' }} dangerouslySetInnerHTML={{ __html: resolved.svgMarkup ?? '' }} />
+                    <button
+                      type="button"
+                      className="fb-secondary-btn"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openIconLibraryModal({ targetId: element.id, bpId });
+                      }}
+                      style={{ flex: 1, justifyContent: 'center' }}
+                    >
+                      Browse icon libraries
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="fb-prop-row--full" style={{ marginTop: 8 }}>
+                  <textarea
+                    className="fb-prop-input"
+                    value={resolved.svgMarkup ?? ''}
+                    onChange={(event) => upd('svgMarkup', event.target.value)}
+                    onBlur={(event) => {
+                      upd('svgMarkup', sanitizeSvgMarkup(event.target.value));
+                      commit();
+                    }}
+                    rows={7}
+                    spellCheck={false}
+                    style={{ width: '100%', resize: 'vertical', minHeight: 140, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.45 }}
+                  />
+                </div>
+                <div className="fb-artboard-bp-note">Custom SVG is sanitized on blur. Use <code>currentColor</code> inside the SVG if you want the tint control to drive its color.</div>
+              </>
+            )}
+
+            <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+              <VariableBindingLabel label="Tint">
+                {allowVariableBindings ? (
+                  <VariableBindingButton
+                    variables={getCompatibleBindingVariables('styles.color')}
+                    binding={iconColorBinding}
+                    onSelect={(binding) => commitBinding('styles.color', binding, (value) => updateStyles(element.id, bpId, { color: value || '#111827' }))}
+                    onRemove={() => commitBinding('styles.color', null)}
+                  />
+                ) : null}
+              </VariableBindingLabel>
+              <div style={{ width: '100%' }}>
+                {iconColorBindingVariable ? <BoundVariableCta variable={iconColorBindingVariable} fallbackLabel="Tint variable" /> : <FillPicker value={s.color ?? '#111827'} onChange={(value) => { updS('color', value); commit(); }} />}
+              </div>
+            </div>
+            <div className="fb-artboard-bp-note">Tint uses the same picker as fills. Solid colors are recommended for icons that rely on <code>currentColor</code>.</div>
           </Section>
         )}
 
@@ -2171,6 +2272,7 @@ export default function PropertiesPanel() {
 
       </div>
     </aside>
+    </>
   );
 }
 

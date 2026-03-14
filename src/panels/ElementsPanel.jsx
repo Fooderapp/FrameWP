@@ -1,5 +1,6 @@
 import React from 'react';
 import { useEditorStore } from '../store/editorStore';
+import { getIconPresetMarkup } from '../components/iconLibrary';
 
 const ELEMENT_TYPES = [
   {
@@ -32,6 +33,13 @@ const ELEMENT_TYPES = [
       </svg>
     ),
     label: 'Text',
+  },
+  {
+    type: 'icon',
+    icon: (
+      <div style={{ width: 22, height: 22, display: 'grid', placeItems: 'center' }} dangerouslySetInnerHTML={{ __html: getIconPresetMarkup('star') }} />
+    ),
+    label: 'Icon / SVG',
   },
 ];
 

@@ -55,6 +55,64 @@ class FrameBuilder_Exporter {
 		return '';
 	}
 
+	private function sanitize_svg_markup( $markup ): string {
+		if ( ! is_string( $markup ) || trim( $markup ) === '' ) return '';
+
+		$allowed = [
+			'svg' => [
+				'viewbox' => true,
+				'fill' => true,
+				'stroke' => true,
+				'stroke-width' => true,
+				'stroke-linecap' => true,
+				'stroke-linejoin' => true,
+				'stroke-miterlimit' => true,
+				'width' => true,
+				'height' => true,
+				'xmlns' => true,
+				'xmlns:xlink' => true,
+				'preserveaspectratio' => true,
+				'role' => true,
+				'aria-hidden' => true,
+				'focusable' => true,
+				'opacity' => true,
+				'fill-opacity' => true,
+				'stroke-opacity' => true,
+				'transform' => true,
+			],
+			'g' => [
+				'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true,
+				'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true, 'clip-path' => true, 'mask' => true,
+			],
+			'path' => [
+				'd' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true,
+				'stroke-miterlimit' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true, 'clip-rule' => true,
+			],
+			'circle' => [ 'cx' => true, 'cy' => true, 'r' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'rect' => [ 'x' => true, 'y' => true, 'width' => true, 'height' => true, 'rx' => true, 'ry' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'line' => [ 'x1' => true, 'y1' => true, 'x2' => true, 'y2' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'polyline' => [ 'points' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'polygon' => [ 'points' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'ellipse' => [ 'cx' => true, 'cy' => true, 'rx' => true, 'ry' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'defs' => [],
+			'lineargradient' => [ 'id' => true, 'x1' => true, 'y1' => true, 'x2' => true, 'y2' => true, 'gradientunits' => true, 'gradienttransform' => true ],
+			'radialgradient' => [ 'id' => true, 'cx' => true, 'cy' => true, 'r' => true, 'fx' => true, 'fy' => true, 'gradientunits' => true, 'gradienttransform' => true ],
+			'stop' => [ 'offset' => true, 'stop-color' => true, 'stop-opacity' => true ],
+			'clippath' => [ 'id' => true ],
+			'mask' => [ 'id' => true, 'maskunits' => true, 'maskcontentunits' => true ],
+			'symbol' => [ 'id' => true, 'viewbox' => true, 'preserveaspectratio' => true ],
+			'use' => [ 'href' => true, 'xlink:href' => true, 'x' => true, 'y' => true, 'width' => true, 'height' => true ],
+			'title' => [],
+			'desc' => [],
+		];
+
+		$clean = wp_kses( $markup, $allowed );
+		$clean = preg_replace( '/\son[a-z-]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', '', $clean );
+		$clean = preg_replace( '/\s(?:href|xlink:href)\s*=\s*("|\')\s*javascript:[^\1]*\1/i', '', $clean );
+		if ( ! is_string( $clean ) || trim( $clean ) === '' ) return '';
+		return preg_replace( '/<svg\b/i', '<svg width="100%" height="100%" preserveAspectRatio="xMidYMid meet"', $clean, 1 ) ?? '';
+	}
+
 	public function __construct( array $layout ) {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
@@ -448,6 +506,14 @@ class FrameBuilder_Exporter {
 			$text_style .= 'word-break:break-word;';
 			$text_value = nl2br( esc_html( (string) ( $resolved['text'] ?? 'Text' ) ) );
 			$html .= '<div class="fb-text-content" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="' . esc_attr( $text_style ) . '">' . $text_value . '</div>';
+		}
+
+		if ( ( $el['type'] ?? '' ) === 'icon' ) {
+			$icon_markup = $this->sanitize_svg_markup( $resolved['svgMarkup'] ?? '' );
+			$icon_color = $this->sanitize_css_value( $styles['color'] ?? '#111827' );
+			if ( $icon_markup !== '' ) {
+				$html .= '<div class="fb-icon-content" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:' . esc_attr( $icon_color ) . ';pointer-events:none;user-select:none;">' . $icon_markup . '</div>';
+			}
 		}
 
 		// Compute flex direction this element provides to its own children

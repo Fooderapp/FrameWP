@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
+import { sanitizeSvgMarkup } from '../components/iconLibrary';
 
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
@@ -449,6 +450,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     cursor: isEditingText ? 'text' : 'inherit',
     outline: 'none',
   } : null;
+  const iconMarkup = el.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
 
   return (
     <div
@@ -551,6 +553,34 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           {isEditingText ? undefined : (resolved.text || 'Text')}
         </div>
       )}
+      {el.type === 'icon' && (iconMarkup ? (
+        <div
+          className="fb-icon-content"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: styles?.color ?? '#111827',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+          dangerouslySetInnerHTML={{ __html: iconMarkup }}
+        />
+      ) : (
+        <div style={{
+          position: 'absolute', inset: 0,
+          display: 'grid', placeItems: 'center',
+          border: '1.5px dashed rgba(120,120,160,0.35)',
+          color: 'rgba(120,120,140,0.7)',
+          borderRadius: 'inherit',
+          fontSize: 11,
+          pointerEvents: 'none',
+        }}>
+          Icon
+        </div>
+      ))}
       {/* Padding handles — shaded zones + drag lines (when selected and padding > 0) */}
       {isSelected && !interactionLocked && onStartPaddingDrag && (() => {
         const toNum = v => typeof v === 'number' ? v : parseFloat(v) || 0;

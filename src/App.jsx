@@ -4,7 +4,9 @@ import LeftPanel from './panels/LeftPanel';
 import InfiniteCanvas from './canvas/InfiniteCanvas';
 import PropertiesPanel from './panels/PropertiesPanel';
 import ComponentEditorOverlay from './components/ComponentEditorOverlay';
+import IconLibraryModal from './components/IconLibraryModal';
 import VariablesModal from './components/VariablesModal';
+import { getSvgStrokeWidth, hasSvgVisibleStroke, removeSvgStroke, setSvgStrokeWidth } from './components/iconLibrary';
 import { useEditorStore } from './store/editorStore';
 
 export default function App() {
@@ -22,6 +24,10 @@ export default function App() {
   const componentEditor = useEditorStore(s => s.componentEditor);
   const components = useEditorStore(s => s.components);
   const variablesModalOpen = useEditorStore(s => s.variablesModalOpen);
+  const iconLibraryModal = useEditorStore(s => s.iconLibraryModal);
+  const closeIconLibraryModal = useEditorStore(s => s.closeIconLibraryModal);
+  const updateElementLayout = useEditorStore(s => s.updateElementLayout);
+  const getAllElements = useEditorStore(s => s.getAllElements);
   const [leftWidth, setLeftWidth] = useState(240);
   const [rightWidth, setRightWidth] = useState(312);
   const resizeStateRef = useRef(null);
@@ -98,6 +104,29 @@ export default function App() {
     event.preventDefault();
   };
 
+  const iconLibraryTarget = iconLibraryModal?.targetId
+    ? getAllElements().find((element) => element.id === iconLibraryModal.targetId) ?? null
+    : null;
+
+  const handleIconLibrarySelect = (icon) => {
+    const modalState = useEditorStore.getState().iconLibraryModal;
+    if (!modalState?.targetId) return;
+    const currentTarget = useEditorStore.getState().getAllElements().find((element) => element.id === modalState.targetId) ?? null;
+    if (!currentTarget || currentTarget.type !== 'icon') return;
+    const currentStrokeWidth = getSvgStrokeWidth(currentTarget.base?.svgMarkup ?? '') ?? null;
+    const pickedIconHasStroke = hasSvgVisibleStroke(icon.markup);
+    const nextMarkup = !pickedIconHasStroke
+      ? removeSvgStroke(icon.markup)
+      : (currentStrokeWidth ? setSvgStrokeWidth(icon.markup, currentStrokeWidth) : icon.markup);
+    updateElementLayout(currentTarget.id, modalState.bpId ?? 'desktop', {
+      iconSource: 'preset',
+      iconName: icon.value,
+      svgMarkup: nextMarkup,
+    });
+    pushHistory();
+    closeIconLibraryModal();
+  };
+
   return (
     <div className="fb-app">
       <TopBar />
@@ -112,7 +141,14 @@ export default function App() {
           <PropertiesPanel />
         </div>
       </div>
-        {variablesModalOpen ? <VariablesModal /> : null}
+      {variablesModalOpen ? <VariablesModal /> : null}
+      {iconLibraryModal ? (
+        <IconLibraryModal
+          onClose={closeIconLibraryModal}
+          onSelect={handleIconLibrarySelect}
+          isTargetMissing={!iconLibraryTarget || iconLibraryTarget.type !== 'icon'}
+        />
+      ) : null}
       {componentEditorOpen ? <ComponentEditorOverlay /> : null}
     </div>
   );

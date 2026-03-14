@@ -1,7 +1,8 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useState } from 'react';
-import { useEditorStore, createFrame, createImage, createText, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage, createText, createIcon, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected } from '../store/editorStore';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
+import { extractSvgMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
 
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
@@ -218,6 +219,22 @@ function rotatePointAround(point, center, degrees) {
 
 function midpoint(a, b) {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+function getSvgViewBoxSize(markup) {
+  if (typeof markup !== 'string') return { width: 64, height: 64 };
+  const viewBoxMatch = markup.match(/viewBox\s*=\s*['"]\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*['"]/i);
+  if (!viewBoxMatch) return { width: 64, height: 64 };
+  const rawWidth = parseFloat(viewBoxMatch[3]);
+  const rawHeight = parseFloat(viewBoxMatch[4]);
+  if (!Number.isFinite(rawWidth) || !Number.isFinite(rawHeight) || rawWidth <= 0 || rawHeight <= 0) {
+    return { width: 64, height: 64 };
+  }
+  const maxSize = 72;
+  if (rawWidth >= rawHeight) {
+    return { width: maxSize, height: Math.max(16, Math.round((rawHeight / rawWidth) * maxSize)) };
+  }
+  return { width: Math.max(16, Math.round((rawWidth / rawHeight) * maxSize)), height: maxSize };
 }
 
 function isFinitePoint(point) {
@@ -1288,6 +1305,30 @@ export default function InfiniteCanvas() {
     return true;
   }, [addElements, getParentPlacementFromClient, getPlacementFromClient, pushHistory]);
 
+  const pasteSvgMarkupAt = useCallback(({ markup, clientX = null, clientY = null, bpId = null }) => {
+    const sanitizedMarkup = sanitizeSvgMarkup(extractSvgMarkup(markup));
+    if (!sanitizedMarkup) return false;
+    const placement = getPlacementFromClient(
+      clientX ?? lastPointerClientRef.current.x,
+      clientY ?? lastPointerClientRef.current.y,
+      bpId,
+    );
+    if (!placement) return false;
+
+    const icon = createIcon(placement.x, placement.y);
+    const size = getSvgViewBoxSize(sanitizedMarkup);
+    icon.base.iconSource = 'custom';
+    icon.base.iconName = 'custom-svg';
+    icon.base.svgMarkup = sanitizedMarkup;
+    icon.base.width = size.width;
+    icon.base.height = size.height;
+    addElement(icon, null, placement.bpId);
+    useEditorStore.getState().setSelection({ elementId: icon.id, bpId: placement.bpId });
+    setArtboardSel(null);
+    pushHistory();
+    return true;
+  }, [addElement, getPlacementFromClient, pushHistory, setArtboardSel]);
+
   const resolveHoveredElementId = useCallback((clientX, clientY) => {
     const container = containerRef.current;
     if (!container) return null;
@@ -1593,17 +1634,33 @@ export default function InfiniteCanvas() {
         if (!selection) return;
         cutElementToClipboard(selection.elementId, selection.bpId);
       }
-      // Paste (Cmd/Ctrl+V)
-      if ((e.metaKey || e.ctrlKey) && e.key === 'v' && !isEditableTarget) {
-        if (!clipboard.current) return;
-        const currentBpId = useEditorStore.getState().selection?.bpId ?? clipboard.current.bpId;
-        if (!canPasteIntoFrame(currentBpId)) return;
-        pasteClipboardAt({
-          bpId: currentBpId,
-          clientX: lastPointerClientRef.current.x,
-          clientY: lastPointerClientRef.current.y,
-        });
+    };
+    const onPaste = (e) => {
+      const target = e.target;
+      const isEditablePasteTarget = target?.matches?.('input,textarea') || target?.isContentEditable;
+      if (isEditablePasteTarget) return;
+
+      const clipboardData = e.clipboardData;
+      const plainText = clipboardData?.getData('text/plain') ?? '';
+      const htmlText = clipboardData?.getData('text/html') ?? '';
+      const svgMarkup = extractSvgMarkup(plainText) || extractSvgMarkup(htmlText);
+
+      if (svgMarkup) {
+        if (pasteSvgMarkupAt({ markup: svgMarkup, clientX: lastPointerClientRef.current.x, clientY: lastPointerClientRef.current.y })) {
+          e.preventDefault();
+        }
+        return;
       }
+
+      if (!clipboard.current) return;
+      const currentBpId = useEditorStore.getState().selection?.bpId ?? clipboard.current.bpId;
+      if (!canPasteIntoFrame(currentBpId)) return;
+      e.preventDefault();
+      pasteClipboardAt({
+        bpId: currentBpId,
+        clientX: lastPointerClientRef.current.x,
+        clientY: lastPointerClientRef.current.y,
+      });
     };
     const onKeyUp = (e) => {
       if (e.code === 'Space') {
@@ -1612,12 +1669,14 @@ export default function InfiniteCanvas() {
       }
     };
     window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('paste', onPaste);
     window.addEventListener('keyup', onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('paste', onPaste);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [canPasteIntoFrame, copyElementToClipboard, cutElementToClipboard, deleteElement, pasteClipboardAt, pushHistory]);
+  }, [canPasteIntoFrame, copyElementToClipboard, cutElementToClipboard, deleteElement, pasteClipboardAt, pasteSvgMarkupAt, pushHistory]);
 
   // ── Initial fit-to-canvas ─────────────────────────────────
   useEffect(() => {
@@ -1994,7 +2053,9 @@ export default function InfiniteCanvas() {
         ? createImage(localX, localY)
         : drawType === 'text'
           ? createText(localX, localY)
-          : createFrame(localX, localY);
+          : drawType === 'icon'
+            ? createIcon(localX, localY)
+            : createFrame(localX, localY);
       newEl.base.width  = elW;
       newEl.base.height = elH;
       addElement(newEl, parentId, targetBpId);
@@ -2603,6 +2664,10 @@ export default function InfiniteCanvas() {
       const el = createText(elX, elY);
       addElement(el, null, targetBpId);
       pushHistory();
+    } else if (type === 'icon') {
+      const el = createIcon(elX, elY);
+      addElement(el, null, targetBpId);
+      pushHistory();
     }
   }, [addElement, getPlacementFromClient, insertComponentInstance, pushHistory]);
 
@@ -2634,6 +2699,10 @@ export default function InfiniteCanvas() {
       pushHistory();
     } else if (type === 'text') {
       const el = createText(localX, localY);
+      addElement(el, targetElementId, targetBpId);
+      pushHistory();
+    } else if (type === 'icon') {
+      const el = createIcon(localX, localY);
       addElement(el, targetElementId, targetBpId);
       pushHistory();
     } else if (draggedId && draggedId !== targetElementId) {

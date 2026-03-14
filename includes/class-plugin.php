@@ -6,6 +6,7 @@ class FrameBuilder_Plugin {
 	public static function init() {
 		add_action( 'admin_menu',             [ __CLASS__, 'add_menu' ] );
 		add_action( 'admin_enqueue_scripts',  [ __CLASS__, 'enqueue' ] );
+		add_filter( 'script_loader_tag',      [ __CLASS__, 'filter_script_loader_tag' ], 10, 3 );
 		add_action( 'admin_print_scripts',    [ __CLASS__, 'dequeue_builder_admin_scripts' ], PHP_INT_MAX );
 		add_action( 'admin_print_footer_scripts', [ __CLASS__, 'dequeue_builder_admin_scripts' ], PHP_INT_MAX );
 		add_action( 'admin_print_styles',     [ __CLASS__, 'dequeue_builder_admin_scripts' ], PHP_INT_MAX );
@@ -139,6 +140,7 @@ class FrameBuilder_Plugin {
 
 		if ( file_exists( $assets_dir . 'builder.js' ) ) {
 			wp_enqueue_script( 'framebuilder', $assets_url . 'builder.js', [], FB_VERSION, true );
+			wp_script_add_data( 'framebuilder', 'type', 'module' );
 		}
 
 		// WordPress HMR dev mode: load Vite dev server instead
@@ -155,6 +157,18 @@ class FrameBuilder_Plugin {
 			'adminUrl' => admin_url(),
 			'postId'   => isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0,
 		] );
+	}
+
+	public static function filter_script_loader_tag( $tag, $handle, $src ) {
+		if ( $handle !== 'framebuilder' ) {
+			return $tag;
+		}
+
+		return sprintf(
+			'<script type="module" src="%s" id="%s-js"></script>',
+			esc_url( $src ),
+			esc_attr( $handle )
+		);
 	}
 
 	private static function is_builder_screen( $hook = '' ): bool {
