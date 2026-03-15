@@ -1,6 +1,7 @@
 import React, { useState, useRef, useLayoutEffect } from 'react';
 import { useEditorStore, resolveBackground, resolveElementWithVariables, resolvePagePadding, resolvePageLayout, isElementSelected } from '../store/editorStore';
 import CanvasElement from './CanvasElement';
+import AnimationArtboardOverlay from '../components/AnimationArtboardOverlay';
 
 const HEADER_H = 36;
 
@@ -120,6 +121,7 @@ export default function Artboard({
 
   // ── Gap handle measurement ─────────────────────────────────
   const contentRef = useRef(null);
+  const boardRef = useRef(null);
   const [gapHandles, setGapHandles] = useState([]);
   useLayoutEffect(() => {
     if (!layoutOn || !isArtboardSelected || !contentRef.current) {
@@ -186,6 +188,7 @@ export default function Artboard({
 
       {/* Artboard content — overflow:hidden clips on-canvas elements */}
       <div
+        ref={boardRef}
         className={`fb-artboard${isArtboardSelected ? ' fb-artboard--selected' : ''}`}
         data-bp={bp.id}
         style={{ width: bp.width, height: bp.height, background: isComponentSurface ? 'transparent' : background }}
@@ -300,6 +303,7 @@ export default function Artboard({
             </div>
           );
         })}
+        <AnimationArtboardOverlay bpId={bp.id} boardRef={boardRef} surfaceMode={surfaceMode} />
       </div>
 
       {/* Off-canvas layer — zero-size div at artboard origin, overflow visible.

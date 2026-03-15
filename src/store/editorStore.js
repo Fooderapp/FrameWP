@@ -321,6 +321,223 @@ function normalizeElementInteractions(interactions) {
   return interactions.map(normalizeElementInteraction).filter(Boolean);
 }
 
+const ELEMENT_ANIMATION_TYPES = new Set(['enter', 'scroll', 'scroll-variant']);
+const ELEMENT_ANIMATION_PLAYBACK = new Set(['once', 'replay']);
+
+const ENTER_EFFECT_PRESETS = {
+  fadeUp: { opacity: 0, scale: 1, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: 0, offsetY: 40 },
+  fadeIn: { opacity: 0, scale: 1, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: 0, offsetY: 0 },
+  scaleIn: { opacity: 0, scale: 0.92, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: 0, offsetY: 0 },
+  slideLeft: { opacity: 0, scale: 1, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: -48, offsetY: 0 },
+};
+
+function makeDefaultElementAnimations() {
+  return { desktop: [], tablet: null, mobile: null };
+}
+
+function normalizeAnimationTransition(transition, fallback = { type: 'ease', duration: 0.6, easePreset: 'easeInOut' }) {
+  return normalizeComponentTransition({
+    ...fallback,
+    ...(transition ?? {}),
+  });
+}
+
+function normalizeEnterEffect(effect, preset = 'fadeUp') {
+  const presetValues = ENTER_EFFECT_PRESETS[preset] ?? ENTER_EFFECT_PRESETS.fadeUp;
+  const rotateMode = effect?.rotateMode === '3d' ? '3d' : '2d';
+  return {
+    opacity: clampFinite(effect?.opacity, presetValues.opacity, 0, 1),
+    scale: clampFinite(effect?.scale, presetValues.scale, 0.1, 4),
+    rotateMode,
+    rotate: clampFinite(effect?.rotate, presetValues.rotate, -1080, 1080),
+    rotateX: clampFinite(effect?.rotateX, presetValues.rotateX, -1080, 1080),
+    rotateY: clampFinite(effect?.rotateY, presetValues.rotateY, -1080, 1080),
+    skewX: clampFinite(effect?.skewX, presetValues.skewX, -180, 180),
+    skewY: clampFinite(effect?.skewY, presetValues.skewY, -180, 180),
+    offsetX: clampFinite(effect?.offsetX, presetValues.offsetX, -4000, 4000),
+    offsetY: clampFinite(effect?.offsetY, presetValues.offsetY, -4000, 4000),
+  };
+}
+
+function normalizeScrollEndState(endState) {
+  return {
+    layout: sanitizeLayoutUpdates(endState?.layout ?? {}) ?? {},
+    styles: { ...(endState?.styles ?? {}) },
+  };
+}
+
+function normalizeAnimationPatchState(state) {
+  return {
+    layout: sanitizeLayoutUpdates(state?.layout ?? {}) ?? {},
+    styles: { ...(state?.styles ?? {}) },
+  };
+}
+
+function normalizeAnimationMarkerOffset(value) {
+  const numericValue = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(numericValue)) return null;
+  return Math.min(2, Math.max(-2, numericValue));
+}
+
+function normalizeAnimationMarkerOffsetPx(value) {
+  const numericValue = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(numericValue)) return null;
+  return Math.min(20000, Math.max(-20000, numericValue));
+}
+
+function normalizeScrollVariantTargets(targets, legacyTargetVariantId = null, legacyMarker = 0.5) {
+  const source = Array.isArray(targets) && targets.length
+    ? targets
+    : [{ targetVariantId: legacyTargetVariantId, marker: legacyMarker }];
+  const normalized = source.map((target, index) => ({
+    id: typeof target?.id === 'string' && target.id ? target.id : makeId('animtarget'),
+    targetVariantId: typeof target?.targetVariantId === 'string' && target.targetVariantId ? target.targetVariantId : null,
+    marker: clampFinite(target?.marker, index === 0 ? legacyMarker : Math.min(0.9, 0.35 + (index * 0.2)), 0, 1),
+    markerOffset: normalizeAnimationMarkerOffset(target?.markerOffset),
+    markerOffsetPx: normalizeAnimationMarkerOffsetPx(target?.markerOffsetPx),
+  }));
+  normalized.sort((left, right) => (left.marker ?? 0) - (right.marker ?? 0));
+  return normalized;
+}
+
+function normalizeElementAnimation(animation, index = 0) {
+  const type = ELEMENT_ANIMATION_TYPES.has(animation?.type) ? animation.type : 'enter';
+  const preset = typeof animation?.preset === 'string' && animation.preset
+    ? animation.preset
+    : (type === 'scroll-variant' ? 'custom' : 'fadeUp');
+  const transitionFallback = type === 'scroll-variant'
+    ? { type: 'ease', duration: 0.45, easePreset: 'easeInOut' }
+    : { type: 'ease', duration: 0.7, easePreset: 'easeInOut' };
+  const base = {
+    id: typeof animation?.id === 'string' && animation.id ? animation.id : makeId('anim'),
+    type,
+    name: typeof animation?.name === 'string' && animation.name.trim()
+      ? animation.name.trim()
+      : (type === 'enter' ? 'Appear' : (type === 'scroll' ? 'Scroll animation' : 'Scroll variant')),
+    preset,
+    transition: normalizeAnimationTransition(animation?.transition, transitionFallback),
+  };
+
+  if (type === 'enter') {
+    return {
+      ...base,
+      playback: ELEMENT_ANIMATION_PLAYBACK.has(animation?.playback) ? animation.playback : 'once',
+      effect: normalizeEnterEffect(animation?.effect, preset),
+      startState: normalizeAnimationPatchState(animation?.startState),
+    };
+  }
+
+  if (type === 'scroll') {
+    return {
+      ...base,
+      start: clampFinite(animation?.start, 0.2, 0, 1),
+      end: clampFinite(animation?.end, 0.68, 0, 1),
+      startOffset: normalizeAnimationMarkerOffset(animation?.startOffset),
+      endOffset: normalizeAnimationMarkerOffset(animation?.endOffset),
+      startOffsetPx: normalizeAnimationMarkerOffsetPx(animation?.startOffsetPx),
+      endOffsetPx: normalizeAnimationMarkerOffsetPx(animation?.endOffsetPx),
+      playback: ELEMENT_ANIMATION_PLAYBACK.has(animation?.playback) ? animation.playback : 'once',
+      effect: normalizeEnterEffect(animation?.effect, preset),
+      endState: normalizeAnimationPatchState(animation?.endState),
+    };
+  }
+
+  const targets = normalizeScrollVariantTargets(animation?.targets, animation?.targetVariantId, animation?.marker);
+  return {
+    ...base,
+    marker: targets[0]?.marker ?? 0.5,
+    targetVariantId: targets[0]?.targetVariantId ?? null,
+    targets,
+    playback: ELEMENT_ANIMATION_PLAYBACK.has(animation?.playback) ? animation.playback : 'once',
+    order: clampFinite(animation?.order, index, 0, 999),
+  };
+}
+
+function normalizeElementAnimationCollection(collection) {
+  if (!Array.isArray(collection)) return [];
+  return collection.map((entry, index) => normalizeElementAnimation(entry, index));
+}
+
+function normalizeElementAnimations(animations) {
+  const safe = animations && typeof animations === 'object' ? animations : {};
+  return {
+    desktop: normalizeElementAnimationCollection(safe.desktop),
+    tablet: Array.isArray(safe.tablet) ? normalizeElementAnimationCollection(safe.tablet) : null,
+    mobile: Array.isArray(safe.mobile) ? normalizeElementAnimationCollection(safe.mobile) : null,
+  };
+}
+
+export function resolveElementAnimations(element, bpId) {
+  const animations = normalizeElementAnimations(element?.animations);
+  if (bpId === 'mobile') return animations.mobile ?? animations.tablet ?? animations.desktop;
+  if (bpId === 'tablet') return animations.tablet ?? animations.desktop;
+  return animations.desktop;
+}
+
+function getAnimationCollectionForWrite(element, bpId) {
+  const animations = normalizeElementAnimations(element?.animations);
+  if (bpId === 'desktop') return normalizeElementAnimationCollection(animations.desktop);
+  if (Array.isArray(animations?.[bpId])) return normalizeElementAnimationCollection(animations[bpId]);
+  return normalizeElementAnimationCollection(resolveElementAnimations(element, bpId));
+}
+
+function updateElementAnimationCollection(element, bpId, updater) {
+  const animations = normalizeElementAnimations(element?.animations);
+  const current = getAnimationCollectionForWrite(element, bpId);
+  const nextCollection = normalizeElementAnimationCollection(updater(current));
+  return {
+    ...element,
+    animations: {
+      ...animations,
+      [bpId]: nextCollection,
+    },
+  };
+}
+
+function updateAnimationEndState(entry, key, updates) {
+  return normalizeElementAnimation({
+    ...entry,
+    endState: {
+      ...entry?.endState,
+      [key]: key === 'layout'
+        ? { ...(entry?.endState?.layout ?? {}), ...(sanitizeLayoutUpdates(updates) ?? {}) }
+        : { ...(entry?.endState?.styles ?? {}), ...(updates ?? {}) },
+    },
+  });
+}
+
+function valuesMatchForAnimationOverride(nextValue, baseValue) {
+  if (Object.is(nextValue, baseValue)) return true;
+  if (nextValue == null && baseValue == null) return true;
+  if (typeof nextValue === 'number' || typeof baseValue === 'number') {
+    const left = typeof nextValue === 'number' ? nextValue : parseFloat(nextValue);
+    const right = typeof baseValue === 'number' ? baseValue : parseFloat(baseValue);
+    if (Number.isFinite(left) && Number.isFinite(right)) return Math.abs(left - right) < 0.0001;
+  }
+  return `${nextValue ?? ''}` === `${baseValue ?? ''}`;
+}
+
+export function applyAnimationPreviewPatch(resolved, patch) {
+  if (!patch) return resolved;
+  return {
+    ...resolved,
+    ...(patch.layout ?? {}),
+    styles: {
+      ...(resolved?.styles ?? {}),
+      ...(patch.styles ?? {}),
+    },
+  };
+}
+
+export function getAnimationEditorPreviewPatch(element, bpId, animationEditor) {
+  if (!animationEditor || animationEditor.elementId !== element?.id || animationEditor.bpId !== bpId) return null;
+  const entry = resolveElementAnimations(element, bpId).find((item) => item.id === animationEditor.animationId) ?? null;
+  if (!entry) return null;
+  if (animationEditor.mode === 'scroll-effect' && entry.type === 'scroll') return entry?.endState ?? null;
+  if (animationEditor.mode === 'enter-start' && entry.type === 'enter') return entry?.startState ?? null;
+  return null;
+}
+
 function getElementIdPrefix(type) {
   if (type === 'text') return 'txt';
   if (type === 'image') return 'img';
@@ -432,6 +649,7 @@ function normalizeElementDynamicFields(element) {
   const normalizedElement = normalizeIconElementFields(normalizeTextElementFields(element));
   return {
     ...normalizedElement,
+    animations: normalizeElementAnimations(element?.animations),
     bindings: normalizeElementBindings(element?.bindings),
     interactions: normalizeElementInteractions(element?.interactions),
   };
@@ -1180,6 +1398,7 @@ export function createFrame(x = 80, y = 80, name) {
         paddingLeft: 0, alignItems: 'flex-start', justifyContent: 'flex-start', boxShadow: '', zIndex: 1,
       },
     },
+    animations: makeDefaultElementAnimations(),
     overrides: { tablet: {}, mobile: {} },
   };
 }
@@ -1203,6 +1422,7 @@ export function createImage(x = 80, y = 80, name) {
         opacity: 1, objectFit: 'cover', boxShadow: '', zIndex: 1,
       },
     },
+    animations: makeDefaultElementAnimations(),
     overrides: { tablet: {}, mobile: {} },
   };
 }
@@ -1232,6 +1452,7 @@ export function createIcon(x = 80, y = 80, name) {
         zIndex: 1,
       },
     },
+    animations: makeDefaultElementAnimations(),
     overrides: { tablet: {}, mobile: {} },
   };
 }
@@ -1270,6 +1491,7 @@ export function createText(x = 80, y = 80, name) {
         zIndex: 1,
       },
     },
+    animations: makeDefaultElementAnimations(),
     overrides: { tablet: {}, mobile: {} },
   };
 }
@@ -2401,6 +2623,22 @@ export const useEditorStore = create((set, get) => {
     setInteracting: (v) => set({ interacting: v }),
     saveStatus: null,
     setSaveStatus: (s) => set({ saveStatus: s }),
+    animationEditor: null,
+    openAnimationEditor: (payload) => set({
+      animationEditor: payload && payload.elementId && payload.animationId
+        ? {
+            elementId: payload.elementId,
+            bpId: payload.bpId ?? 'desktop',
+            animationId: payload.animationId,
+            mode: payload.mode === 'enter-start'
+              ? 'enter-start'
+              : (payload.mode === 'scroll-effect'
+                ? 'scroll-effect'
+                : (payload.mode === 'scroll-variant-marker' ? 'scroll-variant-marker' : 'scroll-range')),
+          }
+        : null,
+    }),
+    closeAnimationEditor: () => set({ animationEditor: null }),
     iconLibraryModal: null,
     openIconLibraryModal: (payload) => set((state) => {
       const fallbackSelection = normalizeSelection(state.selection);
@@ -2552,6 +2790,30 @@ export const useEditorStore = create((set, get) => {
     /** Update style props for a breakpoint.
      *  Desktop → base.styles. Tablet/Mobile → overrides[bpId].styles */
     updateElementStyles(elementId, bpId, styleUpdates) {
+      const animationEditor = get().animationEditor;
+      if ((animationEditor?.mode === 'scroll-effect' || animationEditor?.mode === 'enter-start') && animationEditor.elementId === elementId && animationEditor.bpId === bpId) {
+        const targetElement = get().getAllElements().find((entry) => entry.id === elementId) ?? null;
+        const currentPage = get().pages.find((page) => page.id === get().currentPageId) ?? null;
+        const pageVariables = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
+        const resolvedBase = targetElement ? resolveElementWithVariables(targetElement, bpId, pageVariables, get().globalVariables) : null;
+        get().updateElementAnimation(elementId, bpId, animationEditor.animationId, (entry) => {
+          const currentPatch = animationEditor.mode === 'enter-start' ? entry?.startState : entry?.endState;
+          const nextStyles = { ...(currentPatch?.styles ?? {}) };
+          Object.entries(styleUpdates ?? {}).forEach(([key, value]) => {
+            const baseValue = resolvedBase?.styles?.[key];
+            if (valuesMatchForAnimationOverride(value, baseValue)) delete nextStyles[key];
+            else nextStyles[key] = value;
+          });
+          return normalizeElementAnimation({
+            ...entry,
+            [animationEditor.mode === 'enter-start' ? 'startState' : 'endState']: {
+              ...(animationEditor.mode === 'enter-start' ? entry?.startState : entry?.endState),
+              styles: nextStyles,
+            },
+          });
+        });
+        return;
+      }
       withPage(els => els.map(el => {
         if (el.id !== elementId) return el;
         const textFieldUpdates = getTextStyleDrivenFieldUpdates(el, bpId, styleUpdates);
@@ -2608,6 +2870,30 @@ export const useEditorStore = create((set, get) => {
     updateElementLayout(elementId, bpId, updates) {
       const safeUpdates = sanitizeLayoutUpdates(updates);
       if (!safeUpdates || !Object.keys(safeUpdates).length) return;
+      const animationEditor = get().animationEditor;
+      if ((animationEditor?.mode === 'scroll-effect' || animationEditor?.mode === 'enter-start') && animationEditor.elementId === elementId && animationEditor.bpId === bpId) {
+        const targetElement = get().getAllElements().find((entry) => entry.id === elementId) ?? null;
+        const currentPage = get().pages.find((page) => page.id === get().currentPageId) ?? null;
+        const pageVariables = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
+        const resolvedBase = targetElement ? resolveElementWithVariables(targetElement, bpId, pageVariables, get().globalVariables) : null;
+        get().updateElementAnimation(elementId, bpId, animationEditor.animationId, (entry) => {
+          const currentPatch = animationEditor.mode === 'enter-start' ? entry?.startState : entry?.endState;
+          const nextLayout = { ...(currentPatch?.layout ?? {}) };
+          Object.entries(safeUpdates ?? {}).forEach(([key, value]) => {
+            const baseValue = resolvedBase?.[key];
+            if (valuesMatchForAnimationOverride(value, baseValue)) delete nextLayout[key];
+            else nextLayout[key] = value;
+          });
+          return normalizeElementAnimation({
+            ...entry,
+            [animationEditor.mode === 'enter-start' ? 'startState' : 'endState']: {
+              ...(animationEditor.mode === 'enter-start' ? entry?.startState : entry?.endState),
+              layout: nextLayout,
+            },
+          });
+        });
+        return;
+      }
       withPage(els => applyElementLayoutUpdate(els, elementId, bpId, safeUpdates));
       if (safeUpdates?.hidden === true) {
         const currentDrilled = get().drilledContainerId;
@@ -2661,6 +2947,41 @@ export const useEditorStore = create((set, get) => {
         delete styles[styleKey];
         return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, styles } } };
       }));
+    },
+
+    addElementAnimation(elementId, bpId, type = 'enter') {
+      let createdId = null;
+      withPage((els) => els.map((el) => {
+        if (el.id !== elementId) return el;
+        const nextEntry = normalizeElementAnimation({ type });
+        createdId = nextEntry.id;
+        return updateElementAnimationCollection(el, bpId, (current) => [...current, nextEntry]);
+      }));
+      return createdId;
+    },
+
+    updateElementAnimation(elementId, bpId, animationId, updater) {
+      withPage((els) => els.map((el) => {
+        if (el.id !== elementId) return el;
+        return updateElementAnimationCollection(el, bpId, (current) => current.map((entry) => {
+          if (entry.id !== animationId) return entry;
+          const nextEntry = typeof updater === 'function'
+            ? updater(entry)
+            : { ...entry, ...(updater ?? {}) };
+          return normalizeElementAnimation(nextEntry);
+        }));
+      }));
+    },
+
+    removeElementAnimation(elementId, bpId, animationId) {
+      const currentEditor = get().animationEditor;
+      withPage((els) => els.map((el) => {
+        if (el.id !== elementId) return el;
+        return updateElementAnimationCollection(el, bpId, (current) => current.filter((entry) => entry.id !== animationId));
+      }));
+      if (currentEditor?.elementId === elementId && currentEditor?.bpId === bpId && currentEditor?.animationId === animationId) {
+        set({ animationEditor: null });
+      }
     },
 
     /** Delete element and all its descendants */

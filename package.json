@@ -1,6 +1,6 @@
 {
   "name": "framebuilder",
-  "version": "0.8.14",
+  "version": "0.8.30",
   "private": true,
   "scripts": {
     "dev": "vite",

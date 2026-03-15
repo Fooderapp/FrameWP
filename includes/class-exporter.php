@@ -643,12 +643,16 @@ class FrameBuilder_Exporter {
 		$component_id = sanitize_text_field( $component_instance['componentId'] ?? '' );
 		$bindings_json = ! empty( $el['bindings'] ) ? esc_attr( wp_json_encode( $this->normalize_bindings( $el['bindings'] ) ) ) : '';
 		$interactions_json = ! empty( $el['interactions'] ) ? esc_attr( wp_json_encode( $el['interactions'] ) ) : '';
+		$animations_json = ! empty( $el['animations'] ) ? esc_attr( wp_json_encode( $el['animations'] ) ) : '';
 		$runtime_attrs = '';
 		if ( $bindings_json !== '' ) {
 			$runtime_attrs .= ' data-fb-bindings="' . $bindings_json . '"';
 		}
 		if ( $interactions_json !== '' ) {
 			$runtime_attrs .= ' data-fb-interactions="' . $interactions_json . '"';
+		}
+		if ( $animations_json !== '' ) {
+			$runtime_attrs .= ' data-fb-animations="' . $animations_json . '"';
 		}
 		if ( $component_id && $this->get_component_definition( $component_id ) ) {
 			$html = '<div class="' . esc_attr( $class . ' fb-component-instance' ) . '" style="' . esc_attr( $layout_inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '" data-fb-component-id="' . esc_attr( $component_id ) . '" data-fb-active-variant="' . esc_attr( sanitize_text_field( $component_instance['variantId'] ?? '' ) ) . '"' . $runtime_attrs . '>';
@@ -1975,6 +1979,325 @@ class FrameBuilder_Exporter {
 		if (transition.springMode === 'time') return Math.max(180, transition.duration * 1000);
 		return getPhysicsSpringConfig(transition).duration * 1000;
 	};
+	var clamp = function(value, min, max) {
+		return Math.min(max, Math.max(min, value));
+	};
+	var lerp = function(start, end, progress) {
+		return start + ((end - start) * progress);
+	};
+	var interpolateValue = function(fromValue, toValue, progress) {
+		if (fromValue == null) return toValue;
+		if (toValue == null) return fromValue;
+		if (typeof fromValue === 'number' && typeof toValue === 'number') return lerp(fromValue, toValue, progress);
+		if (gsap && gsap.utils && typeof gsap.utils.interpolate === 'function') {
+			return gsap.utils.interpolate(fromValue, toValue, progress);
+		}
+		return progress >= 1 ? toValue : fromValue;
+	};
+	var getViewportHeight = function() {
+		return window.innerHeight || document.documentElement.clientHeight || 1;
+	};
+	var normalizeAnimationTransition = function(transition, fallback) {
+		var safe = transition && typeof transition === 'object' ? transition : {};
+		var source = Object.assign({
+			type: 'ease',
+			duration: 0.6,
+			easePreset: 'easeInOut',
+			springMode: 'time',
+			bounce: 0.2,
+			stiffness: 500,
+			damping: 24,
+			mass: 1,
+			bezier: { x1: 0.44, y1: 0, x2: 0.56, y2: 1 }
+		}, fallback || {}, safe);
+		if (!source.bezier || typeof source.bezier !== 'object') source.bezier = { x1: 0.44, y1: 0, x2: 0.56, y2: 1 };
+		return source;
+	};
+	var normalizeAnimationMarkerOffset = function(value) {
+		var numericValue = typeof value === 'number' ? value : parseFloat(value);
+		if (!isFinite(numericValue)) return null;
+		return clamp(numericValue, -2, 2);
+	};
+	var normalizeAnimationMarkerOffsetPx = function(value) {
+		var numericValue = typeof value === 'number' ? value : parseFloat(value);
+		if (!isFinite(numericValue)) return null;
+		return clamp(numericValue, -20000, 20000);
+	};
+	var normalizeScrollVariantTargets = function(animation) {
+		if (!animation || typeof animation !== 'object') return [];
+		var targets = Array.isArray(animation.targets) && animation.targets.length
+			? animation.targets
+			: [{ targetVariantId: animation.targetVariantId || null, marker: animation.marker }];
+		return targets.map(function(target, index) {
+			return {
+				id: target && target.id ? String(target.id) : ('target-' + index),
+				targetVariantId: target && target.targetVariantId ? String(target.targetVariantId) : null,
+				marker: clamp(parseNumber(target && target.marker, index === 0 ? 0.5 : (0.35 + (index * 0.18))), 0, 1),
+				markerOffset: normalizeAnimationMarkerOffset(target && target.markerOffset),
+				markerOffsetPx: normalizeAnimationMarkerOffsetPx(target && target.markerOffsetPx)
+			};
+		}).sort(function(left, right) {
+			return left.marker - right.marker;
+		});
+	};
+	var resolveAnimationsForBreakpoint = function(animations, bpId) {
+		var safe = animations && typeof animations === 'object' ? animations : {};
+		if (bpId === 'mobile') return Array.isArray(safe.mobile) ? safe.mobile : (Array.isArray(safe.tablet) ? safe.tablet : (Array.isArray(safe.desktop) ? safe.desktop : []));
+		if (bpId === 'tablet') return Array.isArray(safe.tablet) ? safe.tablet : (Array.isArray(safe.desktop) ? safe.desktop : []);
+		return Array.isArray(safe.desktop) ? safe.desktop : [];
+	};
+	var getNodeViewportRatio = function(node) {
+		if (!node) return 1;
+		var rect = node.getBoundingClientRect();
+		return rect.top / getViewportHeight();
+	};
+	var getMarkerViewportDistance = function(node, ratioValue, offsetPxValue, fallback) {
+		if (!node) return Infinity;
+		var rect = node.getBoundingClientRect();
+		var markerOffsetPx = normalizeAnimationMarkerOffsetPx(offsetPxValue);
+		if (markerOffsetPx != null) {
+			return rect.top + markerOffsetPx;
+		}
+		var markerRatio = clamp(parseNumber(ratioValue, fallback), 0, 1);
+		return rect.top - (markerRatio * getViewportHeight());
+	};
+	var resolveRelativeMarkerRatio = function(node, ratioValue, offsetValue, offsetPxValue, fallback) {
+		var markerOffsetPx = normalizeAnimationMarkerOffsetPx(offsetPxValue);
+		if (markerOffsetPx != null && node) {
+			var rect = node.getBoundingClientRect();
+			return (rect.top + markerOffsetPx) / getViewportHeight();
+		}
+		return clamp(parseNumber(ratioValue, fallback), 0, 1);
+	};
+	var getScrollAnimationProgress = function(node, start, end, startOffset, endOffset, startOffsetPx, endOffsetPx) {
+		var startDistance = getMarkerViewportDistance(node, start, startOffsetPx, 0.2);
+		var endDistance = getMarkerViewportDistance(node, end, endOffsetPx, 0.68);
+		var range = startDistance - endDistance;
+		if (Math.abs(range) < 0.0001) return endDistance <= 0 ? 1 : 0;
+		return clamp((-endDistance) / range, 0, 1);
+	};
+	var getAnimationBaseState = function(node) {
+		if (node.__fbAnimationBaseState) return node.__fbAnimationBaseState;
+		var computed = window.getComputedStyle(node);
+		var rect = node.getBoundingClientRect();
+		var textNode = node.querySelector('.fb-text-content');
+		var iconNode = node.querySelector('.fb-icon-content');
+		var textComputed = textNode ? window.getComputedStyle(textNode) : null;
+		var contentComputed = textComputed || (iconNode ? window.getComputedStyle(iconNode) : null) || computed;
+		node.__fbAnimationBaseState = {
+			left: parseNumber(node.style.left, parseNumber(computed.left, 0)),
+			top: parseNumber(node.style.top, parseNumber(computed.top, 0)),
+			leftCss: node.style.left || '',
+			topCss: node.style.top || '',
+			position: computed.position,
+			width: parseNumber(node.style.width, rect.width || node.offsetWidth || parseNumber(computed.width, 0)),
+			height: parseNumber(node.style.height, rect.height || node.offsetHeight || parseNumber(computed.height, 0)),
+			widthCss: node.style.width || '',
+			heightCss: node.style.height || '',
+			rotation: getRotationFromComputedStyle(computed),
+			opacity: parseNumber(computed.opacity, 1),
+			backgroundColor: computed.backgroundColor,
+			color: contentComputed.color,
+			borderColor: computed.borderColor,
+			borderRadius: computed.borderRadius,
+			textNode: textNode,
+			iconNode: iconNode
+		};
+		return node.__fbAnimationBaseState;
+	};
+	var shouldAnimateDimensionOverride = function(baseCssValue, endLayout, dimensionKey, modeKey, pctKey) {
+		if (!Object.prototype.hasOwnProperty.call(endLayout, dimensionKey)) return false;
+		if (Object.prototype.hasOwnProperty.call(endLayout, modeKey) || Object.prototype.hasOwnProperty.call(endLayout, pctKey)) return true;
+		if (typeof baseCssValue !== 'string') return true;
+		var normalized = baseCssValue.trim();
+		if (!normalized) return true;
+		if (normalized === 'fit-content') return false;
+		if (/%$/.test(normalized)) return false;
+		return true;
+	};
+	var shouldAnimatePositionOverride = function(baseCssValue, computedPosition, endLayout, key) {
+		if (!Object.prototype.hasOwnProperty.call(endLayout, key)) return false;
+		if (Object.prototype.hasOwnProperty.call(endLayout, 'positionType') || Object.prototype.hasOwnProperty.call(endLayout, 'absoluteInLayout')) return true;
+		if (computedPosition === 'relative' || computedPosition === 'static') return false;
+		if (typeof baseCssValue !== 'string') return true;
+		var normalized = baseCssValue.trim().toLowerCase();
+		if (!normalized || normalized === 'auto') return false;
+		if (/%$/.test(normalized)) return false;
+		return true;
+	};
+	var applyEnterAnimation = function(node, animation) {
+		if (!node) return;
+		var effect = animation && animation.effect ? animation.effect : {};
+		var startState = animation && animation.startState && typeof animation.startState === 'object' ? animation.startState : {};
+		var startLayout = startState.layout && typeof startState.layout === 'object' ? startState.layout : {};
+		var startStyles = startState.styles && typeof startState.styles === 'object' ? startState.styles : {};
+		var baseState = getAnimationBaseState(node);
+		var contentTarget = baseState.textNode || baseState.iconNode || null;
+		var transition = normalizeAnimationTransition(animation && animation.transition, { duration: 0.7, easePreset: 'easeInOut' });
+		if (!gsap) return;
+		gsap.killTweensOf(node);
+		var fromVars = {
+			opacity: Object.prototype.hasOwnProperty.call(startStyles, 'opacity') ? parseNumber(startStyles.opacity, baseState.opacity) : (parseNumber(effect.opacity, 0) * baseState.opacity),
+			x: parseNumber(effect.offsetX, 0),
+			y: parseNumber(effect.offsetY, 40),
+			scaleX: parseNumber(effect.scale, 1),
+			scaleY: parseNumber(effect.scale, 1),
+			rotation: (baseState.rotation || 0) + parseNumber(effect.rotate, 0),
+			rotationX: parseNumber(effect.rotateX, 0),
+			rotationY: parseNumber(effect.rotateY, 0),
+			skewX: parseNumber(effect.skewX, 0),
+			skewY: parseNumber(effect.skewY, 0),
+			transformOrigin: 'center center'
+		};
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'x')) fromVars.left = parseNumber(startLayout.x, baseState.left);
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'y')) fromVars.top = parseNumber(startLayout.y, baseState.top);
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'width')) fromVars.width = parseNumber(startLayout.width, baseState.width);
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'height')) fromVars.height = parseNumber(startLayout.height, baseState.height);
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'rotation')) fromVars.rotation = parseNumber(startLayout.rotation, parseNumber(effect.rotate, 0));
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'backgroundColor')) fromVars.backgroundColor = startStyles.backgroundColor;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderColor')) fromVars.borderColor = startStyles.borderColor;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderRadius')) fromVars.borderRadius = startStyles.borderRadius;
+		var toVars = {
+			opacity: baseState.opacity,
+			x: 0,
+			y: 0,
+			scaleX: 1,
+			scaleY: 1,
+			rotation: baseState.rotation || 0,
+			rotationX: 0,
+			rotationY: 0,
+			skewX: 0,
+			skewY: 0,
+			duration: getTransitionDurationMs(transition) / 1000,
+			ease: getEaseValue(transition),
+			overwrite: true,
+			clearProps: 'opacity'
+		};
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'x')) toVars.left = baseState.left;
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'y')) toVars.top = baseState.top;
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'width')) toVars.width = baseState.width;
+		if (Object.prototype.hasOwnProperty.call(startLayout, 'height')) toVars.height = baseState.height;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'backgroundColor')) toVars.backgroundColor = baseState.backgroundColor;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderColor')) toVars.borderColor = baseState.borderColor;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderRadius')) toVars.borderRadius = baseState.borderRadius;
+		gsap.fromTo(node, fromVars, toVars);
+		if (contentTarget && Object.prototype.hasOwnProperty.call(startStyles, 'color')) {
+			gsap.fromTo(contentTarget, { color: startStyles.color }, {
+				color: baseState.color,
+				duration: getTransitionDurationMs(transition) / 1000,
+				ease: getEaseValue(transition),
+				overwrite: true,
+			});
+		}
+	};
+	var applyScrollAnimation = function(node, animation, forcedProgress) {
+		if (!node || !animation) return;
+		var endState = animation.endState && typeof animation.endState === 'object' ? animation.endState : {};
+		var endLayout = endState.layout && typeof endState.layout === 'object' ? endState.layout : {};
+		var endStyles = endState.styles && typeof endState.styles === 'object' ? endState.styles : {};
+		var baseState = getAnimationBaseState(node);
+		var progress = typeof forcedProgress === 'number' ? forcedProgress : getScrollAnimationProgress(node, animation.start, animation.end, animation.startOffset, animation.endOffset, animation.startOffsetPx, animation.endOffsetPx);
+		var finalOpacity = Object.prototype.hasOwnProperty.call(endStyles, 'opacity') ? parseNumber(endStyles.opacity, baseState.opacity) : baseState.opacity;
+		var currentOpacity = lerp(baseState.opacity, finalOpacity, progress);
+		var currentRotate = lerp(baseState.rotation || 0, parseNumber(endLayout.rotation, baseState.rotation || 0), progress);
+		var nextVars = {
+			opacity: currentOpacity,
+			x: 0,
+			y: 0,
+			scaleX: 1,
+			scaleY: 1,
+			rotation: currentRotate,
+			rotationX: 0,
+			rotationY: 0,
+			skewX: 0,
+			skewY: 0,
+			overwrite: true,
+		};
+		if (shouldAnimatePositionOverride(baseState.leftCss, baseState.position, endLayout, 'x')) {
+			nextVars.left = lerp(baseState.left, parseNumber(endLayout.x, baseState.left), progress);
+		}
+		if (shouldAnimatePositionOverride(baseState.topCss, baseState.position, endLayout, 'y')) {
+			nextVars.top = lerp(baseState.top, parseNumber(endLayout.y, baseState.top), progress);
+		}
+		if (shouldAnimateDimensionOverride(baseState.widthCss, endLayout, 'width', 'widthMode', 'widthPct')) {
+			nextVars.width = lerp(baseState.width, parseNumber(endLayout.width, baseState.width), progress);
+		}
+		if (shouldAnimateDimensionOverride(baseState.heightCss, endLayout, 'height', 'heightMode', 'heightPct')) {
+			nextVars.height = lerp(baseState.height, parseNumber(endLayout.height, baseState.height), progress);
+		}
+		if (gsap) gsap.set(node, nextVars);
+		else {
+			node.style.opacity = String(currentOpacity);
+			node.style.transform = 'rotate(' + currentRotate + 'deg)';
+		}
+		if (Object.prototype.hasOwnProperty.call(endStyles, 'backgroundColor')) {
+			node.style.backgroundColor = interpolateValue(baseState.backgroundColor, endStyles.backgroundColor, progress);
+		}
+		if (Object.prototype.hasOwnProperty.call(endStyles, 'color')) {
+			(baseState.textNode || baseState.iconNode || node).style.color = interpolateValue(baseState.color, endStyles.color, progress);
+		}
+		if (Object.prototype.hasOwnProperty.call(endStyles, 'borderColor')) {
+			node.style.borderColor = interpolateValue(baseState.borderColor, endStyles.borderColor, progress);
+		}
+		if (Object.prototype.hasOwnProperty.call(endStyles, 'borderRadius')) {
+			node.style.borderRadius = interpolateValue(baseState.borderRadius, endStyles.borderRadius, progress);
+		}
+	};
+	var initElementAnimations = function(node) {
+		if (!node || node.dataset.fbAnimationsBound === '1') return;
+		var rawAnimations = parseJsonAttr(node.dataset.fbAnimations, null);
+		if (!rawAnimations) return;
+		node.dataset.fbAnimationsBound = '1';
+		var enterPlayed = new Set();
+		var scrollPlaybackState = { maxProgress: 0 };
+		var runEnterAnimations = function() {
+			var animations = resolveAnimationsForBreakpoint(rawAnimations, getCurrentBreakpoint()).filter(function(animation) {
+				return animation && animation.type === 'enter';
+			});
+			animations.forEach(function(animation) {
+				if (animation.playback !== 'replay' && enterPlayed.has(animation.id)) return;
+				enterPlayed.add(animation.id);
+				applyEnterAnimation(node, animation);
+			});
+		};
+		var enterObserver = new IntersectionObserver(function(entries) {
+			entries.forEach(function(entry) {
+				if (entry.isIntersecting) {
+					runEnterAnimations();
+					return;
+				}
+				resolveAnimationsForBreakpoint(rawAnimations, getCurrentBreakpoint()).forEach(function(animation) {
+					if (animation && animation.type === 'enter' && animation.playback === 'replay') {
+						enterPlayed.delete(animation.id);
+					}
+				});
+			});
+		}, { threshold: 0.18 });
+		enterObserver.observe(node);
+		var scrollFrame = null;
+		var updateScrollAnimations = function() {
+			scrollFrame = null;
+			var animation = resolveAnimationsForBreakpoint(rawAnimations, getCurrentBreakpoint()).find(function(entry) {
+				return entry && entry.type === 'scroll';
+			}) || null;
+			if (!animation) return;
+			var progress = getScrollAnimationProgress(node, animation.start, animation.end, animation.startOffset, animation.endOffset, animation.startOffsetPx, animation.endOffsetPx);
+			if (animation.playback === 'once') {
+				scrollPlaybackState.maxProgress = Math.max(scrollPlaybackState.maxProgress, progress);
+				progress = scrollPlaybackState.maxProgress;
+			} else if (progress <= 0.001) {
+				scrollPlaybackState.maxProgress = 0;
+			}
+			applyScrollAnimation(node, animation, progress);
+		};
+		var requestScrollUpdate = function() {
+			if (scrollFrame) return;
+			scrollFrame = window.requestAnimationFrame(updateScrollAnimations);
+		};
+		window.addEventListener('scroll', requestScrollUpdate, { passive: true });
+		window.addEventListener('resize', requestScrollUpdate);
+		requestScrollUpdate();
+	};
 	var getRealisticOvershoot = function(transition) {
 		if (!transition || transition.type !== 'realistic') return 1.03;
 		if (transition.springMode === 'physics') {
@@ -2253,9 +2576,13 @@ class FrameBuilder_Exporter {
 			onComplete: complete
 		});
 	};
+	scope.querySelectorAll('[data-fb-animations]').forEach(initElementAnimations);
 
 	instances.forEach(function(instance) {
 		var timer = null;
+		var scrollVariantFrame = null;
+		var lockedScrollVariantTarget = null;
+		var scrollVariantBaseId = '';
 		var activeVariantId = instance.dataset.fbActiveVariant || '';
 		var baseVariantId = '';
 		var clearTimer = function() {
@@ -2349,6 +2676,69 @@ class FrameBuilder_Exporter {
 			}
 			showVariant(target, transition);
 		};
+		var getScrollVariantBaseId = function() {
+			return scrollVariantBaseId || baseVariantId || instance.dataset.fbBaseVariant || getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || '');
+		};
+		var applyScrollVariantTarget = function(target, fallbackTransition) {
+			var transition = normalizeAnimationTransition((target && target.animation && target.animation.transition) || fallbackTransition || null, { duration: 0.45, easePreset: 'easeInOut' });
+			if (!target) {
+				var restoreBaseId = getScrollVariantBaseId();
+				if (!restoreBaseId || activeVariantId === restoreBaseId) return;
+				showVariant(restoreBaseId, transition, { setBase: true, queueAppear: false });
+				return;
+			}
+			if (activeVariantId === target.targetVariantId) return;
+			var nextNode = findVariant(instance, target.targetVariantId);
+			showVariant(target.targetVariantId, transition, {
+				setBase: isDefaultVariantNode(nextNode),
+				queueAppear: false,
+			});
+		};
+		var updateScrollVariantTargets = function() {
+			scrollVariantFrame = null;
+			var animations = resolveAnimationsForBreakpoint(parseJsonAttr(instance.dataset.fbAnimations, null), getCurrentBreakpoint()).filter(function(animation) {
+				return animation && animation.type === 'scroll-variant';
+			});
+			if (!animations.length) return;
+			var ratio = getNodeViewportRatio(instance);
+			var timelineTargets = animations.reduce(function(list, animation) {
+				normalizeScrollVariantTargets(animation).forEach(function(target) {
+					if (!target.targetVariantId) return;
+					list.push({
+						key: animation.id + ':' + target.id,
+						animation: animation,
+						targetVariantId: target.targetVariantId,
+						markerDistance: getMarkerViewportDistance(instance, target.marker, target.markerOffsetPx, 0.5)
+					});
+				});
+				return list;
+			}, []).sort(function(left, right) {
+				return left.markerDistance - right.markerDistance;
+			});
+			if (!timelineTargets.length) return;
+			var desiredTarget = timelineTargets.reduce(function(selected, candidate) {
+				if (candidate.markerDistance > 0) return selected;
+				if (!selected) return candidate;
+				return candidate.markerDistance > selected.markerDistance ? candidate : selected;
+			}, null);
+			var replayEnabled = timelineTargets.some(function(entry) {
+				return entry.animation.playback === 'replay';
+			});
+			if (replayEnabled) {
+				lockedScrollVariantTarget = desiredTarget;
+				applyScrollVariantTarget(desiredTarget, timelineTargets[0] && timelineTargets[0].animation && timelineTargets[0].animation.transition);
+				return;
+			}
+			if (desiredTarget && (!lockedScrollVariantTarget || desiredTarget.markerDistance > lockedScrollVariantTarget.markerDistance)) {
+				lockedScrollVariantTarget = desiredTarget;
+			}
+			if (!lockedScrollVariantTarget) return;
+			applyScrollVariantTarget(lockedScrollVariantTarget, timelineTargets[0] && timelineTargets[0].animation && timelineTargets[0].animation.transition);
+		};
+		var requestScrollVariantUpdate = function() {
+			if (scrollVariantFrame) return;
+			scrollVariantFrame = window.requestAnimationFrame(updateScrollVariantTargets);
+		};
 		instance.addEventListener('click', function(event) {
 			event.stopPropagation();
 			runTrigger('click');
@@ -2374,9 +2764,13 @@ class FrameBuilder_Exporter {
 		});
 		activeVariantId = activeVariantId || (getActive() ? (getActive().dataset.fbVariantId || '') : '');
 		baseVariantId = getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || '');
+		scrollVariantBaseId = baseVariantId;
 		instance.dataset.fbActiveVariant = activeVariantId;
 		instance.dataset.fbBaseVariant = baseVariantId;
 		queueAppear();
+		window.addEventListener('scroll', requestScrollVariantUpdate, { passive: true });
+		window.addEventListener('resize', requestScrollVariantUpdate);
+		requestScrollVariantUpdate();
 	});
 })();
 </script>

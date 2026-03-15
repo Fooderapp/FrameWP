@@ -740,6 +740,53 @@ html, body, #framebuilder-root {
 .fb-prop-section__action { margin-left: auto; margin-right: 6px; cursor: pointer; opacity: 0.8; display: inline-flex; align-items: center; }
 .fb-prop-section__action:hover { opacity: 1; }
 
+.fb-animation-section__adder {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.fb-animation-section__list {
+  display: grid;
+  gap: 8px;
+}
+
+.fb-animation-card {
+  width: 100%;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.fb-animation-card:hover {
+  border-color: rgba(123, 227, 0, 0.35);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.fb-animation-card__type {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-light);
+}
+
+.fb-animation-card__name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fb-animation-card__summary {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 /* ─── Min / Max row ──────────────────────────────────────── */
 .fb-minmax {
   margin-top: 12px;
@@ -2360,6 +2407,140 @@ html, body, #framebuilder-root {
   gap: 8px;
 }
 
+.fb-element-animation-modal,
+.fb-enter-effect-modal {
+  width: min(560px, calc(100vw - 32px));
+  background: #131313;
+  border-color: rgba(255,255,255,0.08);
+}
+
+.fb-element-animation-modal__header {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.fb-element-animation-modal__back {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.fb-element-animation-modal__body {
+  display: grid;
+  gap: 14px;
+}
+
+.fb-animation-modal__preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fb-animation-modal__preset-grid--top {
+  margin-bottom: 14px;
+}
+
+.fb-animation-modal__preset {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.fb-animation-modal__preset.is-active {
+  border-color: var(--accent-light);
+  background: rgba(123, 227, 0, 0.12);
+}
+
+.fb-animation-modal__control-row {
+  display: grid;
+  grid-template-columns: 92px 124px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+}
+
+.fb-animation-modal__double-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.fb-animation-target-list {
+  display: grid;
+  gap: 10px;
+}
+
+.fb-animation-target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.fb-animation-target-row__marker {
+  min-width: 64px;
+  padding: 0 10px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.fb-animation-modal__mini-control {
+  display: grid;
+  gap: 6px;
+}
+
+.fb-animation-modal__mini-control span,
+.fb-animation-modal__control-row span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.fb-animation-modal__segmented {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.06);
+}
+
+.fb-animation-modal__segmented button {
+  min-width: 54px;
+  height: 38px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.fb-animation-modal__segmented button.is-active {
+  background: rgba(255,255,255,0.12);
+  color: var(--text-primary);
+}
+
+.fb-enter-effect-modal__grid {
+  display: grid;
+  gap: 14px;
+}
+
 .fb-variables-modal {
   width: min(1040px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
@@ -2964,6 +3145,100 @@ html, body, #framebuilder-root {
 .fb-variant-transition-modal__actions {
   margin-top: 18px;
   justify-content: flex-end;
+}
+
+.fb-animation-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 120;
+  pointer-events: none;
+}
+
+.fb-animation-overlay__scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: rgba(7, 10, 16, 0.28);
+  pointer-events: all;
+}
+
+.fb-animation-overlay.is-end-state .fb-animation-overlay__scrim {
+  background: rgba(7, 10, 16, 0.38);
+}
+
+.fb-animation-overlay__highlight {
+  position: absolute;
+  z-index: 2;
+  border: 2px solid rgba(65, 209, 255, 0.95);
+  background: rgba(65, 209, 255, 0.06);
+  box-shadow: 0 0 0 1px rgba(65, 209, 255, 0.18), 0 0 22px rgba(65, 209, 255, 0.16);
+  pointer-events: none;
+}
+
+.fb-animation-overlay__toolbar {
+  position: absolute;
+  z-index: 3;
+  top: 14px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(10, 12, 18, 0.88);
+  color: var(--text-primary);
+  pointer-events: all;
+}
+
+.fb-animation-overlay__rail {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+}
+
+.fb-animation-overlay__line {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  pointer-events: all;
+}
+
+.fb-animation-overlay__line-rail {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  width: 28px;
+  height: 3px;
+  transform: translateY(-50%);
+  background: var(--fb-animation-marker-color, #41d1ff);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--fb-animation-marker-color, #41d1ff) 55%, transparent);
+}
+
+.fb-animation-overlay__line-pill {
+  position: absolute;
+  right: 36px;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 82px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(10, 12, 18, 0.96);
+  border: 1px solid var(--fb-animation-marker-color, rgba(255,255,255,0.18));
+  color: var(--text-primary);
+  font-size: 11px;
+  text-align: center;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.26);
+}
+
+.fb-animation-overlay__line-pill.is-draggable {
+  cursor: ns-resize;
+}
+
+.fb-animation-overlay__line--center .fb-animation-overlay__line-pill {
+  opacity: 0.78;
 }
 
 .fb-variant-connector-layer {

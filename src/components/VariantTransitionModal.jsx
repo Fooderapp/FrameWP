@@ -204,12 +204,12 @@ function getPreviewKeyframes(transition) {
 
 function getPreviewTiming(transition) {
   if (transition.type === 'instant') {
-    return { duration: 1200, easing: 'linear', iterations: Infinity, direction: 'alternate' };
+    return { duration: 800, easing: 'linear', iterations: Infinity, direction: 'alternate' };
   }
   if (transition.type === 'realistic') {
     const duration = transition.springMode === 'physics'
       ? getPhysicsSpringConfig(transition).duration * 1000
-      : Math.max(900, transition.duration * 1000 + 650);
+      : Math.max(180, transition.duration * 1000);
     return {
       duration,
       easing: transition.springMode === 'physics'
@@ -221,7 +221,7 @@ function getPreviewTiming(transition) {
   }
   const bezier = transition.bezier;
   return {
-    duration: Math.max(900, transition.duration * 1000 + 700),
+    duration: Math.max(120, transition.duration * 1000),
     easing: `cubic-bezier(${bezier.x1}, ${bezier.y1}, ${bezier.x2}, ${bezier.y2})`,
     iterations: Infinity,
     direction: 'alternate',

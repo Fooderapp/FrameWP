@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 import InlineTextToolbar from '../components/InlineTextToolbar';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
@@ -143,6 +143,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const activeSurface          = useEditorStore(s => s.activeSurface);
   const setComponentEditorActiveVariant = useEditorStore(s => s.setComponentEditorActiveVariant);
   const viewport               = useEditorStore(s => s.viewport);
+  const animationEditor        = useEditorStore(s => s.animationEditor);
   const currentPage            = useEditorStore(s => s.pages.find((page) => page.id === s.currentPageId) ?? null);
   const globalVariables        = useEditorStore(s => s.globalVariables);
   const pageVariables          = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
@@ -162,7 +163,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       cursor = cursor.parentId ? allElements.find((candidate) => candidate.id === cursor.parentId) : null;
     }
   }
-  const resolved               = el ? resolveElementWithVariables(el, bpId, pageVariables, globalVariables) : null;
+  const rawResolved            = el ? resolveElementWithVariables(el, bpId, pageVariables, globalVariables) : null;
+  const resolved               = el ? applyAnimationPreviewPatch(rawResolved, getAnimationEditorPreviewPatch(el, bpId, animationEditor)) : null;
   const id                     = el?.id ?? elementId;
   const locked                 = el?.locked ?? false;
   const x                      = resolved?.x ?? 0;

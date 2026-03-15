@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds, resolveElementAnimations } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import CustomSelect from '../components/CustomSelect';
@@ -7,6 +7,7 @@ import { IconButton, UIIcons } from '../components/UIIcons';
 import { getSvgStrokeWidth, hasSvgVisibleStroke, sanitizeSvgMarkup, setSvgStrokeWidth } from '../components/iconLibrary';
 import { getRichTextInlineStyleValues } from '../components/richText';
 import VariantTransitionModal from '../components/VariantTransitionModal';
+import ElementAnimationModal from '../components/ElementAnimationModal';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -793,6 +794,29 @@ function getTransitionSummary(interaction) {
     : `Realistic · ${Math.round((transition.duration ?? 0.3) * 10) / 10}s`;
 }
 
+function getElementAnimationTypeLabel(type) {
+  if (type === 'scroll') return 'Scroll';
+  if (type === 'scroll-variant') return 'Scroll variant';
+  return 'Appear';
+}
+
+function getElementAnimationSummary(animation, variantOptions = []) {
+  if (!animation) return '';
+  if (animation.type === 'enter') {
+    return animation.preset === 'custom' ? 'Custom enter effect' : `${animation.preset || 'fadeUp'}`;
+  }
+  if (animation.type === 'scroll') {
+    return `Start ${Math.round((animation.start ?? 0) * 100)}% · End ${Math.round((animation.end ?? 0) * 100)}%`;
+  }
+  const targets = Array.isArray(animation.targets) ? animation.targets : [];
+  if (!targets.length) return 'Add variant triggers';
+  const firstTarget = variantOptions.find((option) => option.value === targets[0]?.targetVariantId) ?? null;
+  if (targets.length === 1) {
+    return firstTarget ? `${firstTarget.label} · ${Math.round((targets[0]?.marker ?? 0) * 100)}%` : 'Select target variant';
+  }
+  return `${targets.length} markers${firstTarget ? ` · starts ${firstTarget.label}` : ''}`;
+}
+
 function isDefaultVariant(variant) {
   return (variant?.mode ?? 'default') === 'default';
 }
@@ -821,6 +845,8 @@ function ResetBtn({ show, onReset }) {
 
 export default function PropertiesPanel() {
   const [transitionModalState, setTransitionModalState] = useState(null);
+  const [elementAnimationModalState, setElementAnimationModalState] = useState(null);
+  const [animationAddMenuOpen, setAnimationAddMenuOpen] = useState(false);
   const fontPreviewSnapshotRef = useRef(null);
   const selection           = useEditorStore(s => s.selection);
   const activeSurface       = useEditorStore(s => s.activeSurface);
@@ -845,6 +871,11 @@ export default function PropertiesPanel() {
   const allEls              = useEditorStore(s => s.getAllElements());
   const viewportScale       = useEditorStore(s => s.viewport.scale);
   const openIconLibraryModal = useEditorStore(s => s.openIconLibraryModal);
+  const addElementAnimation = useEditorStore(s => s.addElementAnimation);
+  const updateElementAnimation = useEditorStore(s => s.updateElementAnimation);
+  const removeElementAnimation = useEditorStore(s => s.removeElementAnimation);
+  const openAnimationEditor = useEditorStore(s => s.openAnimationEditor);
+  const closeAnimationEditor = useEditorStore(s => s.closeAnimationEditor);
 
   // Artboard selection
   const artboardSel         = useEditorStore(s => s.artboardSel);
@@ -928,6 +959,7 @@ export default function PropertiesPanel() {
   };
 
   useEffect(() => () => resetFontPreview(), []);
+  useEffect(() => () => closeAnimationEditor(), [closeAnimationEditor]);
 
   const resolveBoundVariable = (binding) => binding ? (variableLookup.get(`${binding.scope}:${binding.variableId}`) ?? null) : null;
   const getBindingForProperty = (propertyKey) => element ? getElementPropertyBinding(element.id, selection?.bpId || 'desktop', propertyKey) : null;
@@ -1125,6 +1157,9 @@ export default function PropertiesPanel() {
   }
 
   const bpId = selection.bpId || 'desktop';
+  const resolvedAnimations = resolveElementAnimations(element, bpId);
+  const animationVariantOptions = selectedComponentVariants.map((variant) => ({ value: variant.id, label: variant.name }));
+  const selectedElementAnimation = resolvedAnimations.find((entry) => entry.id === elementAnimationModalState?.animationId) ?? null;
 
   if (hasMultiSelection && selectedElements.length) {
     const resolvedSelections = selectedElements.map((selected) => ({
@@ -1635,6 +1670,84 @@ export default function PropertiesPanel() {
                 ))}
               </select>
             </div>
+          </Section>
+        ) : null}
+
+        {activeSurface === 'page' ? (
+          <Section
+            title="Animation"
+            action={(
+              <IconButton
+                icon={UIIcons.plus}
+                title="Add animation"
+                className="fb-btn--sm"
+                onClick={() => setAnimationAddMenuOpen((current) => !current)}
+              />
+            )}
+          >
+            {bpId !== 'desktop' && !Array.isArray(element.animations?.[bpId]) ? (
+              <div className="fb-artboard-bp-note">Animations inherit from desktop here until you change this breakpoint.</div>
+            ) : null}
+            {animationAddMenuOpen ? (
+              <div className="fb-animation-section__adder">
+                <button
+                  type="button"
+                  className="fb-add-field"
+                  onClick={() => {
+                    const nextId = addElementAnimation(element.id, bpId, 'enter');
+                    commit();
+                    setAnimationAddMenuOpen(false);
+                    setElementAnimationModalState({ animationId: nextId });
+                  }}
+                >
+                  Appear
+                </button>
+                <button
+                  type="button"
+                  className="fb-add-field"
+                  onClick={() => {
+                    const nextId = addElementAnimation(element.id, bpId, 'scroll');
+                    commit();
+                    setAnimationAddMenuOpen(false);
+                    setElementAnimationModalState({ animationId: nextId });
+                  }}
+                >
+                  Scroll
+                </button>
+                <button
+                  type="button"
+                  className="fb-add-field"
+                  disabled={!isComponentInstanceOnPage || !animationVariantOptions.length}
+                  onClick={() => {
+                    if (!isComponentInstanceOnPage || !animationVariantOptions.length) return;
+                    const nextId = addElementAnimation(element.id, bpId, 'scroll-variant');
+                    commit();
+                    setAnimationAddMenuOpen(false);
+                    setElementAnimationModalState({ animationId: nextId });
+                  }}
+                >
+                  Scroll Variant
+                </button>
+              </div>
+            ) : null}
+            {resolvedAnimations.length ? (
+              <div className="fb-animation-section__list">
+                {resolvedAnimations.map((animation) => (
+                  <button
+                    key={animation.id}
+                    type="button"
+                    className="fb-animation-card"
+                    onClick={() => setElementAnimationModalState({ animationId: animation.id })}
+                  >
+                    <span className="fb-animation-card__type">{getElementAnimationTypeLabel(animation.type)}</span>
+                    <span className="fb-animation-card__name">{animation.name}</span>
+                    <span className="fb-animation-card__summary">{getElementAnimationSummary(animation, animationVariantOptions)}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="fb-artboard-bp-note">Add an appear, scroll, or scroll-variant animation for this element.</div>
+            )}
           </Section>
         ) : null}
 
@@ -2371,6 +2484,39 @@ export default function PropertiesPanel() {
 
       </div>
     </aside>
+    {selectedElementAnimation ? (
+      <ElementAnimationModal
+        animation={selectedElementAnimation}
+        variantOptions={animationVariantOptions}
+        onClose={() => {
+          setElementAnimationModalState(null);
+          closeAnimationEditor();
+        }}
+        onDelete={() => {
+          removeElementAnimation(element.id, bpId, selectedElementAnimation.id);
+          commit();
+          setElementAnimationModalState(null);
+          closeAnimationEditor();
+        }}
+        onSave={(nextAnimation) => {
+          updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+          commit();
+        }}
+        onOpenEditor={(mode, nextAnimation) => {
+          if (nextAnimation) {
+            updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+            commit();
+          }
+          setElementAnimationModalState(null);
+          openAnimationEditor({
+            elementId: element.id,
+            bpId,
+            animationId: selectedElementAnimation.id,
+            mode,
+          });
+        }}
+      />
+    ) : null}
     </>
   );
 }
