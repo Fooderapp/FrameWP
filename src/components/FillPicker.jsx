@@ -3,6 +3,19 @@ import { createPortal } from 'react-dom';
 import { useEditorStore } from '../store/editorStore';
 import { IconButton, UIIcons } from './UIIcons';
 
+function eventHitsNode(event, node) {
+  if (!node) return false;
+  if (node.contains(event.target)) return true;
+  if (typeof event.composedPath === 'function') {
+    return event.composedPath().includes(node);
+  }
+  return false;
+}
+
+function shouldPreservePickerFocus(event) {
+  return !(event.target instanceof Element && event.target.closest('input, textarea, select'));
+}
+
 // ── Math helpers ──────────────────────────────────────────────────────────────
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -382,7 +395,16 @@ const FILL_TYPES = [
 
 // ── Main FillPicker ───────────────────────────────────────────────────────────
 
-export default function FillPicker({ value, onChange }) {
+export default function FillPicker({
+  value,
+  onChange,
+  solidOnly = false,
+  compact = false,
+  mixed = false,
+  title = 'Edit fill',
+  preserveFocus = false,
+  onOpenChange,
+}) {
   const [open, setOpen]         = useState(false);
   const triggerRef              = useRef(null);
   const popoverRef              = useRef(null);
@@ -413,11 +435,21 @@ export default function FillPicker({ value, onChange }) {
   const [addingStyle, setAddingStyle]   = useState(false);
   const [newStyleName, setNewStyleName] = useState('');
 
+  const updateOpen = useCallback((nextOpen) => {
+    setOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  }, [onOpenChange]);
+
+  const handleTriggerMouseDown = useCallback((event) => {
+    if (!preserveFocus) return;
+    event.preventDefault();
+  }, [preserveFocus]);
+
   // Parse incoming value into internal state on open
   useEffect(() => {
     if (!open) return;
     const v = value ?? '#ffffff';
-    const ft = detectFillType(v);
+    const ft = solidOnly ? 'solid' : detectFillType(v);
     setFillType(ft);
     if (ft === 'solid') {
       const { r, g, b, a } = parseColor(v);
@@ -437,7 +469,7 @@ export default function FillPicker({ value, onChange }) {
     }
     loadColorStyles();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, solidOnly]);
 
   // Current solid color string
   const { r, g, b } = hsvToRgb(h, sat, val);
@@ -535,21 +567,31 @@ export default function FillPicker({ value, onChange }) {
     const W = 308;
     const left = rect.left - W - 10;
     setPos({ top: Math.max(8, Math.min(rect.top, window.innerHeight - 600)), left: Math.max(8, left) });
-    setOpen(true);
+    updateOpen(true);
   };
+
+  const closePicker = useCallback(() => {
+    updateOpen(false);
+  }, [updateOpen]);
 
   // Close on outside click
   useEffect(() => {
     if (!open) return;
     const handler = (e) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target) &&
-          triggerRef.current && !triggerRef.current.contains(e.target)) {
-        setOpen(false);
-      }
+      if (eventHitsNode(e, popoverRef.current) || eventHitsNode(e, triggerRef.current)) return;
+      closePicker();
     };
+    if (typeof window.PointerEvent === 'function') {
+      window.addEventListener('pointerdown', handler);
+      return () => window.removeEventListener('pointerdown', handler);
+    }
     window.addEventListener('mousedown', handler);
-    return () => window.removeEventListener('mousedown', handler);
-  }, [open]);
+    window.addEventListener('touchstart', handler);
+    return () => {
+      window.removeEventListener('mousedown', handler);
+      window.removeEventListener('touchstart', handler);
+    };
+  }, [closePicker, open]);
 
   // Color styles
   const filteredStyles = colorStyles.filter(cs =>
@@ -567,43 +609,53 @@ export default function FillPicker({ value, onChange }) {
   return (
     <>
       {/* Trigger swatch — full width, shows gradient/solid preview */}
-      <div
+      <button
+        type="button"
         ref={triggerRef}
-        className="fb-fill-swatch"
-        onClick={openPicker}
-        title="Edit fill"
-        style={{ background: value && value !== 'transparent' ? value : undefined }}
+        className={`fb-fill-swatch${compact ? ' fb-fill-swatch--compact' : ''}`}
+        onMouseDown={handleTriggerMouseDown}
+        onClick={() => (open ? closePicker() : openPicker())}
+        title={title}
+        style={{ background: mixed ? 'repeating-linear-gradient(135deg, rgba(255,255,255,0.14) 0 6px, rgba(255,255,255,0.03) 6px 12px)' : (value && value !== 'transparent' ? value : undefined) }}
       >
         {(!value || value === 'transparent') && <div className="fb-fill-swatch__none" />}
-      </div>
+      </button>
 
       {open && createPortal(
         <div
           ref={popoverRef}
           className="fb-fill-popover"
+          data-inline-editor-ui="true"
           style={{ top: pos.top, left: pos.left }}
-          onMouseDown={e => e.stopPropagation()}
+          onMouseDown={(e) => {
+            if (shouldPreservePickerFocus(e)) {
+              e.preventDefault();
+            }
+            e.stopPropagation();
+          }}
         >
           {/* Header */}
           <div className="fb-fill-popover__header">
-            <span>Fill</span>
-            <IconButton icon={UIIcons.close} title="Close fill picker" onClick={() => setOpen(false)} className="fb-fill-close" />
+            <span>{solidOnly ? 'Color' : 'Fill'}</span>
+            <IconButton icon={UIIcons.close} title="Close fill picker" onClick={closePicker} className="fb-fill-close" />
           </div>
 
           {/* Fill type icons */}
-          <div className="fb-fill-typebar">
-            {FILL_TYPES.map(({ type: t, label, icon }) => (
-              <button
-                key={t}
-                title={label}
-                onClick={() => handleFillTypeChange(t)}
-                className={`fb-fill-typeicon${fillType === t ? ' fb-fill-typeicon--active' : ''}`}
-              >{icon}</button>
-            ))}
-          </div>
+          {!solidOnly ? (
+            <div className="fb-fill-typebar">
+              {FILL_TYPES.map(({ type: t, label, icon }) => (
+                <button
+                  key={t}
+                  title={label}
+                  onClick={() => handleFillTypeChange(t)}
+                  className={`fb-fill-typeicon${fillType === t ? ' fb-fill-typeicon--active' : ''}`}
+                >{icon}</button>
+              ))}
+            </div>
+          ) : null}
 
           {/* Gradient controls (shown above color picker when gradient type) */}
-          {fillType !== 'solid' && (
+          {!solidOnly && fillType !== 'solid' && (
             <GradientEditor
               type={gradType} angle={gradAngle} stops={gradStops}
               onTypeChange={handleGradTypeChange}
@@ -707,7 +759,7 @@ export default function FillPicker({ value, onChange }) {
               <div
                 key={cs.id}
                 className="fb-fill-style-item"
-                onClick={() => { onChange(cs.value); setOpen(false); }}
+                onClick={() => { onChange(cs.value); closePicker(); }}
               >
                 <div className="fb-fill-style-swatch" style={{ background: cs.value }} />
                 <span style={{ flex: 1 }}>{cs.name}</span>

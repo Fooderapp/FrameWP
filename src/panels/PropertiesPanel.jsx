@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
+import CustomSelect from '../components/CustomSelect';
 import { IconButton, UIIcons } from '../components/UIIcons';
 import { getSvgStrokeWidth, hasSvgVisibleStroke, sanitizeSvgMarkup, setSvgStrokeWidth } from '../components/iconLibrary';
 import { getRichTextInlineStyleValues } from '../components/richText';
@@ -177,7 +178,6 @@ function NullableNumberInput({ value, onChange, label, placeholder = '', min, st
 }
 
 function ColorInput({ value, onChange, mixed = false, mixedLabel = 'Mixed' }) {
-  const hex = rgbaToHex(value ?? '#cccccc');
   const [draft, setDraft] = React.useState(mixed ? mixedLabel : (value ?? ''));
   const [focused, setFocused] = React.useState(false);
 
@@ -188,16 +188,16 @@ function ColorInput({ value, onChange, mixed = false, mixedLabel = 'Mixed' }) {
 
   return (
     <div className="fb-color-row">
-      <div className="fb-color-swatch" style={{ background: mixed ? 'repeating-linear-gradient(135deg, rgba(255,255,255,0.14) 0 6px, rgba(255,255,255,0.03) 6px 12px)' : value }}>
-        <input
-          type="color"
-          value={hex}
-          onChange={e => {
-            setDraft(e.target.value);
-            onChange(e.target.value);
-          }}
-        />
-      </div>
+      <FillPicker
+        value={value ?? '#cccccc'}
+        onChange={(nextValue) => {
+          setDraft(nextValue);
+          onChange(nextValue);
+        }}
+        solidOnly
+        mixed={mixed}
+        title={mixed ? mixedLabel : 'Edit color'}
+      />
       <input
         className="fb-prop-input fb-color-hex"
         type="text"
@@ -2285,12 +2285,16 @@ export default function PropertiesPanel() {
             {(s.borderWidth ?? 0) > 0 ? (
               <div className="fb-style-inline-group fb-style-inline-group--stacked">
                 <NumberInput value={s.borderWidth ?? 0} min={0} onChange={v => { updS('borderWidth', v); commit(); }} />
-                <select className="fb-prop-input" value={s.borderStyle ?? 'solid'} onChange={e => { updS('borderStyle', e.target.value); commit(); }}>
-                  <option value="solid">Solid</option>
-                  <option value="dashed">Dashed</option>
-                  <option value="dotted">Dotted</option>
-                  <option value="none">None</option>
-                </select>
+                <CustomSelect
+                  value={s.borderStyle ?? 'solid'}
+                  onChange={value => { updS('borderStyle', value); commit(); }}
+                  options={[
+                    { value: 'solid', label: 'Solid' },
+                    { value: 'dashed', label: 'Dashed' },
+                    { value: 'dotted', label: 'Dotted' },
+                    { value: 'none', label: 'None' },
+                  ]}
+                />
                 <ColorInput value={s.borderColor ?? '#000000'} onChange={v => { updS('borderColor', v); commit(); }} />
               </div>
             ) : (

@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
-import GoogleFontPicker from '../components/GoogleFontPicker';
+import InlineTextToolbar from '../components/InlineTextToolbar';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
 import { getResolvedRichTextHtml, plainTextToRichTextHtml, richTextHtmlToPlainText, sanitizeRichTextHtml } from '../components/richText';
 
@@ -24,12 +24,84 @@ function getNodeTextLength(node) {
   return node.textContent?.length ?? 0;
 }
 
+function unwrapElement(node) {
+  const parent = node.parentNode;
+  if (!parent) return;
+  while (node.firstChild) parent.insertBefore(node.firstChild, node);
+  parent.removeChild(node);
+}
+
+function replaceFormattingTag(node) {
+  const parent = node.parentNode;
+  if (!parent) return null;
+  const replacement = node.ownerDocument.createElement('span');
+  if (node.getAttribute('style')) replacement.setAttribute('style', node.getAttribute('style'));
+  while (node.firstChild) replacement.appendChild(node.firstChild);
+  parent.replaceChild(replacement, node);
+  return replacement;
+}
+
+function clearDescendantOverrideStyles(root, styleKeys) {
+  if (!root || !styleKeys?.length) return;
+  const keys = new Set(styleKeys);
+  const formattingTagMap = new Map([
+    ['strong', 'fontWeight'],
+    ['b', 'fontWeight'],
+    ['em', 'fontStyle'],
+    ['i', 'fontStyle'],
+    ['u', 'textDecoration'],
+  ]);
+
+  const visit = (node) => {
+    Array.from(node.children ?? []).forEach((child) => {
+      let current = child;
+      const mappedStyleKey = formattingTagMap.get(child.tagName.toLowerCase());
+      if (mappedStyleKey && keys.has(mappedStyleKey)) {
+        current = replaceFormattingTag(child) ?? child;
+      }
+
+      if (current.style) {
+        styleKeys.forEach((styleKey) => current.style.removeProperty(styleKey.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)));
+        if (!current.getAttribute('style')?.trim() && current.tagName.toLowerCase() === 'span') {
+          const nextNode = current;
+          visit(nextNode);
+          unwrapElement(nextNode);
+          return;
+        }
+      }
+
+      visit(current);
+    });
+  };
+
+  visit(root);
+}
+
+function isInlineEditorUiTarget(target) {
+  return !!(target instanceof Element && target.closest('[data-inline-editor-ui="true"]'));
+}
+
+function isInlineEditorTextInputTarget(target) {
+  return !!(target instanceof Element && target.matches('[data-inline-editor-ui="true"] input, [data-inline-editor-ui="true"] textarea'));
+}
+
+function isSelectionInsideNode(node, selection) {
+  if (!node || !selection || selection.rangeCount === 0) return false;
+  return node.contains(selection.anchorNode) && node.contains(selection.focusNode);
+}
+
+function isBackwardSelection(selection, range) {
+  if (!selection || !range || selection.rangeCount === 0 || selection.isCollapsed) return false;
+  return selection.anchorNode === range.endContainer && selection.anchorOffset === range.endOffset;
+}
+
 export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, dragPreview = null, draggingElementId = null }) {
   const [dropOver, setDropOver] = useState(false);
   const elementRef = useRef(null);
   const textEditorRef = useRef(null);
   const [isEditingText, setIsEditingText] = useState(false);
   const [draftText, setDraftText] = useState('');
+  const [toolbarRect, setToolbarRect] = useState(null);
   const [textSelectionStyles, setTextSelectionStyles] = useState({
     bold: false,
     italic: false,
@@ -40,10 +112,18 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     fontFamily: 'Inter',
   });
   const selectionRangeRef = useRef(null);
+  const selectionOffsetsRef = useRef(null);
+  const expandedSelectionRangeRef = useRef(null);
+  const expandedSelectionOffsetsRef = useRef(null);
   const toolbarInteractingRef = useRef(false);
+  const inlineEditorInteractionRef = useRef({
+    pointerDownInsideUi: false,
+    suppressBlurUntil: 0,
+  });
   const textEditInitialRef = useRef({ text: 'Text', richTextHtml: plainTextToRichTextHtml('Text') });
   const syncedTextDraftRef = useRef({ text: 'Text', richTextHtml: plainTextToRichTextHtml('Text') });
   const fontPreviewSnapshotRef = useRef(null);
+  const selectAllOnTextEditRef = useRef(false);
 
   const allElements            = useEditorStore(s => s.getAllElements());
   const el                     = allElements.find(e => e.id === elementId);
@@ -166,7 +246,13 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const restoreTextSelection = () => {
     const node = textEditorRef.current;
     const selection = window.getSelection();
-    if (!node || !selection || !selectionRangeRef.current) return false;
+    if (!node || !selection) return false;
+    if ((toolbarInteractingRef.current || fontPreviewSnapshotRef.current) && expandedSelectionOffsetsRef.current && restoreSelectionOffsets(expandedSelectionOffsetsRef.current)) {
+      return true;
+    }
+    if (selectionOffsetsRef.current && restoreSelectionOffsets(selectionOffsetsRef.current)) return true;
+    if (expandedSelectionOffsetsRef.current && restoreSelectionOffsets(expandedSelectionOffsetsRef.current)) return true;
+    if (!selectionRangeRef.current) return false;
     selection.removeAllRanges();
     selection.addRange(selectionRangeRef.current.cloneRange());
     return true;
@@ -179,6 +265,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     const range = selection.getRangeAt(0);
     if (!node.contains(range.startContainer) || !node.contains(range.endContainer)) return false;
     selectionRangeRef.current = range.cloneRange();
+    selectionOffsetsRef.current = getSelectionOffsets(range);
+    if (!range.collapsed) {
+      expandedSelectionRangeRef.current = range.cloneRange();
+      expandedSelectionOffsetsRef.current = selectionOffsetsRef.current;
+    }
     return true;
   };
 
@@ -217,6 +308,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   const getSelectionOffsets = (range) => {
     const root = textEditorRef.current;
+    const selection = window.getSelection();
     if (!root || !range) return null;
 
     const resolveOffset = (targetNode, targetOffset) => {
@@ -238,6 +330,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     return {
       start: resolveOffset(range.startContainer, range.startOffset),
       end: resolveOffset(range.endContainer, range.endOffset),
+      backward: isBackwardSelection(selection, range),
     };
   };
 
@@ -273,8 +366,17 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     range.setStart(startNode, Math.min(startOffset, startNode.textContent?.length ?? 0));
     range.setEnd(endNode, Math.min(endOffset, endNode.textContent?.length ?? 0));
     selection.removeAllRanges();
-    selection.addRange(range);
+    if (offsets.backward && typeof selection.setBaseAndExtent === 'function') {
+      selection.setBaseAndExtent(endNode, Math.min(endOffset, endNode.textContent?.length ?? 0), startNode, Math.min(startOffset, startNode.textContent?.length ?? 0));
+    } else {
+      selection.addRange(range);
+    }
     selectionRangeRef.current = range.cloneRange();
+    selectionOffsetsRef.current = offsets;
+    if (!range.collapsed) {
+      expandedSelectionRangeRef.current = range.cloneRange();
+      expandedSelectionOffsetsRef.current = offsets;
+    }
     return true;
   };
 
@@ -326,6 +428,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     selection.removeAllRanges();
     selection.addRange(range);
     selectionRangeRef.current = range.cloneRange();
+    selectionOffsetsRef.current = getSelectionOffsets(range);
     return true;
   };
 
@@ -372,6 +475,40 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     syncSelectionStyles();
   };
 
+  const ensureInlineSelectionSession = () => {
+    const node = textEditorRef.current;
+    const selection = window.getSelection();
+    if (!node || !selection) return false;
+
+    const liveRange = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    const hasExpandedLiveSelection = !!(
+      liveRange
+      && !liveRange.collapsed
+      && node.contains(liveRange.startContainer)
+      && node.contains(liveRange.endContainer)
+    );
+
+    if (hasExpandedLiveSelection) {
+      captureTextSelection();
+    }
+
+    const sessionOffsets = hasExpandedLiveSelection
+      ? selectionOffsetsRef.current
+      : expandedSelectionOffsetsRef.current;
+
+    if (sessionOffsets && !fontPreviewSnapshotRef.current) {
+      fontPreviewSnapshotRef.current = {
+        html: node.innerHTML,
+        offsets: sessionOffsets,
+      };
+      return true;
+    }
+    if (fontPreviewSnapshotRef.current) return true;
+    if (!captureTextSelection()) return false;
+    if (selection.getRangeAt(0).collapsed) return false;
+    return captureFontPreviewSnapshot();
+  };
+
   const applyWrappedSelectionStyle = (stylePatch, options = {}) => {
     withRestoredSelection(() => {
       const node = textEditorRef.current;
@@ -379,11 +516,14 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       if (!node || !selection || selection.rangeCount === 0) return;
       const range = selection.getRangeAt(0);
       if (range.collapsed || !node.contains(range.startContainer) || !node.contains(range.endContainer)) return;
+      const styleKeys = Object.keys(stylePatch);
       const span = document.createElement('span');
       Object.entries(stylePatch).forEach(([styleKey, styleValue]) => {
         span.style[styleKey] = styleValue;
       });
-      span.appendChild(range.extractContents());
+      const fragment = range.extractContents();
+      clearDescendantOverrideStyles(fragment, styleKeys);
+      span.appendChild(fragment);
       range.insertNode(span);
       range.selectNodeContents(span);
       selection.removeAllRanges();
@@ -397,6 +537,52 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       document.execCommand('styleWithCSS', false, true);
       document.execCommand(command, false, value);
     }, options);
+  };
+
+  const previewInlineStyle = (stylePatch) => {
+    if (!ensureInlineSelectionSession()) return;
+    restoreFontPreviewSnapshot(false);
+    applyWrappedSelectionStyle(stylePatch, { persist: false });
+  };
+
+  const startInlinePreviewSession = () => {
+    ensureInlineSelectionSession();
+    toolbarInteractingRef.current = true;
+  };
+
+  const commitInlineStyle = (stylePatch) => {
+    if (!ensureInlineSelectionSession()) return;
+    restoreFontPreviewSnapshot(true);
+    applyWrappedSelectionStyle(stylePatch);
+    requestAnimationFrame(() => {
+      toolbarInteractingRef.current = false;
+      textEditorRef.current?.focus({ preventScroll: true });
+      restoreTextSelection();
+      syncSelectionStyles();
+    });
+  };
+
+  const restoreToolbarSelectionFocus = () => {
+    requestAnimationFrame(() => {
+      toolbarInteractingRef.current = false;
+      textEditorRef.current?.focus({ preventScroll: true });
+      restoreTextSelection();
+      syncSelectionStyles();
+    });
+  };
+
+  const cancelInlinePreview = () => {
+    restoreFontPreviewSnapshot(true);
+    restoreToolbarSelectionFocus();
+  };
+
+  const commitInlineColor = (colorValue) => {
+    if (fontPreviewSnapshotRef.current) {
+      commitInlineStyle({ color: colorValue });
+      return;
+    }
+    startInlinePreviewSession();
+    commitInlineStyle({ color: colorValue });
   };
 
   useEffect(() => {
@@ -424,26 +610,107 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     setDraftText(initialText);
     node.innerHTML = initialRichTextHtml;
     node.focus({ preventScroll: true });
-    const range = document.createRange();
-    range.selectNodeContents(node);
     const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    selectionRangeRef.current = range.cloneRange();
-    captureTextSelection();
+    if (selectAllOnTextEditRef.current) {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      selectionRangeRef.current = range.cloneRange();
+      selectionOffsetsRef.current = getSelectionOffsets(range);
+      captureTextSelection();
+    } else {
+      selection?.removeAllRanges();
+      selectionRangeRef.current = null;
+      selectionOffsetsRef.current = null;
+    }
+    selectAllOnTextEditRef.current = false;
     syncSelectionStyles();
   }, [el?.id, el?.type, isEditingText]);
 
   useEffect(() => {
     if (!isEditingText || el?.type !== 'text') return undefined;
     const handleSelectionChange = () => {
+      const liveSelection = window.getSelection();
+      const editorNode = textEditorRef.current;
+      if (!editorNode || !liveSelection) return;
+      if ((toolbarInteractingRef.current || fontPreviewSnapshotRef.current) && !isSelectionInsideNode(editorNode, liveSelection)) {
+        return;
+      }
       captureTextSelection();
       syncSelectionStyles();
     };
     document.addEventListener('selectionchange', handleSelectionChange);
     return () => {
       fontPreviewSnapshotRef.current = null;
+      expandedSelectionRangeRef.current = null;
+      expandedSelectionOffsetsRef.current = null;
       document.removeEventListener('selectionchange', handleSelectionChange);
+    };
+  }, [el?.type, isEditingText]);
+
+  useEffect(() => {
+    if (!isEditingText || el?.type !== 'text') return undefined;
+
+    const handlePointerDownCapture = (event) => {
+      const target = event.target;
+      if (isInlineEditorUiTarget(target) || textEditorRef.current?.contains(target)) {
+        return;
+      }
+      toolbarInteractingRef.current = false;
+      commitTextEdit();
+    };
+
+    const handleFocusInCapture = (event) => {
+      const target = event.target;
+      if (isInlineEditorUiTarget(target) || textEditorRef.current?.contains(target)) {
+        return;
+      }
+      toolbarInteractingRef.current = false;
+      commitTextEdit();
+    };
+
+    window.addEventListener('pointerdown', handlePointerDownCapture, true);
+    window.addEventListener('focusin', handleFocusInCapture, true);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDownCapture, true);
+      window.removeEventListener('focusin', handleFocusInCapture, true);
+    };
+  }, [el?.type, isEditingText]);
+
+  useEffect(() => {
+    if (!isEditingText || el?.type !== 'text') return undefined;
+
+    const handlePointerDownCapture = (event) => {
+      const insideUi = isInlineEditorUiTarget(event.target);
+      inlineEditorInteractionRef.current = {
+        pointerDownInsideUi: insideUi,
+        suppressBlurUntil: insideUi ? Date.now() + 400 : 0,
+      };
+      if (insideUi) {
+        toolbarInteractingRef.current = true;
+      }
+    };
+
+    const clearInteractionGuard = () => {
+      if (Date.now() < inlineEditorInteractionRef.current.suppressBlurUntil) return;
+      inlineEditorInteractionRef.current = {
+        pointerDownInsideUi: false,
+        suppressBlurUntil: 0,
+      };
+    };
+
+    window.addEventListener('pointerdown', handlePointerDownCapture, true);
+    window.addEventListener('pointerup', clearInteractionGuard, true);
+    window.addEventListener('pointercancel', clearInteractionGuard, true);
+    return () => {
+      inlineEditorInteractionRef.current = {
+        pointerDownInsideUi: false,
+        suppressBlurUntil: 0,
+      };
+      window.removeEventListener('pointerdown', handlePointerDownCapture, true);
+      window.removeEventListener('pointerup', clearInteractionGuard, true);
+      window.removeEventListener('pointercancel', clearInteractionGuard, true);
     };
   }, [el?.type, isEditingText]);
 
@@ -528,6 +795,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     if (el.type === 'text') {
       e.stopPropagation();
       setSelection({ elementId: id, bpId });
+      selectAllOnTextEditRef.current = true;
       setIsEditingText(true);
       return;
     }
@@ -707,7 +975,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     opacity:          (isDraggingSource && effectiveRelative)
       ? Math.min(typeof styles?.opacity === 'number' ? styles.opacity : 1, 0.24)
       : styles?.opacity,
-    overflow:         styles?.overflow,
+    overflow:         isEditingText && el.type === 'text' ? 'visible' : styles?.overflow,
     display:          styles?.display,
     flexDirection:    styles?.flexDirection,
     flexWrap:         styles?.flexWrap,
@@ -754,6 +1022,48 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     outline: 'none',
   } : null;
   const iconMarkup = el.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
+
+  useLayoutEffect(() => {
+    if (!isEditingText || el?.type !== 'text') {
+      setToolbarRect(null);
+      return undefined;
+    }
+
+    const measure = () => {
+      const rect = elementRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setToolbarRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    };
+
+    measure();
+    const node = elementRef.current;
+    const resizeObserver = typeof ResizeObserver !== 'undefined' && node ? new ResizeObserver(measure) : null;
+    resizeObserver?.observe(node);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
+  }, [el?.type, isEditingText, viewport?.scale, viewport?.x, viewport?.y, resolved?.width, resolved?.height, x, y]);
+
+  const inlineToolbar = isEditingText && toolbarRect ? (
+    <InlineTextToolbar
+      anchorRect={toolbarRect}
+      selectionStyles={textSelectionStyles}
+      previewText={richTextHtmlToPlainText(textEditorRef.current?.innerHTML ?? '') || 'Text'}
+      onExecCommand={applyExecCommand}
+      onStartPreviewSession={startInlinePreviewSession}
+      onPreviewStyle={previewInlineStyle}
+      onPreviewCancel={cancelInlinePreview}
+      onCommitStyle={commitInlineStyle}
+      onColorChange={commitInlineColor}
+      onInteractionChange={(nextValue) => {
+        toolbarInteractingRef.current = nextValue;
+      }}
+    />
+  ) : null;
 
   return (
     <div
@@ -819,138 +1129,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               <span>Image</span>
             </div>;
       })()}
+      {inlineToolbar}
       {el.type === 'text' && (
         <>
-          {isEditingText ? (
-            <div
-              className="fb-inline-text-toolbar"
-              style={{ transform: `translateY(calc(-100% - ${8 / canvasScale}px)) scale(${1 / canvasScale})`, transformOrigin: 'left bottom' }}
-              onMouseDown={(event) => {
-                toolbarInteractingRef.current = true;
-                event.stopPropagation();
-              }}
-            >
-              <button type="button" className={`fb-inline-text-toolbar__btn${textSelectionStyles.bold ? ' is-active' : ''}`} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => applyExecCommand('bold')}><strong>B</strong></button>
-              <button type="button" className={`fb-inline-text-toolbar__btn${textSelectionStyles.italic ? ' is-active' : ''}`} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => applyExecCommand('italic')}><em>I</em></button>
-              <button type="button" className={`fb-inline-text-toolbar__btn${textSelectionStyles.underline ? ' is-active' : ''}`} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => applyExecCommand('underline')}><span style={{ textDecoration: 'underline' }}>U</span></button>
-              <div
-                className="fb-inline-text-toolbar__font-picker"
-                onMouseDown={(event) => {
-                  toolbarInteractingRef.current = true;
-                  event.stopPropagation();
-                }}
-              >
-                <GoogleFontPicker
-                  value={textSelectionStyles.fontFamily}
-                  previewText={richTextHtmlToPlainText(textEditorRef.current?.innerHTML ?? '') || 'Text'}
-                  preserveFocus
-                  showSearch={false}
-                  onPreviewChange={(family) => {
-                    if (!captureFontPreviewSnapshot()) return;
-                    restoreFontPreviewSnapshot(false);
-                    applyWrappedSelectionStyle({ fontFamily: familyToFontStack(family) }, { persist: false });
-                  }}
-                  onPreviewReset={() => {
-                    restoreFontPreviewSnapshot(true);
-                    requestAnimationFrame(() => {
-                      toolbarInteractingRef.current = false;
-                      textEditorRef.current?.focus({ preventScroll: true });
-                      restoreTextSelection();
-                    });
-                  }}
-                  onChange={(family) => {
-                    ensureGoogleFontLoaded(family, {
-                      text: richTextHtmlToPlainText(textEditorRef.current?.innerHTML ?? '') || 'Text',
-                      weight: Number(textSelectionStyles.fontWeight) || 400,
-                      style: textSelectionStyles.italic ? 'italic' : 'normal',
-                    });
-                    restoreFontPreviewSnapshot(true);
-                    applyWrappedSelectionStyle({ fontFamily: familyToFontStack(family) });
-                    requestAnimationFrame(() => {
-                      toolbarInteractingRef.current = false;
-                      textEditorRef.current?.focus({ preventScroll: true });
-                      restoreTextSelection();
-                    });
-                  }}
-                />
-              </div>
-              <select
-                className="fb-inline-text-toolbar__select"
-                value={`${textSelectionStyles.fontSize}`}
-                onMouseDown={(event) => {
-                  toolbarInteractingRef.current = true;
-                  event.stopPropagation();
-                }}
-                onBlur={() => {
-                  requestAnimationFrame(() => {
-                    toolbarInteractingRef.current = false;
-                    textEditorRef.current?.focus({ preventScroll: true });
-                    restoreTextSelection();
-                  });
-                }}
-                onChange={(event) => {
-                  applyWrappedSelectionStyle({ fontSize: `${event.target.value}px` });
-                  requestAnimationFrame(() => {
-                    toolbarInteractingRef.current = false;
-                    textEditorRef.current?.focus({ preventScroll: true });
-                    restoreTextSelection();
-                  });
-                }}
-              >
-                {[12, 14, 16, 18, 20, 24, 28, 32, 36, 42, 48, 56, 64, 72].map((value) => <option key={value} value={value}>{value}px</option>)}
-              </select>
-              <select
-                className="fb-inline-text-toolbar__select"
-                value={textSelectionStyles.fontWeight}
-                onMouseDown={(event) => {
-                  toolbarInteractingRef.current = true;
-                  event.stopPropagation();
-                }}
-                onBlur={() => {
-                  requestAnimationFrame(() => {
-                    toolbarInteractingRef.current = false;
-                    textEditorRef.current?.focus({ preventScroll: true });
-                    restoreTextSelection();
-                  });
-                }}
-                onChange={(event) => {
-                  applyWrappedSelectionStyle({ fontWeight: event.target.value });
-                  requestAnimationFrame(() => {
-                    toolbarInteractingRef.current = false;
-                    textEditorRef.current?.focus({ preventScroll: true });
-                    restoreTextSelection();
-                  });
-                }}
-              >
-                {['300', '400', '500', '600', '700', '800'].map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
-              <label className="fb-inline-text-toolbar__color">
-                <input
-                  type="color"
-                  value={textSelectionStyles.color}
-                  onMouseDown={(event) => {
-                    toolbarInteractingRef.current = true;
-                    event.stopPropagation();
-                  }}
-                  onBlur={() => {
-                    requestAnimationFrame(() => {
-                      toolbarInteractingRef.current = false;
-                      textEditorRef.current?.focus({ preventScroll: true });
-                      restoreTextSelection();
-                    });
-                  }}
-                  onChange={(event) => {
-                    applyWrappedSelectionStyle({ color: event.target.value });
-                    requestAnimationFrame(() => {
-                      toolbarInteractingRef.current = false;
-                      textEditorRef.current?.focus({ preventScroll: true });
-                      restoreTextSelection();
-                    });
-                  }}
-                />
-              </label>
-            </div>
-          ) : null}
           <div
             ref={textEditorRef}
             className="fb-text-content"
@@ -961,8 +1142,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
             onMouseDown={(e) => {
               if (!isEditingText) return;
               e.stopPropagation();
-              const selection = window.getSelection();
+              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey) return;
               const node = textEditorRef.current;
+              const selection = window.getSelection();
               if (!node || !selection || selection.rangeCount === 0 || selection.isCollapsed) return;
               if (!node.contains(selection.anchorNode) || !node.contains(selection.focusNode)) return;
               placeCaretFromPoint(e.clientX, e.clientY);
@@ -987,6 +1169,15 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
             onDoubleClick={(e) => {
               if (!isEditingText) return;
               e.stopPropagation();
+              const node = textEditorRef.current;
+              const selection = window.getSelection();
+              if (!node || !selection) return;
+              const range = document.createRange();
+              range.selectNodeContents(node);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              selectionRangeRef.current = range.cloneRange();
+              selectionOffsetsRef.current = getSelectionOffsets(range);
               captureTextSelection();
               syncSelectionStyles();
             }}
@@ -1025,7 +1216,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               }
               e.stopPropagation();
             }}
-            onBlur={() => commitTextEdit()}
             dangerouslySetInnerHTML={!isEditingText ? { __html: resolvedRichTextHtml } : undefined}
           />
         </>
