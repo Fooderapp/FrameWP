@@ -2074,7 +2074,7 @@ class FrameBuilder_Exporter {
 		var endDistance = getMarkerViewportDistance(node, end, endOffsetPx, 0.68);
 		var range = startDistance - endDistance;
 		if (Math.abs(range) < 0.0001) return endDistance <= 0 ? 1 : 0;
-		return clamp((-endDistance) / range, 0, 1);
+		return clamp(startDistance / range, 0, 1);
 	};
 	var getAnimationBaseState = function(node) {
 		if (node.__fbAnimationBaseState) return node.__fbAnimationBaseState;
@@ -2105,6 +2105,34 @@ class FrameBuilder_Exporter {
 		};
 		return node.__fbAnimationBaseState;
 	};
+	var restoreAnimationBaseState = function(node) {
+		if (!node) return;
+		var baseState = getAnimationBaseState(node);
+		if (gsap) {
+			gsap.killTweensOf(node);
+			gsap.set(node, {
+				opacity: baseState.opacity,
+				x: 0,
+				y: 0,
+				scaleX: 1,
+				scaleY: 1,
+				rotation: baseState.rotation || 0,
+				rotationX: 0,
+				rotationY: 0,
+				skewX: 0,
+				skewY: 0,
+				overwrite: true,
+			});
+		}
+		node.style.left = baseState.leftCss;
+		node.style.top = baseState.topCss;
+		node.style.width = baseState.widthCss;
+		node.style.height = baseState.heightCss;
+		node.style.backgroundColor = baseState.backgroundColor;
+		node.style.borderColor = baseState.borderColor;
+		node.style.borderRadius = baseState.borderRadius;
+		(baseState.textNode || baseState.iconNode || node).style.color = baseState.color;
+	};
 	var shouldAnimateDimensionOverride = function(baseCssValue, endLayout, dimensionKey, modeKey, pctKey) {
 		if (!Object.prototype.hasOwnProperty.call(endLayout, dimensionKey)) return false;
 		if (Object.prototype.hasOwnProperty.call(endLayout, modeKey) || Object.prototype.hasOwnProperty.call(endLayout, pctKey)) return true;
@@ -2134,6 +2162,12 @@ class FrameBuilder_Exporter {
 		var baseState = getAnimationBaseState(node);
 		var contentTarget = baseState.textNode || baseState.iconNode || null;
 		var transition = normalizeAnimationTransition(animation && animation.transition, { duration: 0.7, easePreset: 'easeInOut' });
+		var enterDuration = getTransitionDurationMs(transition) / 1000;
+		var enterEase = transition.type === 'realistic'
+			? (transition.springMode === 'physics'
+				? 'elastic.out(1,' + Math.max(0.2, transition.mass * 0.45) + ')'
+				: 'back.out(' + (1 + transition.bounce * 1.2) + ')')
+			: getEaseValue(transition);
 		if (!gsap) return;
 		gsap.killTweensOf(node);
 		var fromVars = {
@@ -2168,8 +2202,8 @@ class FrameBuilder_Exporter {
 			rotationY: 0,
 			skewX: 0,
 			skewY: 0,
-			duration: getTransitionDurationMs(transition) / 1000,
-			ease: getEaseValue(transition),
+			duration: enterDuration,
+			ease: enterEase,
 			overwrite: true,
 			clearProps: 'opacity'
 		};
@@ -2184,8 +2218,8 @@ class FrameBuilder_Exporter {
 		if (contentTarget && Object.prototype.hasOwnProperty.call(startStyles, 'color')) {
 			gsap.fromTo(contentTarget, { color: startStyles.color }, {
 				color: baseState.color,
-				duration: getTransitionDurationMs(transition) / 1000,
-				ease: getEaseValue(transition),
+				duration: enterDuration,
+				ease: enterEase,
 				overwrite: true,
 			});
 		}
@@ -2245,13 +2279,15 @@ class FrameBuilder_Exporter {
 	};
 	var initElementAnimations = function(node) {
 		if (!node || node.dataset.fbAnimationsBound === '1') return;
-		var rawAnimations = parseJsonAttr(node.dataset.fbAnimations, null);
-		if (!rawAnimations) return;
+		var readAnimations = function() {
+			return parseJsonAttr(node.dataset.fbAnimations, null);
+		};
+		if (!readAnimations()) return;
 		node.dataset.fbAnimationsBound = '1';
 		var enterPlayed = new Set();
 		var scrollPlaybackState = { maxProgress: 0 };
 		var runEnterAnimations = function() {
-			var animations = resolveAnimationsForBreakpoint(rawAnimations, getCurrentBreakpoint()).filter(function(animation) {
+			var animations = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).filter(function(animation) {
 				return animation && animation.type === 'enter';
 			});
 			animations.forEach(function(animation) {
@@ -2266,7 +2302,7 @@ class FrameBuilder_Exporter {
 					runEnterAnimations();
 					return;
 				}
-				resolveAnimationsForBreakpoint(rawAnimations, getCurrentBreakpoint()).forEach(function(animation) {
+				resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).forEach(function(animation) {
 					if (animation && animation.type === 'enter' && animation.playback === 'replay') {
 						enterPlayed.delete(animation.id);
 					}
@@ -2277,10 +2313,14 @@ class FrameBuilder_Exporter {
 		var scrollFrame = null;
 		var updateScrollAnimations = function() {
 			scrollFrame = null;
-			var animation = resolveAnimationsForBreakpoint(rawAnimations, getCurrentBreakpoint()).find(function(entry) {
+			var animation = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
 				return entry && entry.type === 'scroll';
 			}) || null;
-			if (!animation) return;
+			if (!animation) {
+				scrollPlaybackState.maxProgress = 0;
+				restoreAnimationBaseState(node);
+				return;
+			}
 			var progress = getScrollAnimationProgress(node, animation.start, animation.end, animation.startOffset, animation.endOffset, animation.startOffsetPx, animation.endOffsetPx);
 			if (animation.playback === 'once') {
 				scrollPlaybackState.maxProgress = Math.max(scrollPlaybackState.maxProgress, progress);
