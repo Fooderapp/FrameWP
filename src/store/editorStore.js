@@ -4147,7 +4147,8 @@ export const useEditorStore = create((set, get) => {
             const shouldNormalizeToFlow = !el.parentId
               && !resolved.absoluteInLayout
               && resolved.positionType !== 'fixed'
-              && resolved.positionType !== 'relative';
+              && resolved.positionType !== 'relative'
+              && resolved.positionType !== 'sticky';
             if (!shouldNormalizeToFlow) return el;
             if (bpId === 'desktop') {
               return { ...el, base: { ...el.base, positionType: 'relative' } };

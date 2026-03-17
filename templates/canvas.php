@@ -38,7 +38,17 @@ if ( ! is_array( $global_variables ) ) $global_variables = [];
 			padding: 0;
 			width: 100%;
 			max-width: 100% !important;
-			overflow-x: hidden;
+			overflow-x: visible;
+			overflow-y: visible;
+		}
+		@supports (overflow: clip) {
+			html, body {
+				overflow-x: clip;
+			}
+		}
+		body.fb-canvas-page,
+		body.fb-canvas-page > .fb-page {
+			overflow: visible !important;
 		}
 		/* Kill every WP/theme container that could box-in the layout */
 		body > *,

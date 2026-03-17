@@ -200,24 +200,19 @@ export default function Artboard({
           ref={contentRef}
           className="fb-artboard-content"
           style={{
-            position: layoutOn ? 'relative' : 'absolute',
+            position: 'relative',
+            width: '100%',
+            minHeight: '100%',
+            boxSizing: 'border-box',
+            padding: `${resolvedPad.top}px ${resolvedPad.right}px ${resolvedPad.bottom}px ${resolvedPad.left}px`,
             ...(layoutOn ? {
-              width: '100%',
-              minHeight: '100%',
-              boxSizing: 'border-box',
-              padding: `${resolvedPad.top}px ${resolvedPad.right}px ${resolvedPad.bottom}px ${resolvedPad.left}px`,
               display: 'flex',
               flexDirection: resolvedLayout.flexDirection ?? 'column',
               alignItems: resolvedLayout.alignItems ?? 'flex-start',
               justifyContent: resolvedLayout.justifyContent ?? 'flex-start',
               flexWrap: resolvedLayout.flexWrap ?? 'nowrap',
               gap: resolvedLayout.gap ?? 0,
-            } : {
-              top: resolvedPad.top,
-              left: resolvedPad.left,
-              right: resolvedPad.right,
-              bottom: resolvedPad.bottom,
-            }),
+            } : {}),
           }}
           onClick={handleContentClick}
         >

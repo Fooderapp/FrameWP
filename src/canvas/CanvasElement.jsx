@@ -228,19 +228,20 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     : 1;
 
   const isRelative = positionType === 'relative';
+  const isSticky   = positionType === 'sticky';
   const isFixed    = positionType === 'fixed';
   // Root-level auto-layout items flow unless explicitly pinned out of layout.
   const isFlowInLayout = !!artboardLayoutOn
     && !el?.parentId
     && !resolved?.absoluteInLayout
     && !isFixed;
-  const effectiveRelative = isRelative || isFlowInLayout;
+  const effectiveFlowPosition = isRelative || isSticky || isFlowInLayout;
 
   // ── Parent flex direction (needed for fill mode) ───────────
   const parentResolved = parentEl ? resolveElementWithVariables(parentEl, bpId, pageVariables, globalVariables) : null;
   // 'row' | 'column' | 'block'  (block = not a flex parent)
   const parentDir = (() => {
-    if (!effectiveRelative) return 'block';
+    if (!effectiveFlowPosition) return 'block';
     if (!el?.parentId && artboardLayoutOn) return artboardFlexDir ?? 'column';
     if (el?.parentId && parentResolved?.styles?.display === 'flex')
       return parentResolved.styles.flexDirection ?? 'row';
@@ -783,7 +784,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   // Off-canvas: only meaningful on desktop — tablet/mobile inherit desktop positions
   // which may overflow their narrower artboard, but that's expected behaviour not an error.
-  const isOffCanvas = bpId === 'desktop' && !el.parentId && bpDef && !effectiveRelative
+  const isOffCanvas = bpId === 'desktop' && !el.parentId && bpDef && !effectiveFlowPosition
     ? (x + width <= 0 || x >= bpDef.width || y + height <= 0 || y >= bpDef.height)
     : false;
 
@@ -940,8 +941,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   // row parent  → width-fill uses flexGrow (main axis), height-fill uses alignSelf
   // column parent → height-fill uses flexGrow (main axis), width-fill uses alignSelf
   // block parent  → fall back to width/height: 100%
-  const wFill = effectiveRelative && widthMode  === 'fill';
-  const hFill = effectiveRelative && heightMode === 'fill';
+  const wFill = effectiveFlowPosition && widthMode  === 'fill';
+  const hFill = effectiveFlowPosition && heightMode === 'fill';
   const fillW        = wFill ? (parentDir === 'row'    ? undefined   // flexGrow owns it
                               : parentDir === 'column' ? undefined   // alignSelf owns it
                               : '100%')                              // block fallback
@@ -962,9 +963,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const isDraggingSource = draggingElementId === id;
   const previewDx = isDragPreviewActive ? (dragPreview.dx ?? 0) : 0;
   const previewDy = isDragPreviewActive ? (dragPreview.dy ?? 0) : 0;
-  const absoluteLeft = !effectiveRelative ? x + previewDx : x;
-  const absoluteTop = !effectiveRelative ? y + previewDy : y;
-  const previewTransform = effectiveRelative && isDragPreviewActive
+  const absoluteLeft = !effectiveFlowPosition ? x + previewDx : x;
+  const absoluteTop = !effectiveFlowPosition ? y + previewDy : y;
+  const stickyTop = Math.max(0, y ?? 0);
+  const previewTransform = effectiveFlowPosition && isDragPreviewActive
     ? `translate(${previewDx}px, ${previewDy}px)`
     : '';
   const rotationTransform = rotation ? `rotate(${rotation}deg)` : '';
@@ -977,14 +979,16 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     return nextVectorShapeData?.kind !== 'line' && nextVectorShapeData?.closed === true;
   })();
   const inlineStyle = {
-    position: effectiveRelative ? 'relative' : 'absolute',
-    ...(effectiveRelative
+    position: isSticky ? 'sticky' : (effectiveFlowPosition ? 'relative' : 'absolute'),
+    '--fb-sticky-top': isSticky ? `${stickyTop}px` : undefined,
+    ...(effectiveFlowPosition
       ? { width:      wFill ? fillW : csW,
           height:     hFill ? fillH : csH,
           flexGrow:   fillFlexGrow,
           flexShrink: fillFlexShrink,
           flexBasis:  fillFlexBasis,
-          alignSelf:  fillAlignSelf,
+          alignSelf:  isSticky ? (wFill ? 'stretch' : 'flex-start') : fillAlignSelf,
+          top:        isSticky ? stickyTop : undefined,
         }
       : { left: absoluteLeft, top: absoluteTop, width: csW, height: csH }
     ),
@@ -1017,7 +1021,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     border: (styles?.borderWidth > 0)
       ? `${styles.borderWidth}px ${styles.borderStyle || 'solid'} ${hasGradientFrameStroke ? 'transparent' : (styles.borderColor || '#000')}`
       : undefined,
-    opacity:          (isDraggingSource && effectiveRelative)
+    opacity:          (isDraggingSource && effectiveFlowPosition)
       ? Math.min(typeof styles?.opacity === 'number' ? styles.opacity : 1, 0.24)
       : styles?.opacity,
     overflow:         isEditingText && el.type === 'text' ? 'visible' : styles?.overflow,
@@ -1183,7 +1187,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   return (
     <div
       ref={elementRef}
-      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${interactionLocked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}${el.componentInstance ? ' fb-el--component' : ''}${el.componentRoot ? ' fb-el--component-root' : ''}${shapeKind === 'line' ? ' fb-el--vector-line' : ''}`}
+      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${interactionLocked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isSticky ? ' fb-el--sticky' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}${el.componentInstance ? ' fb-el--component' : ''}${el.componentRoot ? ' fb-el--component-root' : ''}${shapeKind === 'line' ? ' fb-el--vector-line' : ''}`}
       style={inlineStyle}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}

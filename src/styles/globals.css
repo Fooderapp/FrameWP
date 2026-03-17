@@ -1113,6 +1113,11 @@ html, body, #framebuilder-root {
 /* Off-canvas: element is outside artboard bounds, dimmed + dashed outline */
 .fb-el--offcanvas { opacity: 0.45 !important; outline: 1.5px dashed rgba(255,180,0,0.6) !important; outline-offset: 0; }
 .fb-el--fixed { outline: 1.5px dashed rgba(120,80,255,0.55); outline-offset: -1px; }
+.fb-el--sticky {
+  position: -webkit-sticky !important;
+  position: sticky !important;
+  top: var(--fb-sticky-top, 0px) !important;
+}
 
 /* Override reset button in properties panel */
 .fb-reset-btn {

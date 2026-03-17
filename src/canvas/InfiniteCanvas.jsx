@@ -526,7 +526,7 @@ function buildFallbackDragPreview({ session, worldX, worldY, bp, pagePadding, pa
 
 function shouldUseDirectRotatedMove(session) {
   if (!session?.hasRotation) return false;
-  if (session.dragMode === 'flow' || session.origWasFlow || session.origPositionType === 'relative') return false;
+  if (session.dragMode === 'flow' || session.origWasFlow || session.origPositionType === 'relative' || session.origPositionType === 'sticky') return false;
   return true;
 }
 
@@ -974,7 +974,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
   const rotation = resolved.rotation;
   const constraints = { top: true, left: true, right: false, bottom: false, ...(resolved.constraints ?? {}) };
   const isDragging = dragOverlay?.elementId === el.id;
-  const canMoveOverlay = !el.locked && !isDragging && resolved.positionType !== 'relative' && !isFlowInLayout;
+  const canMoveOverlay = !el.locked && !isDragging && !['relative', 'sticky'].includes(resolved.positionType ?? 'absolute') && !isFlowInLayout;
   const isActiveComponentVariantRoot = activeSurface === 'component'
     && !!el.componentRoot
     && !!el.componentEditorVariantId
@@ -1055,7 +1055,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
       }
     : null);
   const shouldUseVisualPosition = !!visualRect;
-  const shouldUseVisualSize = !!visualRect && !isVectorShape && (resolved.positionType === 'relative' || isFlowInLayout || resolved.widthMode === 'hug' || resolved.heightMode === 'hug');
+  const shouldUseVisualSize = !!visualRect && !isVectorShape && (['relative', 'sticky'].includes(resolved.positionType ?? 'absolute') || isFlowInLayout || resolved.widthMode === 'hug' || resolved.heightMode === 'hug');
   const overlayW = isDragging
     ? (dragOverlay.width ?? w)
     : (hasRotation ? w : (shouldUseVisualSize ? visualRect.width : w));
@@ -2290,7 +2290,7 @@ export default function InfiniteCanvas() {
       && clientX <= artboardRect.right
       && clientY >= artboardRect.top
       && clientY <= artboardRect.bottom;
-    const treatAsFlowDrag = session.origWasFlow || session.dragMode === 'flow' || session.origPositionType === 'relative';
+    const treatAsFlowDrag = session.origWasFlow || session.dragMode === 'flow' || session.origPositionType === 'relative' || session.origPositionType === 'sticky';
     const offCanvas = treatAsFlowDrag
       ? !pointerInsideArtboard
       : (!artboardRect || overlapRatioWithRect(artboardRect) < 0.35);
@@ -2596,7 +2596,7 @@ export default function InfiniteCanvas() {
         const dy = e.key === 'ArrowUp'   ? -step : e.key === 'ArrowDown'  ? step : 0;
         selectedElements.forEach((nudgeEl) => {
           const nudgeRes = resolveElement(nudgeEl, selection.bpId);
-          if (nudgeRes.positionType === 'relative') return;
+          if (nudgeRes.positionType === 'relative' || nudgeRes.positionType === 'sticky') return;
           useEditorStore.getState().updateElementLayout(nudgeEl.id, selection.bpId, {
             x: (nudgeRes.x ?? 0) + dx,
             y: (nudgeRes.y ?? 0) + dy,
@@ -4016,7 +4016,7 @@ export default function InfiniteCanvas() {
         .filter(Boolean)
         .map((item) => {
           const itemResolved = resolveElement(item, bpId);
-          const groupIsFlow = ((itemResolved.positionType ?? 'absolute') === 'relative')
+          const groupIsFlow = ['relative', 'sticky'].includes(itemResolved.positionType ?? 'absolute')
             || (!item.parentId && page0?.layout?.[bpId] != null && !itemResolved.absoluteInLayout && itemResolved.positionType !== 'fixed');
           return {
             id: item.id,
@@ -4055,13 +4055,13 @@ export default function InfiniteCanvas() {
     // that hasn't been pinned as absoluteInLayout (matches CanvasElement's effectiveRelative logic).
     // Root auto-layout exceptions that are geometrically off-canvas are not flow items.
     const pgLayout = resolvePageLayout(page0?.layout, bpId);
-    const heuristicFlowCtx = (resolved.positionType ?? 'absolute') === 'relative'
+    const heuristicFlowCtx = ['relative', 'sticky'].includes(resolved.positionType ?? 'absolute')
       || (!el.parentId && pgLayout !== null && !resolved.absoluteInLayout
           && resolved.positionType !== 'fixed' && !isGeomOffCanvas);
     const isFlowCtx = computedPosition != null
-      ? computedPosition === 'relative'
+      ? computedPosition === 'relative' || computedPosition === 'sticky'
       : heuristicFlowCtx;
-    const origPositionType = isFlowCtx ? 'relative' : (resolved.positionType ?? 'absolute');
+    const origPositionType = isFlowCtx ? (resolved.positionType ?? 'relative') : (resolved.positionType ?? 'absolute');
     // For ghost sizing during reorder drag, try to get actual rendered dimensions from DOM
     let ghostW = resolved.width ?? 100;
     let ghostH = resolved.height ?? 40;

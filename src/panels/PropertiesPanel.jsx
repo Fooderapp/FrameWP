@@ -1380,6 +1380,7 @@ export default function PropertiesPanel() {
       const positionType = resolved.positionType ?? 'absolute';
       const isFixed = positionType === 'fixed';
       const isFlow = positionType === 'relative'
+        || positionType === 'sticky'
         || (!selected.parentId && resolvePageLayout(page?.layout, bpId) !== null && !resolved.absoluteInLayout && !isFixed);
       return {
         id: selected.id,
@@ -2010,7 +2011,7 @@ export default function PropertiesPanel() {
           containerH={containerH}
           upd={upd}
           commit={commit}
-          disabled={['relative'].includes(resolved.positionType ?? 'absolute') || isFlowInLayout}
+          disabled={['relative', 'sticky'].includes(resolved.positionType ?? 'absolute') || isFlowInLayout}
         />
 
         {/* ── Position ──────────────────────────────────────── */}
@@ -2022,7 +2023,9 @@ export default function PropertiesPanel() {
               <select
                 className="fb-prop-input"
                 value={(() => {
-                  if (!resolved.absoluteInLayout) return 'auto';
+                  if (!resolved.absoluteInLayout) {
+                    return (resolved.positionType ?? 'relative') === 'sticky' ? 'sticky' : 'auto';
+                  }
                   return resolved.positionType ?? 'absolute';
                 })()}
                 onChange={e => {
@@ -2031,6 +2034,12 @@ export default function PropertiesPanel() {
                     updateElementLayout(element.id, bpId, {
                       absoluteInLayout: false,
                       positionType: resolved.positionType === 'fixed' ? 'fixed' : 'relative',
+                    });
+                  } else if (v === 'relative' || v === 'sticky') {
+                    updateElementLayout(element.id, bpId, {
+                      absoluteInLayout: false,
+                      positionType: v,
+                      ...(v === 'sticky' ? { x: 0, y: Math.max(0, resolved.y ?? 0) } : {}),
                     });
                   } else {
                     // Mark as exception from auto-layout flow
@@ -2043,33 +2052,42 @@ export default function PropertiesPanel() {
                 <option value="absolute">Absolute</option>
                 <option value="fixed">Fixed</option>
                 <option value="relative">Relative</option>
+                <option value="sticky">Sticky</option>
               </select>
             </div>
           )}
-          {!isFlowInLayout && ['absolute', 'fixed'].includes(resolved.positionType ?? 'absolute') && (
+          {((resolved.positionType ?? 'absolute') === 'sticky' || (!isFlowInLayout && ['absolute', 'fixed'].includes(resolved.positionType ?? 'absolute'))) && (
             <div className="fb-pos-widget">
               <div className="fb-pos-widget__row">
-                <PosInput value={resolved.y ?? 0} label="T" onChange={v => { upd('y', v); commit(); }} />
+                <PosInput value={Math.max(0, resolved.y ?? 0)} label="T" onChange={v => { upd('y', Math.max(0, v)); commit(); }} />
               </div>
-              <div className="fb-pos-widget__row">
-                <PosInput value={resolved.x ?? 0} label="L" onChange={v => { upd('x', v); commit(); }} />
-                <ConstraintWidget
-                  constraints={resolved.constraints}
-                  onChange={v => { upd('constraints', v); commit(); }}
-                />
-                <PosInput
-                  value={Math.max(0, containerW - (resolved.x ?? 0) - (resolved.width ?? 100))}
-                  label="R"
-                  onChange={v => { upd('x', Math.max(0, containerW - v - (resolved.width ?? 100))); commit(); }}
-                />
-              </div>
-              <div className="fb-pos-widget__row">
-                <PosInput
-                  value={Math.max(0, effectiveContainerH - (resolved.y ?? 0) - (resolved.height ?? 100))}
-                  label="B"
-                  onChange={v => { upd('y', Math.max(0, effectiveContainerH - v - (resolved.height ?? 100))); commit(); }}
-                />
-              </div>
+              {(resolved.positionType ?? 'absolute') !== 'sticky' ? (
+                <div className="fb-pos-widget__row">
+                  <PosInput value={resolved.x ?? 0} label="L" onChange={v => { upd('x', v); commit(); }} />
+                  <ConstraintWidget
+                    constraints={resolved.constraints}
+                    onChange={v => { upd('constraints', v); commit(); }}
+                  />
+                  <PosInput
+                    value={Math.max(0, containerW - (resolved.x ?? 0) - (resolved.width ?? 100))}
+                    label="R"
+                    onChange={v => { upd('x', Math.max(0, containerW - v - (resolved.width ?? 100))); commit(); }}
+                  />
+                </div>
+              ) : (
+                <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
+                  Sticky uses only the top offset and follows flow layout.
+                </div>
+              )}
+              {(resolved.positionType ?? 'absolute') !== 'sticky' ? (
+                <div className="fb-pos-widget__row">
+                  <PosInput
+                    value={Math.max(0, effectiveContainerH - (resolved.y ?? 0) - (resolved.height ?? 100))}
+                    label="B"
+                    onChange={v => { upd('y', Math.max(0, effectiveContainerH - v - (resolved.height ?? 100))); commit(); }}
+                  />
+                </div>
+              ) : null}
             </div>
           )}
           {/* Type dropdown — shown outside auto-layout context */}

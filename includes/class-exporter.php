@@ -541,7 +541,9 @@ class FrameBuilder_Exporter {
 		$this->css = [];
 		$bid       = $this->build_id;
 
-		$this->css[] = ".fb-page.{$bid} { width: 100%; }";
+		$this->css[] = ".fb-page.{$bid} { width: 100%; overflow: visible; }";
+		$this->css[] = ".fb-page.{$bid} .fb-bp, .fb-page.{$bid} .fb-bp-inner { overflow: visible; }";
+		$this->css[] = ".fb-page.{$bid} .fb-el--sticky { position: -webkit-sticky !important; position: sticky !important; top: var(--fb-sticky-top, 0px) !important; }";
 
 		$root_els = array_values( array_filter(
 			$this->layout['elements'] ?? [],
@@ -573,15 +575,14 @@ class FrameBuilder_Exporter {
 				$fw  = esc_attr( $layout['flexWrap']       ?? 'nowrap' );
 				$gap = (float) ( $layout['gap']            ?? 0 );
 				$this->css[] = ".{$bid} .fb-bp-{$bpId} .fb-bp-inner { "
-					. "position: relative; display: flex; "
+					. "position: relative; min-height: {$ah}px; box-sizing: border-box; display: flex; "
 					. "flex-direction: {$fd}; align-items: {$ai}; justify-content: {$jc}; flex-wrap: {$fw}; gap: {$gap}px; "
 					. "padding: {$pad['top']}px {$pad['right']}px {$pad['bottom']}px {$pad['left']}px; "
 					. "}";
 			} else {
 				$this->css[] = ".{$bid} .fb-bp-{$bpId} .fb-bp-inner { "
-					. "position: absolute; "
-					. "top: {$pad['top']}px; left: {$pad['left']}px; "
-					. "right: {$pad['right']}px; bottom: {$pad['bottom']}px; "
+					. "position: relative; min-height: {$ah}px; box-sizing: border-box; "
+					. "padding: {$pad['top']}px {$pad['right']}px {$pad['bottom']}px {$pad['left']}px; "
 					. "}";
 			}
 			$artboard_flex_dir_css = $layout !== null ? ( $layout['flexDirection'] ?? 'column' ) : 'none';
@@ -614,10 +615,12 @@ class FrameBuilder_Exporter {
 
 		$id     = preg_replace( '/[^a-zA-Z0-9_-]/', '', $el['id'] ?? '' );
 		$class  = 'fb-el fb-el-' . $id;
+		$class  = 'fb-el fb-el-' . $id;
 		$styles = $resolved['styles'] ?? [];
 
 		$x = floatval( $resolved['x']      ?? 0 );
 		$y = floatval( $resolved['y']      ?? 0 );
+		$sticky_top = max( 0.0, $y );
 		$w = floatval( $resolved['width']  ?? 100 );
 		$h = floatval( $resolved['height'] ?? 100 );
 
@@ -625,9 +628,12 @@ class FrameBuilder_Exporter {
 		$pos_type = $resolved['positionType'] ?? 'absolute';
 		// Auto-layout: root elements flow unless explicitly pinned
 		if ( $artboard_layout_on && empty( $resolved['absoluteInLayout'] ) ) {
-			$pos_type = 'relative';
+			$pos_type = 'sticky' === $pos_type ? 'sticky' : 'relative';
 		}
-		if ( $pos_type !== 'relative' && $pos_type !== 'fixed' && ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) ) {
+		if ( 'sticky' === $pos_type ) {
+			$class .= ' fb-el--sticky';
+		}
+		if ( $pos_type !== 'relative' && $pos_type !== 'sticky' && $pos_type !== 'fixed' && ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) ) {
 			return '';
 		}
 		$width_mode  = $resolved['widthMode']  ?? 'fixed';
@@ -653,7 +659,7 @@ class FrameBuilder_Exporter {
 		$right_val  = $cw - $x - $w;
 		$bottom_val = $ch - $y - $h;
 
-		if ( $pos_type === 'relative' ) {
+		if ( $pos_type === 'relative' || $pos_type === 'sticky' ) {
 			// Direction-aware fill sizing (matches CanvasElement.jsx logic)
 			$extra = '';
 			if ( $parent_flex_dir === 'row' && $width_mode === 'fill' ) {
@@ -672,7 +678,11 @@ class FrameBuilder_Exporter {
 				if ( $parent_flex_dir === 'row'    && $height_mode === 'fill' ) $extra .= 'align-self:stretch;';
 				$extra .= $w_part . $h_part;
 			}
-			$inline = "position:relative;box-sizing:border-box;{$extra}";
+			$sticky_offsets = '';
+			if ( $pos_type === 'sticky' ) {
+				$sticky_offsets .= "--fb-sticky-top:{$sticky_top}px;top:{$sticky_top}px;align-self:flex-start;";
+			}
+			$inline = 'position:' . ( $pos_type === 'sticky' ? 'sticky' : 'relative' ) . ";box-sizing:border-box;{$sticky_offsets}{$extra}";
 		} elseif ( $pos_type === 'fixed' || $pos_type === 'absolute' ) {
 			$position_css = $pos_type === 'fixed' ? 'fixed' : 'absolute';
 			$inline = "position:{$position_css};box-sizing:border-box;";
@@ -919,6 +929,7 @@ class FrameBuilder_Exporter {
 
 		$x = floatval( $resolved['x']      ?? 0 );
 		$y = floatval( $resolved['y']      ?? 0 );
+		$sticky_top = max( 0.0, $y );
 		$w = floatval( $resolved['width']  ?? 100 );
 		$h = floatval( $resolved['height'] ?? 100 );
 
@@ -926,7 +937,7 @@ class FrameBuilder_Exporter {
 		$pos_type    = $resolved['positionType'] ?? 'absolute';
 		// Auto-layout: root elements flow unless explicitly pinned
 		if ( $artboard_layout_on && empty( $resolved['absoluteInLayout'] ) ) {
-			$pos_type = 'relative';
+			$pos_type = 'sticky' === $pos_type ? 'sticky' : 'relative';
 		}
 		$width_mode  = $resolved['widthMode']    ?? 'fixed';
 		$height_mode = $resolved['heightMode']   ?? 'fixed';
@@ -947,12 +958,15 @@ class FrameBuilder_Exporter {
 		$bottom_val = $ch - $y - $h;
 
 		// Off-canvas: skip absolute elements outside artboard; relative/fixed are exempt
-		if ( $pos_type !== 'relative' && $pos_type !== 'fixed' && ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) ) {
+		if ( $pos_type !== 'relative' && $pos_type !== 'sticky' && $pos_type !== 'fixed' && ( $x + $w <= 0 || $x >= $cw || $y + $h <= 0 || $y >= $ch ) ) {
 			return;
 		}
 
-		if ( $pos_type === 'relative' ) {
-			$rules = [ 'position: relative', 'box-sizing: border-box' ];
+		if ( $pos_type === 'relative' || $pos_type === 'sticky' ) {
+			$rules = [ 'position: ' . ( $pos_type === 'sticky' ? 'sticky' : 'relative' ), 'box-sizing: border-box' ];
+			if ( $pos_type === 'sticky' ) {
+				$rules[] = "top: {$sticky_top}px";
+			}
 			if ( $parent_flex_dir === 'row' && $width_mode === 'fill' ) {
 				// Main axis: width grows via flex
 				$rules[] = "flex: {$w_fr} 1 0%";
@@ -1145,7 +1159,7 @@ class FrameBuilder_Exporter {
 	private function compute_child_context_size( array $resolved, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): array {
 		$pos_type = $resolved['positionType'] ?? 'absolute';
 		if ( $artboard_layout_on && empty( $resolved['absoluteInLayout'] ) ) {
-			$pos_type = 'relative';
+			$pos_type = 'sticky' === $pos_type ? 'sticky' : 'relative';
 		}
 
 		$width_mode = $resolved['widthMode'] ?? 'fixed';
@@ -1170,7 +1184,7 @@ class FrameBuilder_Exporter {
 			$effective_height = max( 1.0, $ch * ( $height_pct / 100 ) );
 		}
 
-		if ( 'relative' === $pos_type ) {
+		if ( 'relative' === $pos_type || 'sticky' === $pos_type ) {
 			if ( 'row' === $parent_flex_dir && 'fill' === $width_mode && $width > 0 ) {
 				$effective_width = $width;
 			}
@@ -2366,7 +2380,7 @@ class FrameBuilder_Exporter {
 	var shouldAnimatePositionOverride = function(baseCssValue, computedPosition, endLayout, key) {
 		if (!Object.prototype.hasOwnProperty.call(endLayout, key)) return false;
 		if (Object.prototype.hasOwnProperty.call(endLayout, 'positionType') || Object.prototype.hasOwnProperty.call(endLayout, 'absoluteInLayout')) return true;
-		if (computedPosition === 'relative' || computedPosition === 'static') return false;
+		if (computedPosition === 'relative' || computedPosition === 'sticky' || computedPosition === 'static') return false;
 		if (typeof baseCssValue !== 'string') return true;
 		var normalized = baseCssValue.trim().toLowerCase();
 		if (!normalized || normalized === 'auto') return false;
@@ -2509,6 +2523,13 @@ class FrameBuilder_Exporter {
 	};
 	var initElementAnimations = function(node) {
 		if (!node || node.dataset.fbAnimationsBound === '1') return;
+		var isStickyNode = function() {
+			if (!node) return false;
+			if (node.classList && node.classList.contains('fb-el--sticky')) return true;
+			var computedStyle = window.getComputedStyle(node);
+			var position = computedStyle ? computedStyle.position : '';
+			return position === 'sticky' || position === '-webkit-sticky';
+		};
 		var readAnimations = function() {
 			return parseJsonAttr(node.dataset.fbAnimations, null);
 		};
@@ -2543,6 +2564,11 @@ class FrameBuilder_Exporter {
 		var scrollFrame = null;
 		var updateScrollAnimations = function() {
 			scrollFrame = null;
+			if (isStickyNode()) {
+				scrollPlaybackState.maxProgress = 0;
+				restoreAnimationBaseState(node);
+				return;
+			}
 			var animation = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
 				return entry && entry.type === 'scroll';
 			}) || null;

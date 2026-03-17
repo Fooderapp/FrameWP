@@ -498,7 +498,10 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const height = resolved?.height ?? 0;
   const widthPct = resolved?.widthPct ?? width;
   const heightPct = resolved?.heightPct ?? height;
-  const isRelative = (resolved?.positionType ?? 'absolute') === 'relative';
+  const stickyTop = Math.max(0, resolved?.y ?? 0);
+  const positionType = resolved?.positionType ?? 'absolute';
+  const isRelative = positionType === 'relative';
+  const isSticky = positionType === 'sticky';
   const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
   const hasGradientFrameStroke = typeof styles?.borderColor === 'string' && styles.borderColor.includes('gradient(');
   const strokeWidth = Math.max(0, parseFloat(styles?.strokeWidth) || 0);
@@ -526,9 +529,10 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     : (backgroundImageUrl ? `url(${backgroundImageUrl})` : undefined);
 
   const style = {
-    position: isRelative ? 'relative' : 'absolute',
-    left: isRelative ? undefined : resolved?.x ?? 0,
-    top: isRelative ? undefined : resolved?.y ?? 0,
+    position: isSticky ? 'sticky' : (isRelative ? 'relative' : 'absolute'),
+    '--fb-sticky-top': isSticky ? `${stickyTop}px` : undefined,
+    left: (isRelative || isSticky) ? undefined : resolved?.x ?? 0,
+    top: isSticky ? stickyTop : ((isRelative && !isSticky) ? undefined : resolved?.y ?? 0),
     width: widthMode === 'hug' ? 'fit-content' : widthMode === 'relative' ? `${widthPct}%` : width,
     height: heightMode === 'hug' ? 'fit-content' : heightMode === 'relative' ? `${heightPct}%` : height,
     minWidth: resolved?.minW ?? undefined,
