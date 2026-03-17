@@ -3,7 +3,7 @@ const ICON_SVG_ATTRIBUTES = [
   'd', 'cx', 'cy', 'r', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'width', 'height', 'rx', 'ry', 'points',
   'transform', 'opacity', 'fill-opacity', 'stroke-opacity', 'xmlns', 'xmlns:xlink', 'href', 'xlink:href',
   'gradientunits', 'gradienttransform', 'offset', 'stop-color', 'stop-opacity', 'clip-path', 'clip-rule',
-  'mask', 'maskunits', 'maskcontentunits', 'preserveaspectratio', 'role', 'aria-hidden', 'focusable', 'overflow', 'id', 'fx', 'fy'
+  'mask', 'maskunits', 'maskcontentunits', 'preserveaspectratio', 'role', 'aria-hidden', 'focusable', 'overflow', 'id', 'fx', 'fy', 'paint-order'
 ];
 
 const ALLOWED_SVG_TAGS = new Set([
@@ -118,6 +118,41 @@ export function setSvgStrokeWidth(markup, strokeWidth) {
     return sanitizeSvgMarkup(root.outerHTML, { forceCurrentColor: false });
   } catch (error) {
     return sanitizeSvgMarkup(markup);
+  }
+}
+
+export function applySvgStroke(markup, { strokeWidth = 0, strokeColor = 'currentColor' } = {}) {
+  if (typeof markup !== 'string' || !markup.trim()) return '';
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    return sanitizeSvgMarkup(markup, { forceCurrentColor: false });
+  }
+
+  const parsedWidth = typeof strokeWidth === 'number' ? strokeWidth : parseFloat(strokeWidth);
+  const normalizedColor = typeof strokeColor === 'string' && strokeColor.trim() ? strokeColor.trim() : 'currentColor';
+  if (!Number.isFinite(parsedWidth) || parsedWidth <= 0) {
+    return sanitizeSvgMarkup(markup, { forceCurrentColor: false });
+  }
+
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(markup, 'image/svg+xml');
+    const root = doc.documentElement;
+    if (!root || root.nodeName.toLowerCase() !== 'svg') return sanitizeSvgMarkup(markup, { forceCurrentColor: false });
+
+    root.setAttribute('stroke', normalizedColor);
+    root.setAttribute('stroke-width', `${parsedWidth}`);
+    root.setAttribute('paint-order', 'stroke fill');
+
+    Array.from(root.querySelectorAll('*')).forEach((node) => {
+      if (!COLOR_SHAPE_TAGS.has(node.nodeName.toLowerCase())) return;
+      node.setAttribute('stroke', normalizedColor);
+      node.setAttribute('stroke-width', `${parsedWidth}`);
+      node.setAttribute('paint-order', 'stroke fill');
+    });
+
+    return sanitizeSvgMarkup(root.outerHTML, { forceCurrentColor: false });
+  } catch (error) {
+    return sanitizeSvgMarkup(markup, { forceCurrentColor: false });
   }
 }
 

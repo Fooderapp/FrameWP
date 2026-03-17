@@ -913,11 +913,13 @@ function normalizeComponentTransition(transition) {
   const type = COMPONENT_TRANSITION_TYPES.has(transition?.type) ? transition.type : 'instant';
   const easePreset = COMPONENT_EASE_PRESETS.has(transition?.easePreset) ? transition.easePreset : 'easeInOut';
   const springMode = transition?.springMode === 'physics' ? 'physics' : 'time';
+  const duration = clampFinite(transition?.duration, 0.3, 0, 20);
   return {
     type,
-    duration: clampFinite(transition?.duration, 0.3, 0, 20),
+    duration,
     easePreset,
     springMode,
+    physicsDuration: clampFinite(transition?.physicsDuration, duration, 0, 20),
     bounce: clampFinite(transition?.bounce, 0.2, 0, 1),
     stiffness: clampFinite(transition?.stiffness, 500, 1, 2000),
     damping: clampFinite(transition?.damping, 24, 1, 300),

@@ -64,6 +64,7 @@ class FrameBuilder_Exporter {
 				'fill' => true,
 				'stroke' => true,
 				'stroke-width' => true,
+				'paint-order' => true,
 				'stroke-linecap' => true,
 				'stroke-linejoin' => true,
 				'stroke-miterlimit' => true,
@@ -81,19 +82,19 @@ class FrameBuilder_Exporter {
 				'transform' => true,
 			],
 			'g' => [
-				'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true,
+				'fill' => true, 'stroke' => true, 'stroke-width' => true, 'paint-order' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true,
 				'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true, 'clip-path' => true, 'mask' => true,
 			],
 			'path' => [
-				'd' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true,
+				'd' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'paint-order' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true,
 				'stroke-miterlimit' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true, 'clip-rule' => true,
 			],
-			'circle' => [ 'cx' => true, 'cy' => true, 'r' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
-			'rect' => [ 'x' => true, 'y' => true, 'width' => true, 'height' => true, 'rx' => true, 'ry' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
-			'line' => [ 'x1' => true, 'y1' => true, 'x2' => true, 'y2' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
-			'polyline' => [ 'points' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
-			'polygon' => [ 'points' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
-			'ellipse' => [ 'cx' => true, 'cy' => true, 'rx' => true, 'ry' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'circle' => [ 'cx' => true, 'cy' => true, 'r' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'paint-order' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'rect' => [ 'x' => true, 'y' => true, 'width' => true, 'height' => true, 'rx' => true, 'ry' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'paint-order' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'line' => [ 'x1' => true, 'y1' => true, 'x2' => true, 'y2' => true, 'stroke' => true, 'stroke-width' => true, 'paint-order' => true, 'stroke-linecap' => true, 'opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'polyline' => [ 'points' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'paint-order' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'polygon' => [ 'points' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'paint-order' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
+			'ellipse' => [ 'cx' => true, 'cy' => true, 'rx' => true, 'ry' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'paint-order' => true, 'opacity' => true, 'fill-opacity' => true, 'stroke-opacity' => true, 'transform' => true ],
 			'defs' => [],
 			'lineargradient' => [ 'id' => true, 'x1' => true, 'y1' => true, 'x2' => true, 'y2' => true, 'gradientunits' => true, 'gradienttransform' => true ],
 			'radialgradient' => [ 'id' => true, 'cx' => true, 'cy' => true, 'r' => true, 'fx' => true, 'fy' => true, 'gradientunits' => true, 'gradienttransform' => true ],
@@ -115,6 +116,16 @@ class FrameBuilder_Exporter {
 
 	private function plain_text_to_rich_text_html( string $text ): string {
 		return nl2br( esc_html( $text ) );
+	}
+
+	private function build_gradient_frame_stroke_overlay_style( array $styles ): string {
+		$border_width = isset( $styles['borderWidth'] ) ? max( 0, (float) $styles['borderWidth'] ) : 0;
+		$border_color = $styles['borderColor'] ?? '';
+		if ( $border_width <= 0 || ! $this->is_gradient_css_value( $border_color ) ) {
+			return '';
+		}
+
+		return 'position:absolute;inset:0;border-radius:inherit;padding:' . $border_width . 'px;box-sizing:border-box;background:' . $this->sanitize_css_value( $border_color ) . ';-webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;user-select:none;';
 	}
 
 	private function sanitize_rich_text_style_value( string $style_key, string $style_value ): string {
@@ -472,6 +483,10 @@ class FrameBuilder_Exporter {
 			}
 		}
 
+		$this->css[] = ".{$bid} .fb-text-content, .{$bid} .fb-text-content :is(span, strong, em, u, b, i, a, mark, small, sub, sup) { white-space: inherit; -webkit-text-stroke-width: var(--fb-text-stroke-width, 0px); -webkit-text-stroke-color: var(--fb-text-stroke-color, currentColor); -webkit-text-fill-color: currentColor; paint-order: stroke fill; }";
+		$this->css[] = ".{$bid} .fb-icon-content svg { width:100%; height:100%; }";
+		$this->css[] = ".{$bid} .fb-icon-content--stroked svg :is(path, circle, rect, line, polyline, polygon, ellipse) { stroke: var(--fb-icon-stroke-color); stroke-width: var(--fb-icon-stroke-width); paint-order: stroke fill; }";
+
 		$this->css[] = $this->responsive_visibility_css();
 
 		return implode( "\n", $this->css );
@@ -626,6 +641,15 @@ class FrameBuilder_Exporter {
 			$bl = (float) ( $styles['borderRadiusBL'] ?? $br );
 			$inline .= "border-radius:{$tl}px {$tr}px {$brc}px {$bl}px;";
 		}
+		if ( isset( $styles['blur'] ) && $styles['blur'] !== '' ) {
+			$blur = max( 0, (float) $styles['blur'] );
+			$inline .= 'filter:' . ( $blur > 0 ? 'blur(' . $blur . 'px)' : 'none' ) . ';';
+		}
+		if ( isset( $styles['backdropBlur'] ) && $styles['backdropBlur'] !== '' ) {
+			$backdrop_blur = max( 0, (float) $styles['backdropBlur'] );
+			$backdrop_value = $backdrop_blur > 0 ? 'blur(' . $backdrop_blur . 'px)' : 'none';
+			$inline .= '-webkit-backdrop-filter:' . $backdrop_value . ';backdrop-filter:' . $backdrop_value . ';';
+		}
 
 		// Background image fill on frames / divs
 		$bg_img = $this->normalize_media_url( $styles['backgroundImage'] ?? '' );
@@ -662,6 +686,10 @@ class FrameBuilder_Exporter {
 		}
 		// Emit the div with all accumulated inline styles
 		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '"' . $runtime_attrs . '>';
+		$frame_stroke_overlay_style = $this->build_gradient_frame_stroke_overlay_style( $styles );
+		if ( '' !== $frame_stroke_overlay_style ) {
+			$html .= '<div class="fb-frame-stroke-overlay" aria-hidden="true" style="' . esc_attr( $frame_stroke_overlay_style ) . '"></div>';
+		}
 
 		// Image element: render <img> tag filling the div (added after div opening)
 		if ( ( $el['type'] ?? '' ) === 'image' ) {
@@ -697,6 +725,12 @@ class FrameBuilder_Exporter {
 			$text_style .= 'color:' . $text_color . ';';
 			$text_style .= 'white-space:' . $white_space . ';';
 			$text_style .= 'word-break:break-word;';
+			$text_stroke_width = isset( $styles['strokeWidth'] ) ? max( 0, (float) $styles['strokeWidth'] ) : 0;
+			if ( $text_stroke_width > 0 ) {
+				$text_stroke_color = $this->sanitize_css_value( $this->get_gradient_fallback_color( $styles['strokeColor'] ?? '', $styles['color'] ?? '#000000' ) );
+				$text_style .= '--fb-text-stroke-width:' . $text_stroke_width . 'px;';
+				$text_style .= '--fb-text-stroke-color:' . $text_stroke_color . ';';
+			}
 			$text_value = $this->get_resolved_rich_text_html( $resolved );
 			$html .= '<div class="fb-text-content" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="' . esc_attr( $text_style ) . '">' . $text_value . '</div>';
 		}
@@ -704,8 +738,15 @@ class FrameBuilder_Exporter {
 		if ( ( $el['type'] ?? '' ) === 'icon' ) {
 			$icon_markup = $this->sanitize_svg_markup( $resolved['svgMarkup'] ?? '' );
 			$icon_color = $this->sanitize_css_value( $styles['color'] ?? '#111827' );
+			$icon_stroke_width = isset( $styles['strokeWidth'] ) ? max( 0, (float) $styles['strokeWidth'] ) : 0;
+			$icon_stroke_color = $this->sanitize_css_value( $this->get_gradient_fallback_color( $styles['strokeColor'] ?? '', $styles['color'] ?? '#111827' ) );
 			if ( $icon_markup !== '' ) {
-				$html .= '<div class="fb-icon-content" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:' . esc_attr( $icon_color ) . ';pointer-events:none;user-select:none;">' . $icon_markup . '</div>';
+				$icon_class = 'fb-icon-content' . ( $icon_stroke_width > 0 ? ' fb-icon-content--stroked' : '' );
+				$icon_style = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:' . esc_attr( $icon_color ) . ';pointer-events:none;user-select:none;';
+				if ( $icon_stroke_width > 0 ) {
+					$icon_style .= '--fb-icon-stroke-width:' . esc_attr( $icon_stroke_width . 'px' ) . ';--fb-icon-stroke-color:' . esc_attr( $icon_stroke_color ) . ';';
+				}
+				$html .= '<div class="' . esc_attr( $icon_class ) . '" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="' . $icon_style . '">' . $icon_markup . '</div>';
 			}
 		}
 
@@ -903,12 +944,17 @@ class FrameBuilder_Exporter {
 
 		foreach ( $allowed_props as $prop ) {
 			if ( ! isset( $styles[ $prop ] ) || $styles[ $prop ] === '' ) continue;
+			if ( 'borderColor' === $prop && $this->is_gradient_css_value( $styles['borderColor'] ?? '' ) ) continue;
 			$val     = $styles[ $prop ];
 			$css_key = $this->camel_to_kebab( $prop );
 			if ( is_numeric( $val ) && in_array( $css_key, $px_props, true ) ) {
 				$val .= 'px';
 			}
 			$rules[] = $css_key . ': ' . $this->sanitize_css_value( $val );
+		}
+		if ( ! empty( $styles['borderWidth'] ) && $this->is_gradient_css_value( $styles['borderColor'] ?? '' ) ) {
+			$rules = array_filter( $rules, fn( $rule ) => strpos( $rule, 'border-color:' ) === false );
+			$rules[] = 'border-color: transparent';
 		}
 		// Background image fill
 		$bg_img = $this->normalize_media_url( $styles['backgroundImage'] ?? '' );
@@ -934,6 +980,16 @@ class FrameBuilder_Exporter {
 			$bl = (float) ( $styles['borderRadiusBL'] ?? $br );
 			$rules = array_filter( $rules, fn( $r ) => strpos( $r, 'border-radius' ) === false );
 			$rules[] = "border-radius: {$tl}px {$tr}px {$brc}px {$bl}px";
+		}
+		if ( isset( $styles['blur'] ) && $styles['blur'] !== '' ) {
+			$blur = max( 0, (float) $styles['blur'] );
+			$rules[] = 'filter: ' . ( $blur > 0 ? 'blur(' . $blur . 'px)' : 'none' );
+		}
+		if ( isset( $styles['backdropBlur'] ) && $styles['backdropBlur'] !== '' ) {
+			$backdrop_blur = max( 0, (float) $styles['backdropBlur'] );
+			$backdrop_value = $backdrop_blur > 0 ? 'blur(' . $backdrop_blur . 'px)' : 'none';
+			$rules[] = '-webkit-backdrop-filter: ' . $backdrop_value;
+			$rules[] = 'backdrop-filter: ' . $backdrop_value;
 		}
 
 		$this->css[] = $selector . ' { ' . implode( '; ', $rules ) . ' }';
@@ -1488,6 +1544,7 @@ class FrameBuilder_Exporter {
 			$attrs .= ' data-fb-parent-variant-id="' . esc_attr( $parent_variant_id ) . '"';
 			$attrs .= ' data-fb-transition-type="' . esc_attr( $transition['type'] ) . '"';
 			$attrs .= ' data-fb-transition-duration="' . esc_attr( (string) $transition['duration'] ) . '"';
+			$attrs .= ' data-fb-transition-physics-duration="' . esc_attr( (string) $transition['physicsDuration'] ) . '"';
 			$attrs .= ' data-fb-transition-ease="' . esc_attr( $transition['easePreset'] ) . '"';
 			$attrs .= ' data-fb-transition-spring-mode="' . esc_attr( $transition['springMode'] ) . '"';
 			$attrs .= ' data-fb-transition-bounce="' . esc_attr( (string) $transition['bounce'] ) . '"';
@@ -1524,6 +1581,7 @@ class FrameBuilder_Exporter {
 		return [
 			'type'       => $type,
 			'duration'   => isset( $transition['duration'] ) ? max( 0, (float) $transition['duration'] ) : 0.3,
+			'physicsDuration' => isset( $transition['physicsDuration'] ) ? max( 0, (float) $transition['physicsDuration'] ) : ( isset( $transition['duration'] ) ? max( 0, (float) $transition['duration'] ) : 0.3 ),
 			'easePreset' => $ease_preset,
 			'springMode' => $spring_mode,
 			'bounce'     => isset( $transition['bounce'] ) ? max( 0, min( 1, (float) $transition['bounce'] ) ) : 0.2,
@@ -1838,6 +1896,7 @@ class FrameBuilder_Exporter {
 		return {
 			type: node.dataset.fbTransitionType || 'instant',
 			duration: Math.max(0, parseNumber(node.dataset.fbTransitionDuration, 0.3)),
+			physicsDuration: Math.max(0, parseNumber(node.dataset.fbTransitionPhysicsDuration, parseNumber(node.dataset.fbTransitionDuration, 0.3))),
 			easePreset: node.dataset.fbTransitionEase || 'easeInOut',
 			springMode: node.dataset.fbTransitionSpringMode || 'time',
 			bounce: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBounce, 0.2))),
@@ -1912,7 +1971,7 @@ class FrameBuilder_Exporter {
 		var damping = Math.max(1, transition.damping || 24);
 		var angularFrequency = Math.sqrt(stiffness / mass);
 		var dampingRatio = damping / (2 * Math.sqrt(stiffness * mass));
-		var duration = dampingRatio < 1
+		var naturalDuration = dampingRatio < 1
 			? Math.log(1 / 0.0025) / (Math.max(0.05, dampingRatio) * angularFrequency)
 			: Math.log(1 / 0.0025) / angularFrequency;
 		return {
@@ -1921,7 +1980,8 @@ class FrameBuilder_Exporter {
 			damping: damping,
 			angularFrequency: angularFrequency,
 			dampingRatio: dampingRatio,
-			duration: Math.max(0.45, Math.min(2.4, duration))
+			naturalDuration: Math.max(0.45, Math.min(2.4, naturalDuration)),
+			duration: Math.max(0.18, parseNumber(transition.physicsDuration, Math.max(0.45, Math.min(2.4, naturalDuration))))
 		};
 	};
 	var sampleSpringValue = function(initialValue, elapsed, spring) {
@@ -1947,10 +2007,11 @@ class FrameBuilder_Exporter {
 	};
 	var addPhysicsSpringSequence = function(timeline, node, startState, spring, at) {
 		var stepCount = 24;
-		var previousTime = 0;
+		var previousScheduledTime = 0;
 		for (var index = 1; index <= stepCount; index++) {
-			var elapsed = (spring.duration * index) / stepCount;
-			var stepDuration = elapsed - previousTime;
+			var elapsed = (spring.naturalDuration * index) / stepCount;
+			var scheduledTime = (spring.duration * index) / stepCount;
+			var stepDuration = scheduledTime - previousScheduledTime;
 			timeline.to(node, {
 				x: sampleSpringValue(startState.x, elapsed, spring),
 				y: sampleSpringValue(startState.y, elapsed, spring),
@@ -1960,8 +2021,8 @@ class FrameBuilder_Exporter {
 				duration: stepDuration,
 				ease: 'none',
 				clearProps: index === stepCount ? 'transform' : undefined
-			}, at + previousTime);
-			previousTime = elapsed;
+			}, at + previousScheduledTime);
+			previousScheduledTime = scheduledTime;
 		}
 	};
 	var addWrapperPhysicsSequence = function(timeline, node, spring, at) {
@@ -1994,6 +2055,24 @@ class FrameBuilder_Exporter {
 		}
 		return progress >= 1 ? toValue : fromValue;
 	};
+	var parseBlurRadius = function(value) {
+		if (typeof value === 'number' && isFinite(value)) return Math.max(0, value);
+		if (typeof value !== 'string') return 0;
+		var match = value.match(/blur\(([-\d.]+)px\)/i);
+		if (!match) return 0;
+		var parsed = parseFloat(match[1]);
+		return isFinite(parsed) ? Math.max(0, parsed) : 0;
+	};
+	var buildBlurValue = function(value) {
+		var amount = typeof value === 'number' ? value : parseFloat(value);
+		amount = isFinite(amount) ? Math.max(0, amount) : 0;
+		return amount > 0.01 ? 'blur(' + amount + 'px)' : 'none';
+	};
+	var setNodeBackdropFilter = function(node, value) {
+		if (!node) return;
+		node.style.backdropFilter = value;
+		node.style.webkitBackdropFilter = value;
+	};
 	var getViewportHeight = function() {
 		return window.innerHeight || document.documentElement.clientHeight || 1;
 	};
@@ -2002,6 +2081,7 @@ class FrameBuilder_Exporter {
 		var source = Object.assign({
 			type: 'ease',
 			duration: 0.6,
+			physicsDuration: 0.6,
 			easePreset: 'easeInOut',
 			springMode: 'time',
 			bounce: 0.2,
@@ -2011,6 +2091,7 @@ class FrameBuilder_Exporter {
 			bezier: { x1: 0.44, y1: 0, x2: 0.56, y2: 1 }
 		}, fallback || {}, safe);
 		if (!source.bezier || typeof source.bezier !== 'object') source.bezier = { x1: 0.44, y1: 0, x2: 0.56, y2: 1 };
+		source.physicsDuration = parseNumber(safe.physicsDuration, parseNumber(source.duration, 0.6));
 		return source;
 	};
 	var normalizeAnimationMarkerOffset = function(value) {
@@ -2100,6 +2181,10 @@ class FrameBuilder_Exporter {
 			color: contentComputed.color,
 			borderColor: computed.borderColor,
 			borderRadius: computed.borderRadius,
+			blur: parseBlurRadius(computed.filter),
+			filter: computed.filter || 'none',
+			backdropBlur: parseBlurRadius(computed.backdropFilter || computed.webkitBackdropFilter),
+			backdropFilter: computed.backdropFilter || computed.webkitBackdropFilter || 'none',
 			textNode: textNode,
 			iconNode: iconNode
 		};
@@ -2131,6 +2216,8 @@ class FrameBuilder_Exporter {
 		node.style.backgroundColor = baseState.backgroundColor;
 		node.style.borderColor = baseState.borderColor;
 		node.style.borderRadius = baseState.borderRadius;
+		node.style.filter = baseState.filter;
+		setNodeBackdropFilter(node, baseState.backdropFilter);
 		(baseState.textNode || baseState.iconNode || node).style.color = baseState.color;
 	};
 	var shouldAnimateDimensionOverride = function(baseCssValue, endLayout, dimensionKey, modeKey, pctKey) {
@@ -2191,6 +2278,8 @@ class FrameBuilder_Exporter {
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'backgroundColor')) fromVars.backgroundColor = startStyles.backgroundColor;
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderColor')) fromVars.borderColor = startStyles.borderColor;
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderRadius')) fromVars.borderRadius = startStyles.borderRadius;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'blur')) fromVars.filter = buildBlurValue(parseNumber(startStyles.blur, baseState.blur));
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'backdropBlur')) fromVars.backdropFilter = buildBlurValue(parseNumber(startStyles.backdropBlur, baseState.backdropBlur));
 		var toVars = {
 			opacity: baseState.opacity,
 			x: 0,
@@ -2214,6 +2303,8 @@ class FrameBuilder_Exporter {
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'backgroundColor')) toVars.backgroundColor = baseState.backgroundColor;
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderColor')) toVars.borderColor = baseState.borderColor;
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderRadius')) toVars.borderRadius = baseState.borderRadius;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'blur')) toVars.filter = baseState.filter;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'backdropBlur')) toVars.backdropFilter = baseState.backdropFilter;
 		gsap.fromTo(node, fromVars, toVars);
 		if (contentTarget && Object.prototype.hasOwnProperty.call(startStyles, 'color')) {
 			gsap.fromTo(contentTarget, { color: startStyles.color }, {
@@ -2275,6 +2366,12 @@ class FrameBuilder_Exporter {
 		}
 		if (Object.prototype.hasOwnProperty.call(endStyles, 'borderRadius')) {
 			node.style.borderRadius = interpolateValue(baseState.borderRadius, endStyles.borderRadius, progress);
+		}
+		if (Object.prototype.hasOwnProperty.call(endStyles, 'blur')) {
+			node.style.filter = buildBlurValue(interpolateValue(baseState.blur, parseNumber(endStyles.blur, baseState.blur), progress));
+		}
+		if (Object.prototype.hasOwnProperty.call(endStyles, 'backdropBlur')) {
+			setNodeBackdropFilter(node, buildBlurValue(interpolateValue(baseState.backdropBlur, parseNumber(endStyles.backdropBlur, baseState.backdropBlur), progress)));
 		}
 	};
 	var initElementAnimations = function(node) {
@@ -2434,9 +2531,9 @@ class FrameBuilder_Exporter {
 			return pairs;
 		}, []);
 	};
-	var ANIMATABLE_STYLE_PROPS = ['backgroundColor', 'color', 'borderRadius', 'borderColor', 'boxShadow', 'opacity'];
+	var ANIMATABLE_STYLE_PROPS = ['backgroundColor', 'color', 'borderRadius', 'borderColor', 'boxShadow', 'opacity', 'filter', 'backdropFilter'];
 	var CROSSFADE_STYLE_PROPS = ['backgroundImage'];
-	var FLIP_PROPS = 'opacity,backgroundColor,color,borderRadius,borderColor,boxShadow';
+	var FLIP_PROPS = 'opacity,backgroundColor,color,borderRadius,borderColor,boxShadow,filter,backdropFilter';
 	var hasStyleDifference = function(currentValue, nextValue) {
 		if (currentValue === nextValue) return false;
 		var currentNumber = parseFloat(currentValue);
@@ -2830,6 +2927,31 @@ SCRIPT;
 
 	private function sanitize_css_value( $value ): string {
 		return preg_replace( '/[;\{\}]/', '', (string) $value );
+	}
+
+	private function is_gradient_css_value( $value ): bool {
+		return is_string( $value ) && preg_match( '/gradient\(/i', $value );
+	}
+
+	private function get_gradient_fallback_color( $value, string $fallback = '#000000' ): string {
+		if ( ! is_string( $value ) || trim( $value ) === '' ) return $fallback;
+		if ( ! $this->is_gradient_css_value( $value ) ) return trim( $value );
+		if ( preg_match( '/(#[0-9a-fA-F]{3,8}|rgba?\([^\)]+\)|hsla?\([^\)]+\)|currentColor)/i', $value, $matches ) ) {
+			return $matches[1];
+		}
+		return $fallback;
+	}
+
+	private function build_text_stroke_shadow_css( float $width, string $color ): string {
+		$radius = max( 1, (int) ceil( $width ) );
+		$shadow_parts = [];
+		for ( $offset_y = -$radius; $offset_y <= $radius; $offset_y++ ) {
+			for ( $offset_x = -$radius; $offset_x <= $radius; $offset_x++ ) {
+				if ( 0 === $offset_x && 0 === $offset_y ) continue;
+				$shadow_parts[] = sprintf( '%dpx %dpx 0 %s', $offset_x, $offset_y, $color );
+			}
+		}
+		return implode( ', ', $shadow_parts );
 	}
 
 }

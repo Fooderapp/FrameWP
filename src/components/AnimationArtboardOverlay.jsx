@@ -101,9 +101,13 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
 
   const boardHeight = boardRef.current?.clientHeight ?? 0;
   const boardWidth = boardRef.current?.clientWidth ?? 0;
+  const boardTop = boardRef.current?.offsetTop ?? 0;
+  const boardLeft = boardRef.current?.offsetLeft ?? 0;
   if (!boardHeight || !boardWidth) return null;
 
-  const railRight = 18;
+  const railOffset = 40;
+  const railLeft = boardWidth + railOffset;
+  const sidePanelWidth = 220;
   const anchorRatio = getAnchorRatio(elementRect, boardHeight);
 
   const handleOverlayExit = (event) => {
@@ -114,12 +118,12 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
 
   const scrimPanels = elementRect && animationEditor.mode === 'scroll-effect'
     ? [
-        { key: 'top', style: { left: 0, top: 0, width: '100%', height: Math.max(0, elementRect.top) } },
+        { key: 'top', style: { left: 0, top: 0, width: boardWidth, height: Math.max(0, elementRect.top) } },
         { key: 'left', style: { left: 0, top: elementRect.top, width: Math.max(0, elementRect.left), height: elementRect.height } },
         { key: 'right', style: { left: elementRect.left + elementRect.width, top: elementRect.top, width: Math.max(0, boardWidth - (elementRect.left + elementRect.width)), height: elementRect.height } },
-        { key: 'bottom', style: { left: 0, top: elementRect.top + elementRect.height, width: '100%', height: Math.max(0, boardHeight - (elementRect.top + elementRect.height)) } },
+        { key: 'bottom', style: { left: 0, top: elementRect.top + elementRect.height, width: boardWidth, height: Math.max(0, boardHeight - (elementRect.top + elementRect.height)) } },
       ]
-    : [{ key: 'full', style: { inset: 0 } }];
+    : [{ key: 'full', style: { left: 0, top: 0, width: boardWidth, height: boardHeight } }];
 
   const startDrag = (field, targetId = null) => (event) => {
     event.preventDefault();
@@ -196,7 +200,11 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
   const targets = Array.isArray(activeAnimation.targets) ? activeAnimation.targets : [];
 
   return (
-    <div className={`fb-animation-overlay${animationEditor.mode === 'scroll-effect' ? ' is-end-state' : ''}`} onPointerDown={(event) => event.stopPropagation()}>
+    <div
+      className={`fb-animation-overlay${animationEditor.mode === 'scroll-effect' ? ' is-end-state' : ''}`}
+      style={{ left: boardLeft, top: boardTop, width: boardWidth + railOffset + sidePanelWidth, height: boardHeight }}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
       {scrimPanels.map((panel) => (
         <div key={panel.key} className="fb-animation-overlay__scrim" style={panel.style} onPointerDown={handleOverlayExit} />
       ))}
@@ -210,7 +218,7 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
         </span>
         <button type="button" className="fb-secondary-btn" onClick={closeAnimationEditor}>Exit Editing</button>
       </div>
-      <div className="fb-animation-overlay__rail" style={{ right: railRight }}>
+      <div className="fb-animation-overlay__rail" style={{ left: railLeft }}>
         {animationEditor.mode === 'scroll-range' ? (
           <>
             {renderLine('Start', start, true, 'start', '', '#ff8a3d')}

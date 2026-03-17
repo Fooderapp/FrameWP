@@ -10,6 +10,27 @@ function getMediaUrl(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function isGradientPaint(value) {
+  return typeof value === 'string' && /gradient\(/i.test(value);
+}
+
+function getGradientFallbackColor(value, fallback = '#000000') {
+  if (!isGradientPaint(value)) return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+  const match = value.match(/(#[0-9a-fA-F]{3,8}|rgba?\([^\)]+\)|hsla?\([^\)]+\)|currentColor)/i);
+  return match?.[1] || fallback;
+}
+
+function scaleTextMetric(value, unit, scale) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return `${value ?? ''}${unit ?? ''}`;
+  const resolvedUnit = `${unit ?? ''}`;
+  const nextValue = resolvedUnit === 'px'
+    ? numericValue * scale
+    : numericValue;
+  const rounded = Math.round(nextValue * 1000) / 1000;
+  return `${rounded}${resolvedUnit}`;
+}
+
 function normalizeFontFamilySelection(value, fallback = 'Inter') {
   const rawValue = `${value ?? ''}`.trim();
   if (!rawValue) return fallback;
@@ -188,7 +209,17 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     && el.type === 'frame'
     && !insideComponentInstanceOnPage
     && !isComponentInstanceOnPage;
+  const hasGradientFrameStroke = typeof styles?.borderColor === 'string' && styles.borderColor.includes('gradient(');
+  const strokeWidth = Math.max(0, parseFloat(styles?.strokeWidth) || 0);
+  const strokeColor = getGradientFallbackColor(styles?.strokeColor, el.type === 'icon' ? (styles?.color ?? '#111827') : '#000000');
   const canvasScale            = viewport?.scale ?? 1;
+  const effectiveTextStrokeWidth = strokeWidth > 0 && !isEditingText
+    ? (strokeWidth / Math.max(canvasScale, 0.001))
+    : 0;
+  const useBuilderTextStrokeLayer = el.type === 'text' && effectiveTextStrokeWidth > 0 && !isEditingText;
+  const builderTextStrokeRenderScale = useBuilderTextStrokeLayer
+    ? Math.max(1, 1 / Math.max(canvasScale, 0.001))
+    : 1;
 
   const isRelative = positionType === 'relative';
   const isFixed    = positionType === 'fixed';
@@ -933,7 +964,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const rotationTransform = rotation ? `rotate(${rotation}deg)` : '';
   const composedTransform = [previewTransform, rotationTransform].filter(Boolean).join(' ') || undefined;
   const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
-
   const inlineStyle = {
     position: effectiveRelative ? 'relative' : 'absolute',
     ...(effectiveRelative
@@ -972,7 +1002,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       return typeof styles?.borderRadius === 'number' ? styles.borderRadius + 'px' : styles?.borderRadius;
     })(),
     border: (styles?.borderWidth > 0)
-      ? `${styles.borderWidth}px ${styles.borderStyle || 'solid'} ${styles.borderColor || '#000'}`
+      ? `${styles.borderWidth}px ${styles.borderStyle || 'solid'} ${hasGradientFrameStroke ? 'transparent' : (styles.borderColor || '#000')}`
       : undefined,
     opacity:          (isDraggingSource && effectiveRelative)
       ? Math.min(typeof styles?.opacity === 'number' ? styles.opacity : 1, 0.24)
@@ -989,6 +1019,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     alignItems:       styles?.alignItems,
     justifyContent:   styles?.justifyContent,
     boxShadow:        styles?.boxShadow || undefined,
+    filter:           (styles?.blur ?? 0) > 0 ? `blur(${styles.blur}px)` : undefined,
+    backdropFilter:   (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
+    WebkitBackdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
     zIndex:           isDragPreviewActive ? 10001 : (isSelected ? 9999 : (styles?.zIndex ?? undefined)),
     // Background size/position/repeat for image fills
     backgroundSize:     (backgroundImageUrl || styles?.backgroundColor?.includes('gradient('))
@@ -1022,6 +1055,34 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     pointerEvents: isEditingText ? 'auto' : 'none',
     cursor: isEditingText ? 'text' : 'inherit',
     outline: 'none',
+    textRendering: 'geometricPrecision',
+    WebkitFontSmoothing: 'antialiased',
+    position: 'relative',
+    zIndex: 1,
+    '--fb-text-stroke-width': useBuilderTextStrokeLayer ? undefined : (effectiveTextStrokeWidth > 0 ? `${effectiveTextStrokeWidth}px` : undefined),
+    '--fb-text-stroke-color': useBuilderTextStrokeLayer ? undefined : (strokeWidth > 0 && !isEditingText ? strokeColor : undefined),
+  } : null;
+  const textStrokeLayerStyle = useBuilderTextStrokeLayer ? {
+    ...textStyle,
+    position: 'absolute',
+    inset: 0,
+    fontSize: scaleTextMetric(styles?.fontSize ?? 42, styles?.fontSizeUnit ?? 'px', builderTextStrokeRenderScale),
+    lineHeight: scaleTextMetric(styles?.lineHeight ?? 1.2, styles?.lineHeightUnit ?? 'em', builderTextStrokeRenderScale),
+    letterSpacing: scaleTextMetric(styles?.letterSpacing ?? 0, styles?.letterSpacingUnit ?? 'em', builderTextStrokeRenderScale),
+    width: builderTextStrokeRenderScale === 1 ? '100%' : `${builderTextStrokeRenderScale * 100}%`,
+    height: textGrowMode === 'fixed'
+      ? (builderTextStrokeRenderScale === 1 ? '100%' : `${builderTextStrokeRenderScale * 100}%`)
+      : 'auto',
+    zIndex: 0,
+    pointerEvents: 'none',
+    userSelect: 'none',
+    color: 'transparent',
+    WebkitTextFillColor: 'transparent',
+    transform: builderTextStrokeRenderScale === 1 ? undefined : `scale(${1 / builderTextStrokeRenderScale})`,
+    transformOrigin: 'left top',
+    paintOrder: 'stroke fill',
+    '--fb-text-stroke-width': `${effectiveTextStrokeWidth * builderTextStrokeRenderScale}px`,
+    '--fb-text-stroke-color': strokeColor,
   } : null;
   const iconMarkup = el.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
 
@@ -1131,9 +1192,35 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               <span>Image</span>
             </div>;
       })()}
+      {hasGradientFrameStroke && styles?.borderWidth > 0 ? (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            borderRadius: 'inherit',
+            padding: `${styles.borderWidth}px`,
+            boxSizing: 'border-box',
+            background: styles.borderColor,
+            WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+            WebkitMaskComposite: 'xor',
+            maskComposite: 'exclude',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+        />
+      ) : null}
       {inlineToolbar}
       {el.type === 'text' && (
         <>
+          {textStrokeLayerStyle ? (
+            <div
+              aria-hidden="true"
+              className="fb-text-content fb-text-content--outline-preview"
+              style={textStrokeLayerStyle}
+              dangerouslySetInnerHTML={{ __html: resolvedRichTextHtml }}
+            />
+          ) : null}
           <div
             ref={textEditorRef}
             className="fb-text-content"
@@ -1224,7 +1311,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       )}
       {el.type === 'icon' && (iconMarkup ? (
         <div
-          className="fb-icon-content"
+          className={`fb-icon-content${strokeWidth > 0 ? ' fb-icon-content--stroked' : ''}`}
           style={{
             position: 'absolute',
             inset: 0,
@@ -1232,6 +1319,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
             alignItems: 'center',
             justifyContent: 'center',
             color: styles?.color ?? '#111827',
+            '--fb-icon-stroke-width': strokeWidth > 0 ? `${strokeWidth}px` : undefined,
+            '--fb-icon-stroke-color': strokeWidth > 0 ? strokeColor : undefined,
             pointerEvents: 'none',
             userSelect: 'none',
           }}

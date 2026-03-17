@@ -303,8 +303,9 @@ export default function Artboard({
             </div>
           );
         })}
-        <AnimationArtboardOverlay bpId={bp.id} boardRef={boardRef} surfaceMode={surfaceMode} />
       </div>
+
+      <AnimationArtboardOverlay bpId={bp.id} boardRef={boardRef} surfaceMode={surfaceMode} />
 
       {/* Off-canvas layer — zero-size div at artboard origin, overflow visible.
           Elements here are outside artboard bounds so not clipped. */}

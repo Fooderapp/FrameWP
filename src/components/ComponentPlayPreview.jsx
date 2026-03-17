@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { gsap, Flip } from 'gsap/all';
 import { resolveElement } from '../store/editorStore';
 import { familyToFontStack } from './googleFonts';
+import { sanitizeSvgMarkup } from './iconLibrary';
 import { getResolvedRichTextHtml } from './richText';
 
 gsap.registerPlugin(Flip);
@@ -112,11 +113,13 @@ function composeVariantSnapshot(variants = [], activeVariantId = null) {
 
 function normalizeTransition(transition) {
   const type = ['instant', 'ease', 'realistic'].includes(transition?.type) ? transition.type : 'instant';
+  const duration = Number.isFinite(transition?.duration) ? Math.max(0, transition.duration) : 0.3;
   return {
     type,
-    duration: Number.isFinite(transition?.duration) ? Math.max(0, transition.duration) : 0.3,
+    duration,
     easePreset: ['easeInOut', 'easeOut', 'easeIn', 'linear', 'custom'].includes(transition?.easePreset) ? transition.easePreset : 'easeInOut',
     springMode: transition?.springMode === 'physics' ? 'physics' : 'time',
+    physicsDuration: Number.isFinite(transition?.physicsDuration) ? Math.max(0, transition.physicsDuration) : duration,
     bounce: Number.isFinite(transition?.bounce) ? Math.max(0, Math.min(1, transition.bounce)) : 0.2,
     stiffness: Number.isFinite(transition?.stiffness) ? Math.max(1, transition.stiffness) : 500,
     damping: Number.isFinite(transition?.damping) ? Math.max(1, transition.damping) : 24,
@@ -128,6 +131,16 @@ function normalizeTransition(transition) {
       y2: Number.isFinite(transition?.bezier?.y2) ? Math.max(0, Math.min(1, transition.bezier.y2)) : 1,
     },
   };
+}
+
+function isGradientPaint(value) {
+  return typeof value === 'string' && /gradient\(/i.test(value);
+}
+
+function getGradientFallbackColor(value, fallback = '#000000') {
+  if (!isGradientPaint(value)) return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+  const match = value.match(/(#[0-9a-fA-F]{3,8}|rgba?\([^\)]+\)|hsla?\([^\)]+\)|currentColor)/i);
+  return match?.[1] || fallback;
 }
 
 function getTransitionDurationMs(transition) {
@@ -209,7 +222,7 @@ function getPhysicsSpringConfig(transition) {
   const damping = Math.max(1, transition?.damping ?? 24);
   const angularFrequency = Math.sqrt(stiffness / mass);
   const dampingRatio = damping / (2 * Math.sqrt(stiffness * mass));
-  const duration = dampingRatio < 1
+  const naturalDuration = dampingRatio < 1
     ? Math.log(1 / 0.0025) / (Math.max(0.05, dampingRatio) * angularFrequency)
     : Math.log(1 / 0.0025) / angularFrequency;
   return {
@@ -218,7 +231,8 @@ function getPhysicsSpringConfig(transition) {
     damping,
     angularFrequency,
     dampingRatio,
-    duration: Math.max(0.45, Math.min(2.4, duration)),
+    naturalDuration: Math.max(0.45, Math.min(2.4, naturalDuration)),
+    duration: Math.max(0.18, transition?.physicsDuration ?? Math.max(0.45, Math.min(2.4, naturalDuration))),
   };
 }
 
@@ -245,10 +259,11 @@ function sampleSpringValue(initialValue, elapsed, spring) {
 
 function addPhysicsSpringSequence(timeline, node, startState, spring, at = 0) {
   const stepCount = 24;
-  let previousTime = 0;
+  let previousScheduledTime = 0;
   for (let index = 1; index <= stepCount; index += 1) {
-    const elapsed = (spring.duration * index) / stepCount;
-    const stepDuration = elapsed - previousTime;
+    const elapsed = (spring.naturalDuration * index) / stepCount;
+    const scheduledTime = (spring.duration * index) / stepCount;
+    const stepDuration = scheduledTime - previousScheduledTime;
     timeline.to(node, {
       x: sampleSpringValue(startState.x, elapsed, spring),
       y: sampleSpringValue(startState.y, elapsed, spring),
@@ -258,8 +273,8 @@ function addPhysicsSpringSequence(timeline, node, startState, spring, at = 0) {
       duration: stepDuration,
       ease: 'none',
       ...(index === stepCount ? { clearProps: 'transform' } : null),
-    }, at + previousTime);
-    previousTime = elapsed;
+    }, at + previousScheduledTime);
+    previousScheduledTime = scheduledTime;
   }
 }
 
@@ -353,9 +368,9 @@ function collectSharedElementPairs(container, currentVariant, nextVariant) {
   }, []);
 }
 
-const ANIMATABLE_STYLE_PROPS = ['backgroundColor', 'color', 'borderRadius', 'borderColor', 'boxShadow', 'opacity'];
+const ANIMATABLE_STYLE_PROPS = ['backgroundColor', 'color', 'borderRadius', 'borderColor', 'boxShadow', 'opacity', 'filter', 'backdropFilter'];
 const CROSSFADE_STYLE_PROPS = ['backgroundImage'];
-const FLIP_PROPS = 'opacity,backgroundColor,color,borderRadius,borderColor,boxShadow';
+const FLIP_PROPS = 'opacity,backgroundColor,color,borderRadius,borderColor,boxShadow,filter,backdropFilter';
 
 function getRotationFromComputedStyle(style) {
   const rotate = style?.rotate;
@@ -484,6 +499,10 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const heightPct = resolved?.heightPct ?? height;
   const isRelative = (resolved?.positionType ?? 'absolute') === 'relative';
   const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
+  const hasGradientFrameStroke = typeof styles?.borderColor === 'string' && styles.borderColor.includes('gradient(');
+  const strokeWidth = Math.max(0, parseFloat(styles?.strokeWidth) || 0);
+  const strokeColor = getGradientFallbackColor(styles?.strokeColor, element.type === 'icon' ? (styles?.color ?? '#111827') : '#000000');
+  const iconMarkup = element.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
   const backgroundColor = styles?.backgroundColor && !String(styles.backgroundColor).includes('gradient(')
     ? styles.backgroundColor
     : undefined;
@@ -510,10 +529,13 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     borderRadius: styles?.borderRadiusMode === 'independent'
       ? `${styles?.borderRadiusTL ?? styles?.borderRadius ?? 0}px ${styles?.borderRadiusTR ?? styles?.borderRadius ?? 0}px ${styles?.borderRadiusBR ?? styles?.borderRadius ?? 0}px ${styles?.borderRadiusBL ?? styles?.borderRadius ?? 0}px`
       : (typeof styles?.borderRadius === 'number' ? `${styles.borderRadius}px` : styles?.borderRadius),
-    border: styles?.borderWidth > 0 ? `${styles.borderWidth}px ${styles.borderStyle || 'solid'} ${styles.borderColor || '#000'}` : undefined,
+    border: styles?.borderWidth > 0 ? `${styles.borderWidth}px ${styles.borderStyle || 'solid'} ${hasGradientFrameStroke ? 'transparent' : (styles.borderColor || '#000')}` : undefined,
     opacity: resolved?.hidden ? 0 : styles?.opacity,
     overflow: styles?.overflow,
     boxShadow: styles?.boxShadow,
+    filter: (styles?.blur ?? 0) > 0 ? `blur(${styles.blur}px)` : undefined,
+    backdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
+    WebkitBackdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
     display: styles?.display,
     flexDirection: styles?.flexDirection,
     flexWrap: styles?.flexWrap,
@@ -542,10 +564,30 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     wordBreak: 'break-word',
     width: '100%',
     display: 'block',
+    '--fb-text-stroke-width': strokeWidth > 0 ? `${strokeWidth}px` : undefined,
+    '--fb-text-stroke-color': strokeWidth > 0 ? strokeColor : undefined,
   } : null;
 
   return (
     <div className="fb-component-play-preview__node" data-fb-node-id={element.id} data-flip-id={element.id} style={style}>
+      {hasGradientFrameStroke && styles?.borderWidth > 0 ? (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            borderRadius: 'inherit',
+            padding: `${styles.borderWidth}px`,
+            boxSizing: 'border-box',
+            background: styles.borderColor,
+            WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+            WebkitMaskComposite: 'xor',
+            maskComposite: 'exclude',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+        />
+      ) : null}
       {element.type === 'image' && getMediaUrl(resolved?.src) ? (
         <img
           src={getMediaUrl(resolved?.src)}
@@ -556,6 +598,25 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
       ) : null}
       {element.type === 'text' ? (
         <div className="fb-component-play-preview__text" data-flip-id={`${element.id}__content`} style={textStyle} dangerouslySetInnerHTML={{ __html: getResolvedRichTextHtml(resolved, 'Text') }} />
+      ) : null}
+      {element.type === 'icon' && iconMarkup ? (
+        <div
+          className={`fb-component-play-preview__icon${strokeWidth > 0 ? ' fb-component-play-preview__icon--stroked' : ''}`}
+          data-flip-id={`${element.id}__content`}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: styles?.color ?? '#111827',
+            '--fb-icon-stroke-width': strokeWidth > 0 ? `${strokeWidth}px` : undefined,
+            '--fb-icon-stroke-color': strokeWidth > 0 ? strokeColor : undefined,
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+          dangerouslySetInnerHTML={{ __html: iconMarkup }}
+        />
       ) : null}
       {(element.children ?? []).map((childId) => {
         const child = indexById.get(childId);

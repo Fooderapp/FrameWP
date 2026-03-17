@@ -27,11 +27,13 @@ function normalizeTransition(transition) {
   const preset = EASE_OPTIONS.find((option) => option.value === transition?.easePreset && option.bezier) ?? EASE_OPTIONS[0];
   const easePreset = EASE_OPTIONS.some((option) => option.value === transition?.easePreset) ? transition.easePreset : 'easeInOut';
   const springMode = transition?.springMode === 'physics' ? 'physics' : 'time';
+  const duration = clamp(transition?.duration, 0.3, 0, 20);
   return {
     type,
-    duration: clamp(transition?.duration, 0.3, 0, 20),
+    duration,
     easePreset,
     springMode,
+    physicsDuration: clamp(transition?.physicsDuration, duration, 0, 20),
     bounce: clamp(transition?.bounce, 0.2, 0, 1),
     stiffness: clamp(transition?.stiffness, 500, 1, 2000),
     damping: clamp(transition?.damping, 24, 1, 300),
@@ -102,13 +104,14 @@ function getPhysicsSpringConfig(transition) {
   const damping = Math.max(1, transition?.damping ?? 24);
   const angularFrequency = Math.sqrt(stiffness / mass);
   const dampingRatio = damping / (2 * Math.sqrt(stiffness * mass));
-  const duration = dampingRatio < 1
+  const naturalDuration = dampingRatio < 1
     ? Math.log(1 / 0.0025) / (Math.max(0.05, dampingRatio) * angularFrequency)
     : Math.log(1 / 0.0025) / angularFrequency;
   return {
     angularFrequency,
     dampingRatio,
-    duration: Math.max(0.45, Math.min(2.4, duration)),
+    naturalDuration: Math.max(0.45, Math.min(2.4, naturalDuration)),
+    duration: Math.max(0.18, transition?.physicsDuration ?? Math.max(0.45, Math.min(2.4, naturalDuration))),
   };
 }
 
@@ -178,7 +181,7 @@ function getPreviewKeyframes(transition) {
       const spring = getPhysicsSpringConfig(transition);
       const steps = 18;
       return Array.from({ length: steps + 1 }, (_, index) => {
-        const elapsed = (spring.duration * index) / steps;
+        const elapsed = (spring.naturalDuration * index) / steps;
         const progress = 1 - sampleSpringValue(1, elapsed, spring);
         const scale = 1 + Math.max(-0.08, Math.min(0.24, sampleSpringValue(-0.14, elapsed, spring)));
         return {
@@ -415,6 +418,10 @@ export default function VariantTransitionModal({ sourceName, targetName, initial
               </>
             ) : (
               <>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Time</span>
+                  <NumberField value={transition.physicsDuration} unit="s" step={0.1} min={0} onChange={(value) => setTransition((current) => ({ ...current, physicsDuration: value }))} />
+                </div>
                 <div className="fb-prop-row">
                   <span className="fb-prop-label">Stiffness</span>
                   <SliderField value={transition.stiffness} min={40} max={1200} step={1} onChange={(value) => setTransition((current) => ({ ...current, stiffness: value }))} />

@@ -4,7 +4,7 @@ import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import CustomSelect from '../components/CustomSelect';
 import { IconButton, UIIcons } from '../components/UIIcons';
-import { getSvgStrokeWidth, hasSvgVisibleStroke, sanitizeSvgMarkup, setSvgStrokeWidth } from '../components/iconLibrary';
+import { sanitizeSvgMarkup } from '../components/iconLibrary';
 import { getRichTextInlineStyleValues } from '../components/richText';
 import VariantTransitionModal from '../components/VariantTransitionModal';
 import ElementAnimationModal from '../components/ElementAnimationModal';
@@ -790,7 +790,7 @@ function getTransitionSummary(interaction) {
   if (transition.type === 'instant') return 'Instant';
   if (transition.type === 'ease') return `${getTransitionTypeLabel(transition.type)} · ${Math.round((transition.duration ?? 0.3) * 10) / 10}s`;
   return transition.springMode === 'physics'
-    ? 'Realistic · Physics'
+    ? `Realistic · Physics · ${Math.round((transition.physicsDuration ?? transition.duration ?? 0.3) * 10) / 10}s`
     : `Realistic · ${Math.round((transition.duration ?? 0.3) * 10) / 10}s`;
 }
 
@@ -1449,7 +1449,6 @@ export default function PropertiesPanel() {
   const resolved = resolveElementWithVariables(element, bpId, pageVariables, globalVariables);
   const s = resolved.styles || {};
   const textColorMeta = element.type === 'text' ? getTextColorMeta(resolved) : { baseColor: s.color ?? '#000000', mixed: false };
-  const hasVisibleIconStroke = element?.type === 'icon' && hasSvgVisibleStroke(resolved?.svgMarkup ?? '');
   const textGrow = (resolved.widthMode === 'hug' && resolved.heightMode === 'hug')
     ? 'auto-width'
     : resolved.heightMode === 'hug'
@@ -1895,7 +1894,7 @@ export default function PropertiesPanel() {
         </Section>
 
         {element.type === 'text' && (
-          <Section title="Text" action={<ResetBtn show={isOv('text','richTextHtml') || isSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text','richTextHtml'); resetSOv('color','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
+          <Section title="Text" action={<ResetBtn show={isOv('text','richTextHtml') || isSOv('color','strokeWidth','strokeColor','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text','richTextHtml'); resetSOv('color','strokeWidth','strokeColor','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
             <div className="fb-prop-row" style={{ marginBottom: 8 }}>
               <VariableBindingLabel label="Content">
                 {allowVariableBindings ? (
@@ -2023,7 +2022,7 @@ export default function PropertiesPanel() {
         )}
 
         {element.type === 'icon' && (
-          <Section title="Icon / SVG" action={<ResetBtn show={isOv('iconSource','iconName','svgMarkup') || isSOv('color')} onReset={() => { resetOv('iconSource','iconName','svgMarkup'); resetSOv('color'); }} />}>
+          <Section title="Icon / SVG" action={<ResetBtn show={isOv('iconSource','iconName','svgMarkup') || isSOv('color','strokeWidth','strokeColor')} onReset={() => { resetOv('iconSource','iconName','svgMarkup'); resetSOv('color','strokeWidth','strokeColor'); }} />}>
             <div className="fb-prop-row">
               <span className="fb-prop-label">Source</span>
               <ChoiceGroup
@@ -2038,24 +2037,6 @@ export default function PropertiesPanel() {
                 ]}
               />
             </div>
-
-            {hasVisibleIconStroke ? (
-              <div className="fb-prop-row" style={{ marginTop: 8 }}>
-                <span className="fb-prop-label">Stroke</span>
-                <NumberInput
-                  value={getSvgStrokeWidth(resolved.svgMarkup ?? '') ?? 2}
-                  min={0.1}
-                  step={0.1}
-                  unit="px"
-                  label="px"
-                  onChange={v => {
-                    upd('svgMarkup', setSvgStrokeWidth(resolved.svgMarkup ?? '', v));
-                    commit();
-                  }}
-                />
-              </div>
-            ) : null}
-
             {(resolved.iconSource ?? 'preset') === 'preset' ? (
               <>
                 <div className="fb-prop-row" style={{ marginTop: 8 }}>
@@ -2219,7 +2200,7 @@ export default function PropertiesPanel() {
         {!isComponentInstanceOnPage && (
         <Section title="Effects" defaultOpen={false} action={<ResetBtn show={isSOv('boxShadow')} onReset={() => resetSOv('boxShadow')} />}>
           <div className="fb-prop-row">
-            <span className="fb-prop-label">Appear</span>
+            <span className="fb-prop-label">Shadow</span>
             <ShadowEditor value={s.boxShadow ?? ''} onChange={v => { updS('boxShadow', v); commit(); }} />
           </div>
         </Section>
@@ -2229,7 +2210,7 @@ export default function PropertiesPanel() {
 
         <Section title="Cursor" defaultOpen={false} />
 
-        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','objectFit','zIndex'); } }} />}>
+        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Opacity</span>
             <div className="fb-slider-field">
@@ -2255,6 +2236,62 @@ export default function PropertiesPanel() {
               />
             </div>
           </div>
+
+          {!isComponentInstanceOnPage && (
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Blur</span>
+            <div className="fb-slider-field">
+              <input
+                className="fb-prop-input fb-slider-field__value"
+                type="number"
+                min={0}
+                max={64}
+                step={0.5}
+                value={Math.round((s.blur ?? 0) * 10) / 10}
+                onChange={e => { const next = Math.max(0, Math.min(64, parseFloat(e.target.value) || 0)); updS('blur', next); }}
+                onBlur={commit}
+              />
+              <input
+                className="fb-slider"
+                type="range"
+                min={0}
+                max={64}
+                step={0.5}
+                value={s.blur ?? 0}
+                onChange={e => updS('blur', parseFloat(e.target.value))}
+                onMouseUp={commit}
+              />
+            </div>
+          </div>
+          )}
+
+          {!isComponentInstanceOnPage && (element.type === 'frame' || element.type === 'icon') ? (
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Background Blur</span>
+              <div className="fb-slider-field">
+                <input
+                  className="fb-prop-input fb-slider-field__value"
+                  type="number"
+                  min={0}
+                  max={64}
+                  step={0.5}
+                  value={Math.round((s.backdropBlur ?? 0) * 10) / 10}
+                  onChange={e => { const next = Math.max(0, Math.min(64, parseFloat(e.target.value) || 0)); updS('backdropBlur', next); }}
+                  onBlur={commit}
+                />
+                <input
+                  className="fb-slider"
+                  type="range"
+                  min={0}
+                  max={64}
+                  step={0.5}
+                  value={s.backdropBlur ?? 0}
+                  onChange={e => updS('backdropBlur', parseFloat(e.target.value))}
+                  onMouseUp={commit}
+                />
+              </div>
+            </div>
+          ) : null}
 
           <div className="fb-prop-row">
             <VariableBindingLabel label="Visible">
@@ -2394,27 +2431,41 @@ export default function PropertiesPanel() {
 
           {!isComponentInstanceOnPage && (
           <div className="fb-prop-row">
-            <span className="fb-prop-label">Border</span>
+            <span className="fb-prop-label">Stroke</span>
             {(s.borderWidth ?? 0) > 0 ? (
               <div className="fb-style-inline-group fb-style-inline-group--stacked">
-                <NumberInput value={s.borderWidth ?? 0} min={0} onChange={v => { updS('borderWidth', v); commit(); }} />
-                <CustomSelect
-                  value={s.borderStyle ?? 'solid'}
-                  onChange={value => { updS('borderStyle', value); commit(); }}
-                  options={[
-                    { value: 'solid', label: 'Solid' },
-                    { value: 'dashed', label: 'Dashed' },
-                    { value: 'dotted', label: 'Dotted' },
-                    { value: 'none', label: 'None' },
-                  ]}
-                />
-                <ColorInput value={s.borderColor ?? '#000000'} onChange={v => { updS('borderColor', v); commit(); }} />
+                <NumberInput value={s.borderWidth ?? 0} min={0} onChange={v => { updS('borderWidth', v); updS('borderStyle', 'solid'); commit(); }} />
+                <FillPicker value={s.borderColor ?? '#000000'} onChange={v => { updS('borderColor', v); updS('borderStyle', 'solid'); commit(); }} />
               </div>
             ) : (
               <button
                 type="button"
                 className="fb-add-field"
-                onClick={() => { updS('borderWidth', 1); commit(); }}
+                onClick={() => { updS('borderWidth', 1); updS('borderStyle', 'solid'); commit(); }}
+              >
+                Add...
+              </button>
+            )}
+          </div>
+          )}
+
+          {!isComponentInstanceOnPage && (element.type === 'text' || element.type === 'icon') && (
+          <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+            <span className="fb-prop-label">Stroke</span>
+            {(s.strokeWidth ?? 0) > 0 ? (
+              <div className="fb-style-inline-group fb-style-inline-group--stacked" style={{ width: '100%' }}>
+                <NumberInput value={s.strokeWidth ?? 0} min={0} step={0.1} onChange={v => { updS('strokeWidth', v); commit(); }} />
+                <FillPicker value={s.strokeColor ?? (element.type === 'icon' ? (s.color ?? '#111827') : '#000000')} onChange={v => { updS('strokeColor', v); commit(); }} />
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="fb-add-field"
+                onClick={() => {
+                  updS('strokeWidth', 1);
+                  updS('strokeColor', element.type === 'icon' ? (s.color ?? '#111827') : '#000000');
+                  commit();
+                }}
               >
                 Add...
               </button>

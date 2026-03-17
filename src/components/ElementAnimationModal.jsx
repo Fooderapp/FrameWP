@@ -58,7 +58,11 @@ function summarizeVariantTargets(targets, variantOptions) {
 function TransitionSummaryButton({ transition, onClick }) {
   const summary = transition?.type === 'instant'
     ? 'Instant'
-    : `${transition?.type === 'realistic' ? 'Realistic' : 'Ease'} · ${Math.round((transition?.duration ?? 0.6) * 10) / 10}s`;
+    : transition?.type === 'realistic'
+      ? (transition?.springMode === 'physics'
+        ? `Realistic · Physics · ${Math.round((transition?.physicsDuration ?? transition?.duration ?? 0.6) * 10) / 10}s`
+        : `Realistic · ${Math.round((transition?.duration ?? 0.6) * 10) / 10}s`)
+      : `Ease · ${Math.round((transition?.duration ?? 0.6) * 10) / 10}s`;
   return (
     <button type="button" className="fb-secondary-btn fb-prop-action-btn" onClick={onClick}>
       {summary}

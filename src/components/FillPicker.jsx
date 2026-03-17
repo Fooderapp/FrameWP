@@ -72,11 +72,11 @@ function colorToStr(r, g, b, a) {
 
 // ── Gradient helpers ──────────────────────────────────────────────────────────
 
-function isGradient(str) {
+export function isGradient(str) {
   return typeof str === 'string' && /gradient\(/.test(str);
 }
 
-function detectFillType(str) {
+export function detectFillType(str) {
   if (!str || !isGradient(str)) return 'solid';
   if (str.startsWith('linear-gradient')) return 'linear';
   if (str.startsWith('radial-gradient')) return 'radial';
@@ -99,19 +99,32 @@ function splitTopLevel(str) {
   return parts;
 }
 
-function parseGradient(str) {
+export function parseGradient(str) {
   if (!str || !isGradient(str)) return null;
   const type = detectFillType(str);
   const inner = str.slice(str.indexOf('(') + 1, str.lastIndexOf(')'));
   const parts = splitTopLevel(inner);
   let angle = 135, startIdx = 0;
+  let centerX = 50, centerY = 50, radius = 50;
   if (type === 'linear') {
     if (parts[0]?.endsWith('deg')) { angle = parseFloat(parts[0]); startIdx = 1; }
     else if (parts[0]?.startsWith('to ')) startIdx = 1;
   } else if (type === 'conic') {
     if (parts[0]?.startsWith('from ')) { angle = parseFloat(parts[0].slice(5)); startIdx = 1; }
   } else if (type === 'radial') {
-    if (/^(circle|ellipse)/.test(parts[0] ?? '')) startIdx = 1;
+    if (/^(circle|ellipse)/.test(parts[0] ?? '')) {
+      startIdx = 1;
+      const config = parts[0] ?? '';
+      const centerMatch = config.match(/at\s+([\d.]+)%\s+([\d.]+)%/i);
+      if (centerMatch) {
+        centerX = clamp(parseFloat(centerMatch[1]), 0, 100);
+        centerY = clamp(parseFloat(centerMatch[2]), 0, 100);
+      }
+      const radiusMatch = config.match(/(?:circle|ellipse)\s+([\d.]+)%/i);
+      if (radiusMatch) {
+        radius = clamp(parseFloat(radiusMatch[1]), 1, 150);
+      }
+    }
   }
   const stops = [];
   const count = parts.length - startIdx;
@@ -124,15 +137,20 @@ function parseGradient(str) {
     stops.push({ id: i - startIdx, color: colorStr, pos: Math.round(pos) });
   }
   if (stops.length < 2) {
-    return { type, angle, stops: [{ id: 0, color: '#ffffff', pos: 0 }, { id: 1, color: '#000000', pos: 100 }] };
+    return { type, angle, centerX, centerY, radius, stops: [{ id: 0, color: '#ffffff', pos: 0 }, { id: 1, color: '#000000', pos: 100 }] };
   }
-  return { type, angle, stops };
+  return { type, angle, centerX, centerY, radius, stops };
 }
 
-function buildGradient({ type, angle, stops }) {
+export function buildGradient({ type, angle, stops, centerX = 50, centerY = 50, radius = 50 }) {
   const sorted = [...stops].sort((a, b) => a.pos - b.pos);
   const parts = sorted.map(s => `${s.color} ${s.pos}%`).join(', ');
-  if (type === 'radial') return `radial-gradient(circle, ${parts})`;
+  if (type === 'radial') {
+    const safeCenterX = Math.round(clamp(centerX, 0, 100));
+    const safeCenterY = Math.round(clamp(centerY, 0, 100));
+    const safeRadius = Math.round(clamp(radius, 1, 150));
+    return `radial-gradient(ellipse ${safeRadius}% ${safeRadius}% at ${safeCenterX}% ${safeCenterY}%, ${parts})`;
+  }
   if (type === 'conic')  return `conic-gradient(from ${Math.round(angle)}deg, ${parts})`;
   return `linear-gradient(${Math.round(angle)}deg, ${parts})`;
 }
@@ -230,7 +248,7 @@ function TrackSlider({ value, onChange, trackBg, thumbBg }) {
 
 // ── Gradient editor ───────────────────────────────────────────────────────────
 
-function GradientEditor({ type, angle, stops, onTypeChange, onAngleChange, onStopsChange, activeStopIdx, onActiveStopChange }) {
+function GradientEditor({ type, angle, stops, onAngleChange, onStopsChange, activeStopIdx, onActiveStopChange }) {
   const barRef = useRef(null);
   const gradCss = buildGradient({ type, angle, stops });
 
@@ -246,31 +264,18 @@ function GradientEditor({ type, angle, stops, onTypeChange, onAngleChange, onSto
 
   return (
     <div style={{ padding: '0 12px 4px' }}>
-      {/* Type + angle row */}
-      <div style={{ display: 'flex', gap: 5, marginBottom: 10, alignItems: 'center' }}>
-        {['linear', 'radial', 'conic'].map(t => (
-          <IconButton
-            key={t}
-            icon={t === 'linear' ? FILL_TYPES[1].icon : t === 'radial' ? FILL_TYPES[2].icon : FILL_TYPES[3].icon}
-            title={`${t} gradient`}
-            active={type === t}
-            onClick={() => onTypeChange(t)}
-            style={{ flex: 1 }}
+      {(type === 'linear' || type === 'conic') && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4, marginBottom: 10, alignItems: 'center' }}>
+          <input
+            type="number" min={0} max={360}
+            value={Math.round(angle)}
+            onChange={e => onAngleChange(+e.target.value)}
+            className="fb-fill-input"
+            style={{ width: 52, textAlign: 'center', fontSize: 11 }}
           />
-        ))}
-        {(type === 'linear' || type === 'conic') && (
-          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            <input
-              type="number" min={0} max={360}
-              value={Math.round(angle)}
-              onChange={e => onAngleChange(+e.target.value)}
-              className="fb-fill-input"
-              style={{ width: 52, textAlign: 'center', fontSize: 11 }}
-            />
-            <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>°</span>
-          </div>
-        )}
-      </div>
+          <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>°</span>
+        </div>
+      )}
       {/* Gradient preview bar */}
       <div ref={barRef} onClick={handleBarClick} style={{
         height: 24, borderRadius: 12, background: gradCss,
@@ -424,6 +429,9 @@ export default function FillPicker({
   const [fillType, setFillType] = useState('solid');
   const [gradType, setGradType] = useState('linear');
   const [gradAngle, setGradAngle] = useState(135);
+  const [gradCenterX, setGradCenterX] = useState(50);
+  const [gradCenterY, setGradCenterY] = useState(50);
+  const [gradRadius, setGradRadius] = useState(50);
   const [gradStops, setGradStops] = useState([
     { id: 0, color: '#ffffff', pos: 0 },
     { id: 1, color: '#000000', pos: 100 },
@@ -460,6 +468,9 @@ export default function FillPicker({
       if (grad) {
         setGradType(grad.type);
         setGradAngle(grad.angle);
+        setGradCenterX(grad.centerX ?? 50);
+        setGradCenterY(grad.centerY ?? 50);
+        setGradRadius(grad.radius ?? 50);
         setGradStops(grad.stops.map((s, i) => ({ ...s, id: i })));
         setActiveStop(0);
         const { r, g, b, a } = parseColor(grad.stops[0]?.color ?? '#ffffff');
@@ -485,11 +496,11 @@ export default function FillPicker({
     } else {
       setGradStops(prev => {
         const updated = prev.map((s, i) => i === activeStop ? { ...s, color: cs } : s);
-        onChange(buildGradient({ type: gradType, angle: gradAngle, stops: updated }));
+        onChange(buildGradient({ type: gradType, angle: gradAngle, centerX: gradCenterX, centerY: gradCenterY, radius: gradRadius, stops: updated }));
         return updated;
       });
     }
-  }, [fillType, gradType, gradAngle, activeStop, onChange]);
+  }, [fillType, gradType, gradAngle, gradCenterX, gradCenterY, gradRadius, activeStop, onChange]);
 
   const handleSVChange = useCallback(({ sat: ns, val: nv }) => {
     handleColorChange(h, ns, nv, alpha);
@@ -523,21 +534,21 @@ export default function FillPicker({
       onChange(currentColorStr);
     } else {
       setGradType(ft);
-      onChange(buildGradient({ type: ft, angle: gradAngle, stops: gradStops }));
+      onChange(buildGradient({ type: ft, angle: gradAngle, centerX: gradCenterX, centerY: gradCenterY, radius: gradRadius, stops: gradStops }));
     }
   };
 
   const handleGradTypeChange = (t) => {
     setGradType(t); setFillType(t);
-    onChange(buildGradient({ type: t, angle: gradAngle, stops: gradStops }));
+    onChange(buildGradient({ type: t, angle: gradAngle, centerX: gradCenterX, centerY: gradCenterY, radius: gradRadius, stops: gradStops }));
   };
   const handleAngleChange = (a) => {
     setGradAngle(a);
-    onChange(buildGradient({ type: gradType, angle: a, stops: gradStops }));
+    onChange(buildGradient({ type: gradType, angle: a, centerX: gradCenterX, centerY: gradCenterY, radius: gradRadius, stops: gradStops }));
   };
   const handleStopsChange = (ns) => {
     setGradStops(ns);
-    onChange(buildGradient({ type: gradType, angle: gradAngle, stops: ns }));
+    onChange(buildGradient({ type: gradType, angle: gradAngle, centerX: gradCenterX, centerY: gradCenterY, radius: gradRadius, stops: ns }));
   };
   const handleActiveStopChange = (idx) => {
     setActiveStop(idx);
@@ -658,7 +669,6 @@ export default function FillPicker({
           {!solidOnly && fillType !== 'solid' && (
             <GradientEditor
               type={gradType} angle={gradAngle} stops={gradStops}
-              onTypeChange={handleGradTypeChange}
               onAngleChange={handleAngleChange}
               onStopsChange={handleStopsChange}
               activeStopIdx={activeStop}

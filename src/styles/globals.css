@@ -3149,9 +3149,9 @@ html, body, #framebuilder-root {
 
 .fb-animation-overlay {
   position: absolute;
-  inset: 0;
   z-index: 120;
   pointer-events: none;
+  overflow: visible;
 }
 
 .fb-animation-overlay__scrim {
@@ -3201,14 +3201,14 @@ html, body, #framebuilder-root {
 
 .fb-animation-overlay__line {
   position: absolute;
-  right: 0;
+  left: 0;
   transform: translateY(-50%);
   pointer-events: all;
 }
 
 .fb-animation-overlay__line-rail {
   position: absolute;
-  right: 0;
+  right: 100%;
   top: 50%;
   width: 28px;
   height: 3px;
@@ -3219,7 +3219,7 @@ html, body, #framebuilder-root {
 
 .fb-animation-overlay__line-pill {
   position: absolute;
-  right: 36px;
+  left: 8px;
   top: 50%;
   transform: translateY(-50%);
   min-width: 82px;
@@ -3681,6 +3681,37 @@ html, body, #framebuilder-root {
 .fb-component-play-preview__text em,
 .fb-component-play-preview__text u {
   white-space: inherit;
+}
+
+.fb-text-content,
+.fb-component-play-preview__text,
+.fb-text-content :is(span, strong, em, u, b, i, a, mark, small, sub, sup),
+.fb-component-play-preview__text :is(span, strong, em, u, b, i, a, mark, small, sub, sup) {
+  white-space: inherit;
+  -webkit-text-stroke-width: var(--fb-text-stroke-width, 0px);
+  -webkit-text-stroke-color: var(--fb-text-stroke-color, currentColor);
+  -webkit-text-fill-color: currentColor;
+  paint-order: stroke fill;
+}
+
+.fb-text-content--outline-preview,
+.fb-text-content--outline-preview :is(span, strong, em, u, b, i, a, mark, small, sub, sup) {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
+}
+
+.fb-icon-content svg,
+.fb-component-play-preview__icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.fb-icon-content--stroked svg :is(path, circle, rect, line, polyline, polygon, ellipse),
+.fb-component-play-preview__icon--stroked svg :is(path, circle, rect, line, polyline, polygon, ellipse) {
+  stroke: var(--fb-icon-stroke-color);
+  stroke-width: var(--fb-icon-stroke-width);
+  paint-order: stroke fill;
 }
 
 .fb-font-picker__option-main {

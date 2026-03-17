@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback, useLayoutEffect, useState } from
 import { useEditorStore, createFrame, createImage, createText, createIcon, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected } from '../store/editorStore';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
+import { buildGradient, parseGradient } from '../components/FillPicker';
 import { extractSvgMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
 
 const MIN_SCALE = 0.08;
@@ -107,6 +108,56 @@ function pointInClientRect(clientX, clientY, rect) {
 function buildConnectorPath(start, end) {
   const deltaX = Math.max(48, Math.abs(end.x - start.x) * 0.35);
   return `M ${start.x} ${start.y} C ${start.x + deltaX} ${start.y}, ${end.x - deltaX} ${end.y}, ${end.x} ${end.y}`;
+}
+
+function normalizeAngle(degrees) {
+  const normalized = degrees % 360;
+  return normalized < 0 ? normalized + 360 : normalized;
+}
+
+function cssAngleToUnitVector(angle) {
+  const radians = normalizeAngle(angle) * Math.PI / 180;
+  return { x: Math.sin(radians), y: -Math.cos(radians) };
+}
+
+function cssAngleFromVector(dx, dy) {
+  return normalizeAngle((Math.atan2(dy, dx) * 180 / Math.PI) + 90);
+}
+
+function clampGradientPercent(value, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function projectPointToSegmentRatio(point, start, end) {
+  const segX = end.x - start.x;
+  const segY = end.y - start.y;
+  const segLenSq = segX * segX + segY * segY;
+  if (segLenSq <= 0) return 0;
+  const projection = ((point.x - start.x) * segX + (point.y - start.y) * segY) / segLenSq;
+  return Math.max(0, Math.min(1, projection));
+}
+
+function getProjectionRangeForRect(rect, direction) {
+  const corners = [
+    { x: rect.left, y: rect.top },
+    { x: rect.right, y: rect.top },
+    { x: rect.right, y: rect.bottom },
+    { x: rect.left, y: rect.bottom },
+  ];
+  const values = corners.map((point) => (point.x * direction.x) + (point.y * direction.y));
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+  };
+}
+
+function pointForProjection(direction, projection, lineCenter) {
+  const centerProjection = (lineCenter.x * direction.x) + (lineCenter.y * direction.y);
+  const delta = projection - centerProjection;
+  return {
+    x: lineCenter.x + direction.x * delta,
+    y: lineCenter.y + direction.y * delta,
+  };
 }
 
 function isDefaultVariant(variant) {
@@ -442,7 +493,7 @@ function ViewportFoldOverlay({ onStartFoldDrag }) {
 
 /** Renders a bounding-box overlay in world-space, as a sibling of artboards.
  *  Not clipped by artboard's overflow:hidden, so it shows even for overflowing elements. */
-function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragOverlay }) {
+function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onStartGradientDrag, dragOverlay, gradientDragOverlay }) {
   const selection              = useEditorStore(s => s.selection);
   const bpDefs                 = useEditorStore(s => s.breakpointDefs);
   const allElements            = useEditorStore(s => s.getAllElements());
@@ -501,6 +552,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   if (!bp) return null;
   const scale = Math.max(MIN_SCALE, Number.isFinite(viewport.scale) ? viewport.scale : 1);
   const boardDom = document.querySelector(`.fb-artboard[data-bp="${bp.id}"]`);
+  const selectedDomNode = boardDom?.querySelector(`[data-id="${el.id}"]`) ?? null;
   if (selectionIds.length > 1 && boardDom) {
     const boardRect = boardDom.getBoundingClientRect();
     const rects = selectionIds
@@ -729,6 +781,85 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
   const rotateHandleSize = 14 / scale;
   const radiusHandleSize = 8 / scale;
   const radiusInset = 10 / scale;
+  const computedBackgroundImage = selectedDomNode ? window.getComputedStyle(selectedDomNode).backgroundImage : '';
+  const gradientFill = parseGradient(
+    resolved.styles?.backgroundColor
+    ?? (typeof computedBackgroundImage === 'string' && computedBackgroundImage.includes('gradient(') ? computedBackgroundImage : '')
+  );
+  const gradientEditor = (() => {
+    if (!onStartGradientDrag || el.locked || isDragging || !gradientFill || !['linear', 'radial'].includes(gradientFill.type)) return null;
+    if (gradientDragOverlay && gradientDragOverlay.elementId === el.id && gradientDragOverlay.bpId === selection.bpId && gradientDragOverlay.type === gradientFill.type) {
+      return {
+        ...gradientDragOverlay,
+        stops: (gradientFill.stops ?? []).map((stop, index) => ({
+          index,
+          color: stop.color,
+          pos: stop.pos ?? 0,
+          point: {
+            x: gradientDragOverlay.lineStart.x + ((gradientDragOverlay.lineEnd.x - gradientDragOverlay.lineStart.x) * ((stop.pos ?? 0) / 100)),
+            y: gradientDragOverlay.lineStart.y + ((gradientDragOverlay.lineEnd.y - gradientDragOverlay.lineStart.y) * ((stop.pos ?? 0) / 100)),
+          },
+        })),
+      };
+    }
+    if (gradientFill.type === 'linear') {
+      const direction = cssAngleToUnitVector(gradientFill.angle ?? 135);
+      const localRect = { left: worldX, top: worldY, right: worldX + overlayW, bottom: worldY + overlayH };
+      const projectionRange = getProjectionRangeForRect(localRect, direction);
+      const firstStop = (gradientFill.stops ?? [])[0]?.pos ?? 0;
+      const lastStop = (gradientFill.stops ?? []).at(-1)?.pos ?? 100;
+      const startProjection = projectionRange.min + ((projectionRange.max - projectionRange.min) * (firstStop / 100));
+      const endProjection = projectionRange.min + ((projectionRange.max - projectionRange.min) * (lastStop / 100));
+      const rawStart = pointForProjection(direction, startProjection, center);
+      const rawEnd = pointForProjection(direction, endProjection, center);
+      const lineStart = rotatePointAround(rawStart, center, selectionRotation);
+      const lineEnd = rotatePointAround(rawEnd, center, selectionRotation);
+      return {
+        type: 'linear',
+        elementId: el.id,
+        bpId: selection.bpId,
+        center,
+        radius: Math.hypot(lineEnd.x - lineStart.x, lineEnd.y - lineStart.y) / 2,
+        lineStart,
+        lineEnd,
+        stops: (gradientFill.stops ?? []).map((stop, index) => ({
+          index,
+          color: stop.color,
+          pos: stop.pos ?? 0,
+          point: {
+            x: lineStart.x + ((lineEnd.x - lineStart.x) * ((stop.pos ?? 0) / 100)),
+            y: lineStart.y + ((lineEnd.y - lineStart.y) * ((stop.pos ?? 0) / 100)),
+          },
+        })),
+      };
+    }
+    const localCenter = {
+      x: worldX + (overlayW * ((gradientFill.centerX ?? 50) / 100)),
+      y: worldY + (overlayH * ((gradientFill.centerY ?? 50) / 100)),
+    };
+    const radialCenter = rotatePointAround(localCenter, center, selectionRotation);
+    const radialRadius = Math.max(18 / scale, Math.min(overlayW, overlayH) * ((gradientFill.radius ?? 50) / 100));
+    const localRadiusPoint = { x: localCenter.x + radialRadius, y: localCenter.y };
+    const lineEnd = rotatePointAround(localRadiusPoint, center, selectionRotation);
+    return {
+      type: 'radial',
+      elementId: el.id,
+      bpId: selection.bpId,
+      center: radialCenter,
+      radius: radialRadius,
+      lineStart: radialCenter,
+      lineEnd,
+      stops: (gradientFill.stops ?? []).map((stop, index) => ({
+        index,
+        color: stop.color,
+        pos: stop.pos ?? 0,
+        point: {
+          x: radialCenter.x + ((lineEnd.x - radialCenter.x) * ((stop.pos ?? 0) / 100)),
+          y: radialCenter.y + ((lineEnd.y - radialCenter.y) * ((stop.pos ?? 0) / 100)),
+        },
+      })),
+    };
+  })();
   const radiusAnchorPoints = (() => {
     const anchors = resolved.styles?.borderRadiusMode === 'independent'
       ? {
@@ -887,6 +1018,96 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, dragO
             />
           );
         })}
+        {gradientEditor ? (
+          <>
+            {gradientEditor.type === 'radial' ? (
+              <circle
+                cx={gradientEditor.center.x}
+                cy={gradientEditor.center.y}
+                r={gradientEditor.radius}
+                fill="none"
+                stroke="rgba(59,130,246,0.25)"
+                strokeWidth={1.5 / scale}
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
+            <line
+              x1={gradientEditor.lineStart.x}
+              y1={gradientEditor.lineStart.y}
+              x2={gradientEditor.lineEnd.x}
+              y2={gradientEditor.lineEnd.y}
+              stroke="rgba(59,130,246,0.92)"
+              strokeWidth={2 / scale}
+              vectorEffect="non-scaling-stroke"
+              strokeDasharray={`${8 / scale} ${6 / scale}`}
+            />
+            {gradientEditor.stops.map((stop) => (
+              <circle
+                key={`gradient-stop-${stop.index}`}
+                cx={stop.point.x}
+                cy={stop.point.y}
+                r={7 / scale}
+                fill={stop.color}
+                stroke="#fff"
+                strokeWidth={2 / scale}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="all"
+                style={{ cursor: 'ew-resize' }}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onStartGradientDrag(e, selection.bpId, el, 'stop', {
+                    stopIndex: stop.index,
+                    lineStart: gradientEditor.lineStart,
+                    lineEnd: gradientEditor.lineEnd,
+                    overlay: gradientEditor,
+                  });
+                }}
+              />
+            ))}
+            {[
+              { key: 'start', point: gradientEditor.lineStart },
+              { key: 'end', point: gradientEditor.lineEnd },
+            ].map((handle) => (
+              <circle
+                key={`gradient-${handle.key}`}
+                cx={handle.point.x}
+                cy={handle.point.y}
+                r={10 / scale}
+                fill="#fff"
+                stroke="#3b82f6"
+                strokeWidth={2 / scale}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="all"
+                style={{ cursor: 'grab' }}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onStartGradientDrag(
+                    e,
+                    selection.bpId,
+                    el,
+                    gradientEditor.type === 'linear'
+                      ? `linear-${handle.key}`
+                      : (handle.key === 'start' ? 'radial-center' : 'radial-radius'),
+                    {
+                    center: gradientEditor.center,
+                    selectionRotation,
+                    worldX,
+                    worldY,
+                    overlayW,
+                    overlayH,
+                    lineStart: gradientEditor.lineStart,
+                    lineEnd: gradientEditor.lineEnd,
+                    radius: gradientEditor.radius,
+                    overlay: gradientEditor,
+                  }
+                  );
+                }}
+              />
+            ))}
+          </>
+        ) : null}
       </svg>
     </>
   );
@@ -901,6 +1122,7 @@ export default function InfiniteCanvas() {
   const viewport      = useEditorStore(s => s.viewport);
   const setViewport   = useEditorStore(s => s.setViewport);
   const activeSurface = useEditorStore(s => s.activeSurface);
+  const selection     = useEditorStore(s => s.selection);
   const componentEditor = useEditorStore(s => s.componentEditor);
   const bpDefs        = useEditorStore(s => s.breakpointDefs);
   const setSelection  = useEditorStore(s => s.setSelection);
@@ -944,6 +1166,7 @@ export default function InfiniteCanvas() {
   const [reorderGhost,     setReorderGhost]     = useState(null); // { worldX, worldY, width, height, bgColor? }
   const [reorderIndicatorOverlay, setReorderIndicatorOverlay] = useState(null); // { left, top, width, height, axis } in client px
   const [dragOverlay,      setDragOverlay]      = useState(null); // { elementId, worldX, worldY, width, height }
+  const [gradientDragOverlay, setGradientDragOverlay] = useState(null);
   const [alignmentGuides,  setAlignmentGuides]  = useState([]); // [{ orientation, x?, y?, start, end }]
   const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
   const [variantRootLayout, setVariantRootLayout] = useState({});
@@ -954,6 +1177,17 @@ export default function InfiniteCanvas() {
   const clipboard = useRef(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  useEffect(() => {
+    if (!selection?.elementId || !selection?.bpId) {
+      setGradientDragOverlay(null);
+      return;
+    }
+    setGradientDragOverlay((prev) => {
+      if (!prev) return null;
+      return prev.elementId === selection.elementId && prev.bpId === selection.bpId ? prev : null;
+    });
+  }, [selection?.bpId, selection?.elementId]);
   const resolveVariantRootAtClientPoint = useCallback((clientX, clientY, { excludeVariantId = null } = {}) => {
     const container = containerRef.current;
     if (!container || activeSurface !== 'component') return null;
@@ -1001,6 +1235,14 @@ export default function InfiniteCanvas() {
           },
     });
   }, [componentEditor.variants]);
+
+  useEffect(() => {
+    if (!selection && drag.current?.type?.startsWith?.('gradient-linear')) {
+      drag.current = null;
+      setDragHint(null);
+      setInteracting(false);
+    }
+  }, [selection, setInteracting]);
 
   useLayoutEffect(() => {
     if (!reorderTarget?.bpId) {
@@ -1947,6 +2189,94 @@ export default function InfiniteCanvas() {
       if (e.shiftKey) nextFontSize = Math.max(4, Math.round(nextFontSize / 4) * 4);
       useEditorStore.getState().updateElementStyles(textId, textBpId, { fontSize: nextFontSize, fontSizeUnit: 'px' });
       setTextSizeDragInfo({ value: nextFontSize, clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'gradient-linear-handle') {
+      const { elementId: gradId, bpId: gradBp, selectionRotation = 0, handle = 'linear-end', lineStart, lineEnd, worldX, worldY, overlayW, overlayH } = drag.current;
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      const nextLineStart = handle === 'linear-start' ? { x: pointer.worldX, y: pointer.worldY } : lineStart;
+      const nextLineEnd = handle === 'linear-end' ? { x: pointer.worldX, y: pointer.worldY } : lineEnd;
+      const lineCenter = midpoint(nextLineStart, nextLineEnd);
+      const overlayCenter = { x: worldX + overlayW / 2, y: worldY + overlayH / 2 };
+      const rawStart = rotatePointAround(nextLineStart, overlayCenter, -selectionRotation);
+      const rawEnd = rotatePointAround(nextLineEnd, overlayCenter, -selectionRotation);
+      const nextAngle = cssAngleFromVector(rawEnd.x - rawStart.x, rawEnd.y - rawStart.y);
+      const state = useEditorStore.getState();
+      const gradEl = state.getAllElements().find((candidate) => candidate.id === gradId);
+      const gradient = gradEl ? parseGradient(resolveElement(gradEl, gradBp).styles?.backgroundColor ?? '') : null;
+      if (!gradient || gradient.type !== 'linear') return;
+      const direction = cssAngleToUnitVector(nextAngle);
+      const localRect = { left: worldX, top: worldY, right: worldX + overlayW, bottom: worldY + overlayH };
+      const projectionRange = getProjectionRangeForRect(localRect, direction);
+      const range = Math.max(0.0001, projectionRange.max - projectionRange.min);
+      const startProjection = (rawStart.x * direction.x) + (rawStart.y * direction.y);
+      const endProjection = (rawEnd.x * direction.x) + (rawEnd.y * direction.y);
+      const nextStartPos = clampGradientPercent(((startProjection - projectionRange.min) / range) * 100);
+      const nextEndPos = clampGradientPercent(((endProjection - projectionRange.min) / range) * 100);
+      const currentStops = [...(gradient.stops ?? [])].sort((a, b) => a.pos - b.pos);
+      const oldStartPos = currentStops[0]?.pos ?? 0;
+      const oldEndPos = currentStops.at(-1)?.pos ?? 100;
+      const oldRange = Math.max(0.0001, oldEndPos - oldStartPos);
+      const nextStops = currentStops.map((stop) => {
+        const t = (stop.pos - oldStartPos) / oldRange;
+        return {
+          ...stop,
+          pos: Math.round(nextStartPos + ((nextEndPos - nextStartPos) * t)),
+        };
+      });
+      state.updateElementStyles(gradId, gradBp, { backgroundColor: buildGradient({ ...gradient, angle: nextAngle, stops: nextStops }) });
+      drag.current.lineStart = nextLineStart;
+      drag.current.lineEnd = nextLineEnd;
+      setGradientDragOverlay((prev) => prev && prev.elementId === gradId ? { ...prev, lineStart: nextLineStart, lineEnd: nextLineEnd, center: lineCenter } : prev);
+      setDragHint({ label: `${Math.round(nextAngle)}deg`, clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'gradient-stop') {
+      const { elementId: gradId, bpId: gradBp, stopIndex, lineStart, lineEnd, gradientType } = drag.current;
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      const nextPos = Math.round(projectPointToSegmentRatio({ x: pointer.worldX, y: pointer.worldY }, lineStart, lineEnd) * 100);
+      const state = useEditorStore.getState();
+      const gradEl = state.getAllElements().find((candidate) => candidate.id === gradId);
+      const gradient = gradEl ? parseGradient(resolveElement(gradEl, gradBp).styles?.backgroundColor ?? '') : null;
+      if (!gradient || gradient.type !== gradientType) return;
+      const nextStops = (gradient.stops ?? []).map((stop, index) => (index === stopIndex ? { ...stop, pos: nextPos } : stop));
+      state.updateElementStyles(gradId, gradBp, { backgroundColor: buildGradient({ ...gradient, stops: nextStops }) });
+      setDragHint({ label: `${nextPos}%`, clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'gradient-radial-center') {
+      const { elementId: gradId, bpId: gradBp, worldX, worldY, overlayW, overlayH, selectionRotation = 0, radius = 0 } = drag.current;
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      const overlayCenter = { x: worldX + overlayW / 2, y: worldY + overlayH / 2 };
+      const unrotatedPointer = rotatePointAround({ x: pointer.worldX, y: pointer.worldY }, overlayCenter, -selectionRotation);
+      const nextCenterX = clampGradientPercent(((unrotatedPointer.x - worldX) / Math.max(overlayW, 1)) * 100);
+      const nextCenterY = clampGradientPercent(((unrotatedPointer.y - worldY) / Math.max(overlayH, 1)) * 100);
+      const state = useEditorStore.getState();
+      const gradEl = state.getAllElements().find((candidate) => candidate.id === gradId);
+      const gradient = gradEl ? parseGradient(resolveElement(gradEl, gradBp).styles?.backgroundColor ?? '') : null;
+      if (!gradient || gradient.type !== 'radial') return;
+      state.updateElementStyles(gradId, gradBp, { backgroundColor: buildGradient({ ...gradient, centerX: nextCenterX, centerY: nextCenterY }) });
+      const localCenter = { x: worldX + (overlayW * (nextCenterX / 100)), y: worldY + (overlayH * (nextCenterY / 100)) };
+      const nextCenter = rotatePointAround(localCenter, overlayCenter, selectionRotation);
+      const nextLineEnd = rotatePointAround({ x: localCenter.x + radius, y: localCenter.y }, overlayCenter, selectionRotation);
+      drag.current.centerWorldX = nextCenter.x;
+      drag.current.centerWorldY = nextCenter.y;
+      drag.current.lineStart = nextCenter;
+      drag.current.lineEnd = nextLineEnd;
+      setGradientDragOverlay((prev) => prev && prev.elementId === gradId ? { ...prev, center: nextCenter, lineStart: nextCenter, lineEnd: nextLineEnd } : prev);
+      setDragHint({ label: `${Math.round(nextCenterX)}%, ${Math.round(nextCenterY)}%`, clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'gradient-radial-radius') {
+      const { elementId: gradId, bpId: gradBp, worldX, worldY, overlayW, overlayH, selectionRotation = 0, centerWorldX, centerWorldY } = drag.current;
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      const overlayCenter = { x: worldX + overlayW / 2, y: worldY + overlayH / 2 };
+      const unrotatedPointer = rotatePointAround({ x: pointer.worldX, y: pointer.worldY }, overlayCenter, -selectionRotation);
+      const unrotatedCenter = rotatePointAround({ x: centerWorldX, y: centerWorldY }, overlayCenter, -selectionRotation);
+      const nextRadius = clampGradientPercent(Math.hypot(unrotatedPointer.x - unrotatedCenter.x, unrotatedPointer.y - unrotatedCenter.y) / Math.max(Math.min(overlayW, overlayH), 1) * 100, 1, 150);
+      const state = useEditorStore.getState();
+      const gradEl = state.getAllElements().find((candidate) => candidate.id === gradId);
+      const gradient = gradEl ? parseGradient(resolveElement(gradEl, gradBp).styles?.backgroundColor ?? '') : null;
+      if (!gradient || gradient.type !== 'radial') return;
+      state.updateElementStyles(gradId, gradBp, { backgroundColor: buildGradient({ ...gradient, radius: nextRadius }) });
+      const nextRadiusWorld = Math.max(18 / Math.max(viewport.scale || 1, MIN_SCALE), Math.min(overlayW, overlayH) * (nextRadius / 100));
+      const nextLineEnd = rotatePointAround({ x: unrotatedCenter.x + nextRadiusWorld, y: unrotatedCenter.y }, overlayCenter, selectionRotation);
+      drag.current.radius = nextRadiusWorld;
+      drag.current.lineEnd = nextLineEnd;
+      setGradientDragOverlay((prev) => prev && prev.elementId === gradId ? { ...prev, radius: nextRadiusWorld, lineEnd: nextLineEnd } : prev);
+      setDragHint({ label: `${Math.round(nextRadius)}%`, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'radius') {
       const { elementId: radId, bpId: radBp, startRadius, corner } = drag.current;
       const allEls = useEditorStore.getState().getAllElements();
@@ -2203,6 +2533,9 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'rotate') {
         setDragHint(null);
       }
+      if (drag.current.type === 'gradient-linear-handle' || drag.current.type === 'gradient-stop' || drag.current.type === 'gradient-radial-center' || drag.current.type === 'gradient-radial-radius') {
+        setDragHint(null);
+      }
       setDraggingElementId(null);
       if (shouldPushHistory) pushHistory();
       drag.current = null;
@@ -2417,6 +2750,38 @@ export default function InfiniteCanvas() {
       startMX: e.clientX, startMY: e.clientY,
       startRadius: startRadius ?? 0,
     };
+    setInteracting(true);
+  }, [setInteracting]);
+
+  const startGradientDrag = useCallback((e, bpId, element, mode, payload = {}) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const gradientType = payload.overlay?.type ?? (mode.startsWith('radial') ? 'radial' : 'linear');
+    drag.current = {
+      type:
+        mode === 'stop' ? 'gradient-stop'
+          : mode === 'radial-center' ? 'gradient-radial-center'
+            : mode === 'radial-radius' ? 'gradient-radial-radius'
+              : 'gradient-linear-handle',
+      bpId,
+      elementId: element.id,
+      startMX: e.clientX,
+      startMY: e.clientY,
+      handle: mode,
+      gradientType,
+      stopIndex: payload.stopIndex ?? null,
+      lineStart: payload.lineStart ?? null,
+      lineEnd: payload.lineEnd ?? null,
+      centerWorldX: payload.center?.x ?? 0,
+      centerWorldY: payload.center?.y ?? 0,
+      selectionRotation: payload.selectionRotation ?? 0,
+      worldX: payload.worldX ?? 0,
+      worldY: payload.worldY ?? 0,
+      overlayW: payload.overlayW ?? 0,
+      overlayH: payload.overlayH ?? 0,
+      radius: payload.radius ?? 0,
+    };
+    setGradientDragOverlay(payload.overlay ?? null);
     setInteracting(true);
   }, [setInteracting]);
 
@@ -2869,7 +3234,7 @@ export default function InfiniteCanvas() {
           />
         ))}
         {activeSurface !== 'component' ? <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} /> : null}
-        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} dragOverlay={dragOverlay} />
+        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} onStartGradientDrag={startGradientDrag} dragOverlay={dragOverlay} gradientDragOverlay={gradientDragOverlay} />
         {alignmentGuides.map((guide, index) => (
           <div
             key={`${guide.orientation}-${index}`}
