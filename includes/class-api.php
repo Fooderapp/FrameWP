@@ -7,6 +7,9 @@ class FrameBuilder_API {
 		add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
 		add_action( 'wp_ajax_framebuilder_get_layout', [ __CLASS__, 'ajax_get_layout' ] );
 		add_action( 'wp_ajax_framebuilder_save_layout', [ __CLASS__, 'ajax_save_layout' ] );
+		add_action( 'wp_ajax_framebuilder_get_document_lock', [ __CLASS__, 'ajax_get_document_lock' ] );
+		add_action( 'wp_ajax_framebuilder_acquire_document_lock', [ __CLASS__, 'ajax_acquire_document_lock' ] );
+		add_action( 'wp_ajax_framebuilder_release_document_lock', [ __CLASS__, 'ajax_release_document_lock' ] );
 		add_action( 'wp_ajax_framebuilder_get_color_styles', [ __CLASS__, 'ajax_get_color_styles' ] );
 		add_action( 'wp_ajax_framebuilder_save_color_styles', [ __CLASS__, 'ajax_save_color_styles' ] );
 		add_action( 'wp_ajax_framebuilder_get_components', [ __CLASS__, 'ajax_get_components' ] );
@@ -34,6 +37,29 @@ class FrameBuilder_API {
 		register_rest_route( $ns, '/save-layout', [
 			'methods'             => 'POST',
 			'callback'            => [ __CLASS__, 'save_layout' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/document-lock/(?P<post_id>\\d+)', [
+			'methods'             => 'GET',
+			'callback'            => [ __CLASS__, 'get_document_lock' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+			'args'                => [
+				'post_id' => [
+					'validate_callback' => [ __CLASS__, 'validate_numeric' ],
+				],
+			],
+		] );
+
+		register_rest_route( $ns, '/document-lock/acquire', [
+			'methods'             => 'POST',
+			'callback'            => [ __CLASS__, 'acquire_document_lock' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/document-lock/release', [
+			'methods'             => 'POST',
+			'callback'            => [ __CLASS__, 'release_document_lock' ],
 			'permission_callback' => [ __CLASS__, 'can_edit' ],
 		] );
 
@@ -128,6 +154,15 @@ class FrameBuilder_API {
 		return rest_ensure_response( $result );
 	}
 
+	public static function get_document_lock( WP_REST_Request $request ) {
+		$post_id = absint( $request['post_id'] );
+		$result = self::perform_get_document_lock( $post_id );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
 	private static function perform_get_layout( int $post_id ) {
 		if ( ! $post_id ) {
 			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
@@ -147,6 +182,97 @@ class FrameBuilder_API {
 				'slug'  => $post->post_name,
 			],
 		];
+	}
+
+	private static function get_document_lock_window(): int {
+		return max( 30, (int) apply_filters( 'fb_document_lock_window', 150 ) );
+	}
+
+	private static function get_document_lock_meta_key(): string {
+		return '_fb_document_lock';
+	}
+
+	private static function build_document_lock_payload( int $post_id, bool $owns_lock, ?array $lock_data ): array {
+		return [
+			'success' => true,
+			'lock'    => [
+				'postId'             => $post_id,
+				'state'              => $lock_data ? ( $owns_lock ? 'owned' : 'locked' ) : 'available',
+				'ownedByCurrentUser' => $owns_lock,
+				'lockedByOther'      => $lock_data ? ! $owns_lock : false,
+				'expiresAt'          => $lock_data['expiresAt'] ?? null,
+				'holder'             => $lock_data ? [
+					'id'          => $lock_data['userId'],
+					'displayName' => $lock_data['displayName'],
+					'avatarUrl'   => $lock_data['avatarUrl'],
+				] : null,
+			],
+		];
+	}
+
+	private static function get_active_document_lock( int $post_id ): ?array {
+		$raw = get_post_meta( $post_id, self::get_document_lock_meta_key(), true );
+		if ( ! is_string( $raw ) || '' === $raw ) {
+			return null;
+		}
+
+		$parts = explode( ':', $raw );
+		if ( count( $parts ) < 2 ) {
+			delete_post_meta( $post_id, self::get_document_lock_meta_key() );
+			return null;
+		}
+
+		$timestamp = absint( $parts[0] );
+		$user_id   = absint( $parts[1] );
+		if ( ! $timestamp || ! $user_id ) {
+			delete_post_meta( $post_id, self::get_document_lock_meta_key() );
+			return null;
+		}
+
+		$user = get_userdata( $user_id );
+		if ( ! $user ) {
+			delete_post_meta( $post_id, self::get_document_lock_meta_key() );
+			return null;
+		}
+
+		$window = self::get_document_lock_window();
+		if ( $timestamp <= ( time() - $window ) ) {
+			delete_post_meta( $post_id, self::get_document_lock_meta_key() );
+			return null;
+		}
+
+		return [
+			'userId'      => $user_id,
+			'timestamp'   => $timestamp,
+			'expiresAt'   => $timestamp + $window,
+			'displayName' => $user->display_name,
+			'avatarUrl'   => get_avatar_url( $user_id, [ 'size' => 96 ] ),
+		];
+	}
+
+	private static function perform_get_document_lock( int $post_id ) {
+		if ( ! $post_id ) {
+			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
+		}
+		$post = get_post( $post_id );
+		if ( ! $post || ! current_user_can( 'edit_post', $post_id ) ) {
+			return new WP_Error( 'not_found', 'Post not found.', [ 'status' => 404 ] );
+		}
+
+		$lock = self::get_active_document_lock( $post_id );
+		return self::build_document_lock_payload( $post_id, $lock && (int) $lock['userId'] === get_current_user_id(), $lock );
+	}
+
+	private static function ensure_document_lock_allows_write( int $post_id ) {
+		$lock = self::get_active_document_lock( $post_id );
+		if ( $lock && (int) $lock['userId'] !== get_current_user_id() ) {
+			return new WP_Error( 'document_locked', 'This document is currently locked by another user.', [
+				'status' => 409,
+				'lock'   => self::build_document_lock_payload( $post_id, false, $lock )['lock'],
+			] );
+		}
+
+		return true;
 	}
 
 	public static function save_layout( WP_REST_Request $request ) {
@@ -169,12 +295,34 @@ class FrameBuilder_API {
 		return rest_ensure_response( $result );
 	}
 
+	public static function acquire_document_lock( WP_REST_Request $request ) {
+		$post_id = absint( $request->get_param( 'post_id' ) );
+		$result = self::perform_acquire_document_lock( $post_id );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	public static function release_document_lock( WP_REST_Request $request ) {
+		$post_id = absint( $request->get_param( 'post_id' ) );
+		$result = self::perform_release_document_lock( $post_id );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
 	private static function perform_save_layout( int $post_id, $layout ) {
 		if ( ! $post_id ) {
 			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
 		}
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
 			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
+		}
+		$lock_check = self::ensure_document_lock_allows_write( $post_id );
+		if ( is_wp_error( $lock_check ) ) {
+			return $lock_check;
 		}
 		update_post_meta( $post_id, '_fb_layout', wp_slash( wp_json_encode( $layout ) ) );
 		return [ 'success' => true ];
@@ -187,6 +335,10 @@ class FrameBuilder_API {
 		if ( ! current_user_can( 'edit_post', $post_id ) || ! current_user_can( 'publish_posts' ) ) {
 			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
 		}
+		$lock_check = self::ensure_document_lock_allows_write( $post_id );
+		if ( is_wp_error( $lock_check ) ) {
+			return $lock_check;
+		}
 		update_post_meta( $post_id, '_fb_layout', wp_slash( wp_json_encode( $layout ) ) );
 		$exporter = new FrameBuilder_Exporter( $layout );
 		$html     = $exporter->generate_html();
@@ -198,6 +350,46 @@ class FrameBuilder_API {
 			'success'   => true,
 			'permalink' => get_permalink( $post_id ),
 		];
+	}
+
+	private static function perform_acquire_document_lock( int $post_id ) {
+		if ( ! $post_id ) {
+			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
+		}
+		if ( ! current_user_can( 'edit_post', $post_id ) ) {
+			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
+		}
+
+		$current_user_id = get_current_user_id();
+		if ( ! $current_user_id ) {
+			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
+		}
+
+		$lock = self::get_active_document_lock( $post_id );
+		if ( $lock && (int) $lock['userId'] !== $current_user_id ) {
+			return self::build_document_lock_payload( $post_id, false, $lock );
+		}
+
+		$now = time();
+		update_post_meta( $post_id, self::get_document_lock_meta_key(), $now . ':' . $current_user_id );
+		$next_lock = self::get_active_document_lock( $post_id );
+		return self::build_document_lock_payload( $post_id, true, $next_lock );
+	}
+
+	private static function perform_release_document_lock( int $post_id ) {
+		if ( ! $post_id ) {
+			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
+		}
+		if ( ! current_user_can( 'edit_post', $post_id ) ) {
+			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
+		}
+
+		$lock = self::get_active_document_lock( $post_id );
+		if ( $lock && (int) $lock['userId'] === get_current_user_id() ) {
+			delete_post_meta( $post_id, self::get_document_lock_meta_key() );
+		}
+
+		return self::build_document_lock_payload( $post_id, false, null );
 	}
 
 	public static function ajax_save_layout() {
@@ -222,11 +414,44 @@ class FrameBuilder_API {
 		wp_send_json( $result );
 	}
 
+	public static function ajax_get_document_lock() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_get_document_lock( absint( $_REQUEST['post_id'] ?? 0 ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
 	public static function ajax_publish_layout() {
 		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
 			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
 		}
 		$result = self::perform_publish_layout( absint( $_POST['post_id'] ?? 0 ), self::decode_ajax_layout( $_POST['layout'] ?? null ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	public static function ajax_acquire_document_lock() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_acquire_document_lock( absint( $_POST['post_id'] ?? 0 ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	public static function ajax_release_document_lock() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_release_document_lock( absint( $_REQUEST['post_id'] ?? 0 ) );
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
 		}

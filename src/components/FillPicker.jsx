@@ -409,6 +409,7 @@ export default function FillPicker({
   title = 'Edit fill',
   preserveFocus = false,
   onOpenChange,
+  popoverPlacement = 'left',
 }) {
   const [open, setOpen]         = useState(false);
   const triggerRef              = useRef(null);
@@ -576,8 +577,32 @@ export default function FillPicker({
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const W = 308;
-    const left = rect.left - W - 10;
-    setPos({ top: Math.max(8, Math.min(rect.top, window.innerHeight - 600)), left: Math.max(8, left) });
+    const maxTop = Math.max(8, window.innerHeight - 600);
+    const top = Math.max(8, Math.min(rect.top, maxTop));
+
+    if (popoverPlacement === 'bottom-start') {
+      const shadowPopupRect = triggerRef.current?.closest('.fb-shadow-popup')?.getBoundingClientRect() ?? null;
+      if (shadowPopupRect) {
+        const gap = 12;
+        const popupTop = shadowPopupRect.top;
+        const popupRight = shadowPopupRect.right;
+        const popupLeft = shadowPopupRect.left;
+        const fitsRight = popupRight + gap + W <= window.innerWidth - 8;
+        const sideLeft = fitsRight
+          ? popupRight + gap
+          : popupLeft - W - gap;
+        const nextLeft = Math.max(8, Math.min(sideLeft, window.innerWidth - W - 8));
+        const nextTop = Math.max(8, Math.min(popupTop, window.innerHeight - 600));
+        setPos({ top: nextTop, left: nextLeft });
+      } else {
+        const nextLeft = Math.max(8, Math.min(rect.left, window.innerWidth - W - 8));
+        const nextTop = Math.max(8, Math.min(rect.bottom + 10, window.innerHeight - 600));
+        setPos({ top: nextTop, left: nextLeft });
+      }
+    } else {
+      const left = rect.left - W - 10;
+      setPos({ top, left: Math.max(8, left) });
+    }
     updateOpen(true);
   };
 

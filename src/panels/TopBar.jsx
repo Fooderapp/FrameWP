@@ -10,6 +10,7 @@ export default function TopBar() {
   const undo           = useEditorStore(s => s.undo);
   const redo           = useEditorStore(s => s.redo);
   const bpDefs         = useEditorStore(s => s.breakpointDefs);
+  const documentLock   = useEditorStore(s => s.documentLock);
   const setVariablesModalOpen = useEditorStore(s => s.setVariablesModalOpen);
 
   const pct = Math.round(viewport.scale * 100);
@@ -47,6 +48,16 @@ export default function TopBar() {
   const statusClass = saveStatus === 'ok' ? 'fb-save-status--ok'
     : saveStatus === 'error' ? 'fb-save-status--err'
     : '';
+  const lockHolderName = documentLock.holder?.displayName?.trim() || 'Another editor';
+  const lockAvatar = documentLock.holder?.avatarUrl || window.fbData?.currentUser?.avatarUrl || '';
+  const isReadOnly = documentLock.isLockedByOther;
+  const lockLabel = isReadOnly
+    ? `${lockHolderName} is editing`
+    : documentLock.isOwner
+      ? 'You are editing'
+      : documentLock.status === 'idle'
+        ? 'Checking lock'
+        : 'Ready to edit';
 
   const handleBackToWordPress = () => {
     window.location.href = backToWordPressUrl;
@@ -60,8 +71,8 @@ export default function TopBar() {
       <div className="fb-topbar__sep" />
 
       {/* Undo / Redo */}
-      <IconButton icon={UIIcons.undo} title="Undo (⌘Z)" onClick={undo} />
-      <IconButton icon={UIIcons.redo} title="Redo (⌘⇧Z)" onClick={redo} />
+      <IconButton icon={UIIcons.undo} title="Undo (⌘Z)" onClick={undo} disabled={isReadOnly} />
+      <IconButton icon={UIIcons.redo} title="Redo (⌘⇧Z)" onClick={redo} disabled={isReadOnly} />
       <button type="button" className="fb-secondary-btn fb-topbar__back" onClick={handleBackToWordPress}>
         {UIIcons.arrowLeft}
         <span>Back to WordPress</span>
@@ -86,9 +97,13 @@ export default function TopBar() {
 
       {/* Status + actions (right) */}
       <div className="fb-topbar__right">
+        <div className={`fb-topbar__lock-pill${isReadOnly ? ' fb-topbar__lock-pill--locked' : documentLock.isOwner ? ' fb-topbar__lock-pill--owned' : ''}`}>
+          {lockAvatar ? <img src={lockAvatar} alt="" className="fb-topbar__lock-avatar" /> : null}
+          <span>{lockLabel}</span>
+        </div>
         <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span>
-        <IconButton icon={UIIcons.variables} title="Edit variables" onClick={() => setVariablesModalOpen(true)} />
-        <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-btn--accent" onClick={publishLayout} disabled={saveStatus === 'saving'} />
+        <IconButton icon={UIIcons.variables} title="Edit variables" onClick={() => setVariablesModalOpen(true)} disabled={isReadOnly} />
+        <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-btn--accent" onClick={publishLayout} disabled={isReadOnly || saveStatus === 'saving'} />
       </div>
     </header>
   );

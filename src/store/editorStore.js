@@ -113,6 +113,61 @@ async function postWordPressAction(restPath, ajaxAction, body) {
   return requestWordPressEndpoint(restPath, ajaxAction, { method: 'POST', body });
 }
 
+function getDefaultDocumentLock() {
+  return {
+    status: 'idle',
+    isOwner: false,
+    isLockedByOther: false,
+    holder: null,
+    expiresAt: null,
+    lastUpdatedAt: 0,
+    error: null,
+  };
+}
+
+function normalizeDocumentLockPayload(payload) {
+  const lock = payload?.lock && typeof payload.lock === 'object' ? payload.lock : {};
+  const state = typeof lock.state === 'string' ? lock.state : 'available';
+  const holder = lock.holder && typeof lock.holder === 'object'
+    ? {
+        id: Number.isFinite(Number(lock.holder.id)) ? Number(lock.holder.id) : null,
+        displayName: typeof lock.holder.displayName === 'string' ? lock.holder.displayName : '',
+        avatarUrl: typeof lock.holder.avatarUrl === 'string' ? lock.holder.avatarUrl : '',
+      }
+    : null;
+  const expiresAt = Number.isFinite(Number(lock.expiresAt)) ? Number(lock.expiresAt) : null;
+
+  return {
+    status: state,
+    isOwner: lock.ownedByCurrentUser === true || state === 'owned',
+    isLockedByOther: lock.lockedByOther === true || state === 'locked',
+    holder,
+    expiresAt,
+    lastUpdatedAt: Date.now(),
+    error: null,
+  };
+}
+
+function releaseDocumentLockWithBeacon(postId) {
+  if (!postId || !window.fbData?.nonce) return;
+  const formData = new FormData();
+  formData.append('action', 'framebuilder_release_document_lock');
+  formData.append('_wpnonce', window.fbData.nonce);
+  formData.append('post_id', `${postId}`);
+
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    navigator.sendBeacon(getAjaxUrl(), formData);
+    return;
+  }
+
+  fetch(getAjaxUrl(), {
+    method: 'POST',
+    credentials: 'same-origin',
+    keepalive: true,
+    body: formData,
+  }).catch(() => {});
+}
+
 const LAYOUT_NUMERIC_KEYS = new Set([
   'x', 'y', 'width', 'height', 'rotation',
   'minW', 'maxW', 'minH', 'maxH',
@@ -3456,6 +3511,82 @@ export const useEditorStore = create((set, get) => {
     setInteracting: (v) => set({ interacting: v }),
     saveStatus: null,
     setSaveStatus: (s) => set({ saveStatus: s }),
+    documentLock: getDefaultDocumentLock(),
+    setDocumentLock(lock) {
+      set({
+        documentLock: lock && typeof lock === 'object'
+          ? { ...getDefaultDocumentLock(), ...lock }
+          : getDefaultDocumentLock(),
+      });
+    },
+    async syncDocumentLock({ claim = false } = {}) {
+      const postId = parseInt(window.fbData?.postId, 10);
+      if (!window.fbData || !(postId > 0)) {
+        const next = getDefaultDocumentLock();
+        set({ documentLock: next });
+        return next;
+      }
+
+      try {
+        const data = claim
+          ? await postWordPressAction('document-lock/acquire', 'framebuilder_acquire_document_lock', {
+              post_id: postId,
+            })
+          : await requestWordPressEndpoint(`document-lock/${postId}`, 'framebuilder_get_document_lock', {
+              body: { post_id: postId },
+            });
+        const next = normalizeDocumentLockPayload(data);
+        set({ documentLock: next });
+        return next;
+      } catch (error) {
+        console.warn('[FrameBuilder] document lock sync failed', error);
+        const next = {
+          ...get().documentLock,
+          error: error?.message || 'Unable to check document lock.',
+          lastUpdatedAt: Date.now(),
+        };
+        set({ documentLock: next });
+        return next;
+      }
+    },
+    async acquireDocumentLock() {
+      return get().syncDocumentLock({ claim: true });
+    },
+    async refreshDocumentLock() {
+      return get().syncDocumentLock({ claim: get().documentLock.isOwner });
+    },
+    async releaseDocumentLock(options = {}) {
+      const postId = parseInt(window.fbData?.postId, 10);
+      const { useBeacon = false } = options;
+      if (!window.fbData || !(postId > 0)) {
+        set({ documentLock: getDefaultDocumentLock() });
+        return getDefaultDocumentLock();
+      }
+
+      if (useBeacon) {
+        releaseDocumentLockWithBeacon(postId);
+        set({ documentLock: getDefaultDocumentLock() });
+        return getDefaultDocumentLock();
+      }
+
+      try {
+        const data = await postWordPressAction('document-lock/release', 'framebuilder_release_document_lock', {
+          post_id: postId,
+        });
+        const next = normalizeDocumentLockPayload(data);
+        set({ documentLock: next });
+        return next;
+      } catch (error) {
+        console.warn('[FrameBuilder] document lock release failed', error);
+        const next = {
+          ...get().documentLock,
+          error: error?.message || 'Unable to release document lock.',
+          lastUpdatedAt: Date.now(),
+        };
+        set({ documentLock: next });
+        return next;
+      }
+    },
     animationEditor: null,
     openAnimationEditor: (payload) => set({
       animationEditor: payload && payload.elementId && payload.animationId
@@ -4185,6 +4316,7 @@ export const useEditorStore = create((set, get) => {
 
     undo() {
       const current = get();
+      if (current.documentLock.isLockedByOther) return;
       if (current.activeSurface === 'component' && current.componentEditor?.isOpen) {
         const { componentHistory, componentHistoryIndex } = current;
         if (componentHistoryIndex <= 0) return;
@@ -4202,6 +4334,7 @@ export const useEditorStore = create((set, get) => {
 
     redo() {
       const current = get();
+      if (current.documentLock.isLockedByOther) return;
       if (current.activeSurface === 'component' && current.componentEditor?.isOpen) {
         const { componentHistory, componentHistoryIndex } = current;
         if (componentHistoryIndex >= componentHistory.length - 1) return;
@@ -4221,6 +4354,11 @@ export const useEditorStore = create((set, get) => {
 
     async saveLayout() {
       const state = get();
+      if (state.documentLock.isLockedByOther) {
+        get().setSaveStatus('error');
+        setTimeout(() => get().setSaveStatus(null), 2500);
+        return { success: false, locked: true };
+      }
       get().setSaveStatus('saving');
       // wp_localize_script converts everything to strings, so postId is "0" not 0
       const postId = parseInt(window.fbData?.postId, 10);
@@ -4297,6 +4435,11 @@ export const useEditorStore = create((set, get) => {
 
     async publishLayout() {
       const state = get();
+      if (state.documentLock.isLockedByOther) {
+        get().setSaveStatus('error');
+        setTimeout(() => get().setSaveStatus(null), 3000);
+        return { success: false, locked: true };
+      }
       get().setSaveStatus('saving');
       const postId = parseInt(window.fbData?.postId, 10);
       try {

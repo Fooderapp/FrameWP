@@ -16,6 +16,10 @@ export default function App() {
   const loadComponents = useEditorStore(s => s.loadComponents);
   const loadGlobalVariables = useEditorStore(s => s.loadGlobalVariables);
   const loadVariableSources = useEditorStore(s => s.loadVariableSources);
+  const acquireDocumentLock = useEditorStore(s => s.acquireDocumentLock);
+  const refreshDocumentLock = useEditorStore(s => s.refreshDocumentLock);
+  const releaseDocumentLock = useEditorStore(s => s.releaseDocumentLock);
+  const documentLock = useEditorStore(s => s.documentLock);
   const pushHistory = useEditorStore(s => s.pushHistory);
   const saveLayout = useEditorStore(s => s.saveLayout);
   const componentEditorOpen = useEditorStore(s => s.componentEditor.isOpen);
@@ -46,6 +50,7 @@ export default function App() {
         loadGlobalVariables(),
         loadVariableSources(),
       ]);
+      await acquireDocumentLock();
       pushHistory();
       autoSaveReadyRef.current = true;
     })();
@@ -55,6 +60,29 @@ export default function App() {
   useEffect(() => () => {
     if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    const postId = parseInt(window.fbData?.postId, 10);
+    if (!window.fbData || !(postId > 0)) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      refreshDocumentLock();
+    }, 45000);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshDocumentLock]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      if (!useEditorStore.getState().documentLock.isOwner) return;
+      useEditorStore.getState().releaseDocumentLock({ useBeacon: true });
+    };
+
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [releaseDocumentLock]);
 
   useEffect(() => {
     const warmPacks = () => {
@@ -74,6 +102,10 @@ export default function App() {
 
   useEffect(() => {
     if (!autoSaveReadyRef.current) return;
+    if (documentLock.isLockedByOther) {
+      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
+      return undefined;
+    }
     if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = window.setTimeout(() => {
       saveLayout();
@@ -81,7 +113,7 @@ export default function App() {
     return () => {
       if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
     };
-  }, [saveLayout, pages, currentPageId, breakpointDefs, activeSurface, componentEditor, components]);
+  }, [saveLayout, documentLock.isLockedByOther, pages, currentPageId, breakpointDefs, activeSurface, componentEditor, components]);
 
   useEffect(() => {
     const handlePointerMove = (event) => {
@@ -133,11 +165,16 @@ export default function App() {
   };
 
   const showCommentsPanel = activeSurface === 'page' && (activeCanvasTool === 'comment' || !!activeCommentId);
+  const lockHolderName = documentLock.holder?.displayName?.trim() || 'Another editor';
+  const isReadOnly = documentLock.isLockedByOther;
+  const handleRetryDocumentLock = () => {
+    refreshDocumentLock();
+  };
 
   return (
     <div className="fb-app">
       <TopBar />
-      <div className="fb-editor">
+      <div className={`fb-editor${isReadOnly ? ' fb-editor--locked' : ''}`}>
         <div className="fb-side-shell fb-side-shell--left" style={{ width: leftWidth }}>
           <LeftPanel />
           <button type="button" className="fb-panel-resize-handle fb-panel-resize-handle--left" aria-label="Resize left panel" onPointerDown={startResize('left')} />
@@ -147,8 +184,22 @@ export default function App() {
           <button type="button" className="fb-panel-resize-handle fb-panel-resize-handle--right" aria-label="Resize right panel" onPointerDown={startResize('right')} />
           {showCommentsPanel ? <CommentsPanel /> : <PropertiesPanel />}
         </div>
+        {isReadOnly ? (
+          <div className="fb-editor-lock-overlay" role="status" aria-live="polite">
+            <div className="fb-editor-lock-overlay__card">
+              <span className="fb-editor-lock-overlay__eyebrow">Read only</span>
+              <h2>{lockHolderName} is editing this page</h2>
+              <p>
+                Editing is temporarily locked to avoid conflicting changes. This screen will unlock automatically when the lock is released.
+              </p>
+              <button type="button" className="fb-secondary-btn" onClick={handleRetryDocumentLock}>
+                Check again
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
-      <BottomToolbar />
+      {isReadOnly ? null : <BottomToolbar />}
       {variablesModalOpen ? <VariablesModal /> : null}
       {iconLibraryModal ? (
         <IconLibraryModal

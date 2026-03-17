@@ -1857,7 +1857,7 @@ export default function InfiniteCanvas() {
     const elementIndex = new Map((componentEditor.page?.elements ?? []).map((element) => [element.id, element]));
     for (const node of document.elementsFromPoint(clientX, clientY)) {
       if (!container.contains(node)) continue;
-      if (node.closest('.fb-context-menu, .fb-right, .fb-left, .fb-topbar, .fb-overlay-modal')) return null;
+      if (node.closest('.fb-context-menu, .fb-right, .fb-left, .fb-topbar, .fb-overlay-modal, .fb-shadow-popup, .fb-fill-popover')) return null;
       const target = node.closest?.('[data-id]');
       if (!target || !container.contains(target)) continue;
 
@@ -2244,7 +2244,7 @@ export default function InfiniteCanvas() {
     if (!topNode || !container.contains(topNode)) return null;
     for (const node of document.elementsFromPoint(clientX, clientY)) {
       if (!container.contains(node)) continue;
-      if (node.closest('.fb-context-menu, .fb-right, .fb-left, .fb-topbar, .fb-overlay-modal')) return null;
+      if (node.closest('.fb-context-menu, .fb-right, .fb-left, .fb-topbar, .fb-overlay-modal, .fb-shadow-popup, .fb-fill-popover')) return null;
       const target = node.closest?.('[data-id]');
       if (!target || !container.contains(target)) continue;
       return target.dataset.id ?? null;
@@ -3561,7 +3561,7 @@ export default function InfiniteCanvas() {
       const tool = state.activeCanvasTool;
       if (e.button !== 0 || spaceDown.current) return;
       if (!containerRef.current?.contains(e.target)) return;
-      if (e.target.closest('.fb-artboard-header, .fb-right, .fb-left, .fb-topbar, .fb-bottom-toolbar-wrap')) return;
+      if (e.target.closest('.fb-artboard-header, .fb-right, .fb-left, .fb-topbar, .fb-bottom-toolbar-wrap, .fb-shadow-popup, .fb-fill-popover')) return;
       if (e.target.closest('.fb-comment-card')) return;
       if (tool === 'pan') {
         e.preventDefault();

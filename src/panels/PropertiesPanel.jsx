@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
@@ -794,6 +795,177 @@ function rgbaToHex(color) {
   return '#' + [m[1], m[2], m[3]].map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
 }
 
+function hexToRgb(color) {
+  const normalized = `${color ?? ''}`.trim().replace('#', '');
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return { r: 0, g: 0, b: 0 };
+  return {
+    r: parseInt(normalized.slice(0, 2), 16),
+    g: parseInt(normalized.slice(2, 4), 16),
+    b: parseInt(normalized.slice(4, 6), 16),
+  };
+}
+
+function clampShadowValue(value, fallback, min = -Infinity, max = Infinity) {
+  const numericValue = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(numericValue)) return fallback;
+  return Math.min(max, Math.max(min, numericValue));
+}
+
+function roundShadowValue(value, digits = 2) {
+  const factor = 10 ** digits;
+  return Math.round((Number(value) || 0) * factor) / factor;
+}
+
+function splitShadowLayers(value) {
+  const layers = [];
+  let depth = 0;
+  let current = '';
+  for (const char of `${value ?? ''}`) {
+    if (char === '(') depth += 1;
+    if (char === ')') depth = Math.max(0, depth - 1);
+    if (char === ',' && depth === 0) {
+      if (current.trim()) layers.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) layers.push(current.trim());
+  return layers;
+}
+
+function getShadowColorOpacity(color) {
+  if (!color) return 1;
+  if (color.startsWith('rgba(')) {
+    const match = color.match(/rgba\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\s*\)/i);
+    return match ? clampShadowValue(match[1], 1, 0, 1) : 1;
+  }
+  if (color.startsWith('#') && color.length === 9) {
+    return clampShadowValue(parseInt(color.slice(7, 9), 16) / 255, 1, 0, 1);
+  }
+  return 1;
+}
+
+function parseSingleShadow(shadowValue) {
+  const raw = `${shadowValue ?? ''}`.trim();
+  if (!raw) {
+    return {
+      position: 'outside',
+      color: '#000000',
+      opacity: 0.25,
+      x: 0,
+      y: 4,
+      blur: 16,
+      spread: 0,
+    };
+  }
+
+  const position = /\binset\b/i.test(raw) ? 'inside' : 'outside';
+  const colorMatch = raw.match(/(rgba?\([^\)]+\)|#[0-9a-fA-F]{6,8}|[a-zA-Z]+)$/);
+  const colorToken = colorMatch ? colorMatch[1] : 'rgba(0,0,0,0.25)';
+  const numericSource = raw
+    .replace(/\binset\b/i, '')
+    .replace(colorToken, '')
+    .trim();
+  const numbers = numericSource.split(/\s+/).map((part) => clampShadowValue(part.replace('px', ''), 0));
+
+  return {
+    position,
+    color: rgbaToHex(colorToken),
+    opacity: getShadowColorOpacity(colorToken),
+    x: numbers[0] ?? 0,
+    y: numbers[1] ?? 4,
+    blur: Math.max(0, numbers[2] ?? 16),
+    spread: numbers[3] ?? 0,
+  };
+}
+
+function buildShadowColor(color, opacity) {
+  const rgb = hexToRgb(rgbaToHex(color ?? '#000000'));
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${roundShadowValue(clampShadowValue(opacity, 1, 0, 1), 3)})`;
+}
+
+function getShadowDraftFromStyles(styles) {
+  const boxShadow = typeof styles?.boxShadow === 'string' ? styles.boxShadow.trim() : '';
+  const parsed = parseSingleShadow(splitShadowLayers(boxShadow)[0] || '');
+  const type = styles?.shadowType === 'realistic' ? 'realistic' : 'drop';
+
+  return {
+    enabled: !!boxShadow,
+    type,
+    position: styles?.shadowPosition === 'inside' ? 'inside' : parsed.position,
+    color: typeof styles?.shadowColor === 'string' && styles.shadowColor ? rgbaToHex(styles.shadowColor) : parsed.color,
+    opacity: clampShadowValue(styles?.shadowOpacity, parsed.opacity, 0, 1),
+    x: clampShadowValue(styles?.shadowX, parsed.x, -9999, 9999),
+    y: clampShadowValue(styles?.shadowY, parsed.y, -9999, 9999),
+    blur: clampShadowValue(styles?.shadowBlur, parsed.blur, 0, 9999),
+    spread: clampShadowValue(styles?.shadowSpread, parsed.spread, -9999, 9999),
+    diffusion: clampShadowValue(styles?.shadowDiffusion, 0.25, 0, 1),
+    focus: clampShadowValue(styles?.shadowFocus, 0.5, 0, 1),
+  };
+}
+
+function buildShadowCss(draft) {
+  if (!draft?.enabled) return '';
+
+  const inset = draft.position === 'inside' ? 'inset ' : '';
+  const x = roundShadowValue(draft.x, 2);
+  const y = roundShadowValue(draft.y, 2);
+
+  if (draft.type === 'realistic') {
+    const diffusion = clampShadowValue(draft.diffusion, 0.25, 0, 1);
+    const focus = clampShadowValue(draft.focus, 0.5, 0, 1);
+    const ambientBlur = Math.round(10 + diffusion * 54);
+    const ambientSpread = Math.round(-6 + focus * 14);
+    const coreBlur = Math.round(Math.max(0, ambientBlur * (0.16 + (1 - focus) * 0.22)));
+    const coreSpread = Math.round(-3 + focus * 10);
+    const ambientColor = buildShadowColor(draft.color, draft.opacity * (0.32 + diffusion * 0.28));
+    const coreColor = buildShadowColor(draft.color, draft.opacity * (0.22 + focus * 0.58));
+
+    return `${inset}${x}px ${y}px ${coreBlur}px ${coreSpread}px ${coreColor}, ${inset}${x}px ${y}px ${ambientBlur}px ${ambientSpread}px ${ambientColor}`;
+  }
+
+  return `${inset}${x}px ${y}px ${Math.max(0, roundShadowValue(draft.blur, 2))}px ${roundShadowValue(draft.spread, 2)}px ${buildShadowColor(draft.color, draft.opacity)}`;
+}
+
+function buildShadowStylePayload(draft) {
+  if (!draft?.enabled) {
+    return {
+      boxShadow: '',
+      shadowType: null,
+      shadowPosition: null,
+      shadowColor: null,
+      shadowOpacity: null,
+      shadowX: null,
+      shadowY: null,
+      shadowBlur: null,
+      shadowSpread: null,
+      shadowDiffusion: null,
+      shadowFocus: null,
+    };
+  }
+
+  return {
+    boxShadow: buildShadowCss(draft),
+    shadowType: draft.type,
+    shadowPosition: draft.position,
+    shadowColor: rgbaToHex(draft.color),
+    shadowOpacity: clampShadowValue(draft.opacity, 0.25, 0, 1),
+    shadowX: clampShadowValue(draft.x, 0, -9999, 9999),
+    shadowY: clampShadowValue(draft.y, 0, -9999, 9999),
+    shadowBlur: clampShadowValue(draft.blur, 16, 0, 9999),
+    shadowSpread: clampShadowValue(draft.spread, 0, -9999, 9999),
+    shadowDiffusion: clampShadowValue(draft.diffusion, 0.25, 0, 1),
+    shadowFocus: clampShadowValue(draft.focus, 0.5, 0, 1),
+  };
+}
+
+function getShadowSummary(styles) {
+  const draft = getShadowDraftFromStyles(styles);
+  if (!draft.enabled) return 'No shadow';
+  return `${draft.type === 'realistic' ? 'Realistic' : 'Drop'} · ${draft.position === 'inside' ? 'Inside' : 'Outside'}`;
+}
+
 function getTransitionTypeLabel(type) {
   if (type === 'realistic') return 'Realistic';
   if (type === 'ease') return 'Ease';
@@ -863,7 +1035,10 @@ export default function PropertiesPanel() {
   const [transitionModalState, setTransitionModalState] = useState(null);
   const [elementAnimationModalState, setElementAnimationModalState] = useState(null);
   const [animationAddMenuOpen, setAnimationAddMenuOpen] = useState(false);
+  const [shadowModalOpen, setShadowModalOpen] = useState(false);
   const fontPreviewSnapshotRef = useRef(null);
+  const shadowTriggerRef = useRef(null);
+  const shadowDraftDirtyRef = useRef(false);
   const selection           = useEditorStore(s => s.selection);
   const activeSurface       = useEditorStore(s => s.activeSurface);
   const componentEditor     = useEditorStore(s => s.componentEditor);
@@ -2451,20 +2626,11 @@ export default function PropertiesPanel() {
           <Section title="Layout" defaultOpen={false} />
         )}
 
-        {!isComponentInstanceOnPage && (
-        <Section title="Effects" defaultOpen={false} action={<ResetBtn show={isSOv('boxShadow')} onReset={() => resetSOv('boxShadow')} />}>
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Shadow</span>
-            <ShadowEditor value={s.boxShadow ?? ''} onChange={v => { updS('boxShadow', v); commit(); }} />
-          </div>
-        </Section>
-        )}
-
         <Section title="Overlays" defaultOpen={false} />
 
         <Section title="Cursor" defaultOpen={false} />
 
-        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
+        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Opacity</span>
             <div className="fb-slider-field">
@@ -2490,6 +2656,24 @@ export default function PropertiesPanel() {
               />
             </div>
           </div>
+
+          {!isComponentInstanceOnPage ? (
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Shadow</span>
+              <button
+                type="button"
+                className={`fb-shadow-style-cta${s.boxShadow ? ' is-active' : ''}`}
+                ref={shadowTriggerRef}
+                onClick={() => {
+                  shadowDraftDirtyRef.current = false;
+                  setShadowModalOpen(true);
+                }}
+              >
+                <span className={`fb-shadow-style-cta__indicator${s.boxShadow ? ' is-active' : ''}`} />
+                <span>{getShadowSummary(s)}</span>
+              </button>
+            </div>
+          ) : null}
 
           {!isComponentInstanceOnPage && (
           <div className="fb-prop-row">
@@ -2946,41 +3130,299 @@ export default function PropertiesPanel() {
         }}
       />
     ) : null}
+    {shadowModalOpen ? (
+      <ShadowSetupModal
+        anchorRef={shadowTriggerRef}
+        initialValue={getShadowDraftFromStyles(s)}
+        onClose={() => {
+          setShadowModalOpen(false);
+          if (shadowDraftDirtyRef.current) {
+            shadowDraftDirtyRef.current = false;
+            commit();
+          }
+        }}
+        onChange={(draft) => {
+          shadowDraftDirtyRef.current = true;
+          updateStyles(element.id, bpId, buildShadowStylePayload(draft));
+        }}
+        onRemove={() => {
+          shadowDraftDirtyRef.current = false;
+          updateStyles(element.id, bpId, buildShadowStylePayload({ ...getShadowDraftFromStyles(s), enabled: false }));
+          setShadowModalOpen(false);
+          commit();
+        }}
+      />
+    ) : null}
     </>
   );
 }
 
-// ── Shadow editor (simple text + quick-add) ───────────────────
-
-function ShadowEditor({ value, onChange }) {
-  const [enabled, setEnabled] = useState(!!value);
-
-  const toggle = (on) => {
-    setEnabled(on);
-    if (!on) onChange('');
-    else onChange(value || '0px 4px 16px rgba(0,0,0,0.2)');
-  };
-
+function ShadowStepper({ value, min = -9999, max = 9999, step = 1, onChange }) {
+  const nextValue = clampShadowValue(value, 0, min, max);
   return (
-    <div className="fb-shadow-field">
-      {!enabled && (
-        <button type="button" className="fb-add-field" onClick={() => toggle(true)}>
-          Add...
-        </button>
-      )}
-      {enabled && (
-        <div className="fb-shadow-field__active">
-          <input
-            className="fb-prop-input"
-            type="text"
-            value={value}
-            onChange={e => onChange(e.target.value)}
-            placeholder="0px 4px 16px rgba(0,0,0,0.2)"
-            style={{ width: '100%' }}
-          />
-          <IconButton icon={UIIcons.close} title="Remove shadow" onClick={() => toggle(false)} />
-        </div>
-      )}
+    <div className="fb-shadow-modal__stepper">
+      <input
+        className="fb-prop-input fb-shadow-modal__stepper-value"
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={roundShadowValue(nextValue, 2)}
+        onChange={(event) => onChange(clampShadowValue(event.target.value, nextValue, min, max))}
+      />
+      <div className="fb-icon-group fb-shadow-modal__stepper-actions">
+        <IconButton icon={UIIcons.minus} title="Decrease value" onClick={() => onChange(clampShadowValue(nextValue - step, nextValue, min, max))} />
+        <IconButton icon={UIIcons.plus} title="Increase value" onClick={() => onChange(clampShadowValue(nextValue + step, nextValue, min, max))} />
+      </div>
     </div>
   );
+}
+
+function ShadowColorField({ color, opacity, onColorChange, onOpacityChange }) {
+  const [draft, setDraft] = useState(rgbaToHex(color ?? '#000000').replace('#', '').toUpperCase());
+
+  useEffect(() => {
+    setDraft(rgbaToHex(color ?? '#000000').replace('#', '').toUpperCase());
+  }, [color]);
+
+  return (
+    <div className="fb-shadow-modal__color-wrap">
+      <div className="fb-shadow-modal__color-main">
+        <FillPicker
+          value={buildShadowColor(color, opacity)}
+          onChange={(nextValue) => {
+            onColorChange(rgbaToHex(nextValue));
+            onOpacityChange(getShadowColorOpacity(nextValue));
+          }}
+          solidOnly
+          compact
+          title="Edit shadow color"
+          popoverPlacement="bottom-start"
+        />
+        <input
+          className="fb-prop-input fb-shadow-modal__hex"
+          type="text"
+          value={draft}
+          spellCheck={false}
+          onChange={(event) => setDraft(event.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6).toUpperCase())}
+          onBlur={() => {
+            const normalized = draft.length === 6 ? `#${draft}` : rgbaToHex(color ?? '#000000');
+            setDraft(normalized.replace('#', '').toUpperCase());
+            onColorChange(normalized);
+          }}
+        />
+      </div>
+      <input
+        className="fb-prop-input fb-shadow-modal__opacity"
+        type="number"
+        min={0}
+        max={100}
+        step={1}
+        value={Math.round(clampShadowValue(opacity, 1, 0, 1) * 100)}
+        onChange={(event) => onOpacityChange(clampShadowValue((parseFloat(event.target.value) || 0) / 100, opacity, 0, 1))}
+      />
+    </div>
+  );
+}
+
+function ShadowSetupModal({ anchorRef, initialValue, onClose, onChange, onRemove }) {
+  const [draft, setDraft] = useState(initialValue);
+  const popupRef = useRef(null);
+  const [position, setPosition] = useState({ top: 32, left: 32, ready: false });
+
+  useEffect(() => {
+    setDraft(initialValue);
+  }, [initialValue]);
+
+  useLayoutEffect(() => {
+    if (!anchorRef?.current) return undefined;
+
+    const updatePosition = () => {
+      const anchorRect = anchorRef.current?.getBoundingClientRect();
+      const panelRect = anchorRef.current?.closest('.fb-right')?.getBoundingClientRect();
+      const popupWidth = Math.min(420, window.innerWidth - 24);
+      const popupHeight = Math.min(640, window.innerHeight - 24);
+      const panelLeft = panelRect?.left ?? anchorRect?.left ?? 0;
+      const anchorTop = anchorRect?.top ?? panelRect?.top ?? 24;
+      let left = panelLeft - popupWidth - 14;
+      if (left < 12) {
+        const panelRight = panelRect?.right ?? anchorRect?.right ?? 12;
+        left = Math.min(window.innerWidth - popupWidth - 12, panelRight + 14);
+      }
+      const top = Math.max(12, Math.min(window.innerHeight - popupHeight - 12, anchorTop - 18));
+      setPosition({ top, left: Math.max(12, left), ready: true });
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [anchorRef]);
+
+  useEffect(() => {
+    const handlePointerDown = (event) => {
+      const target = event.target;
+      if (popupRef.current?.contains(target)) return;
+      if (anchorRef?.current?.contains(target)) return;
+      if (target instanceof Element && target.closest('.fb-fill-popover')) return;
+      onClose();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [anchorRef, onClose]);
+
+  const updateDraft = (patch) => {
+    setDraft((current) => {
+      const next = { ...current, ...patch };
+      onChange(next);
+      return next;
+    });
+  };
+
+  const popup = (
+    <div
+      ref={popupRef}
+      className="fb-shadow-popup"
+      data-inline-editor-ui="true"
+      style={{ top: position.top, left: position.left, visibility: position.ready ? 'visible' : 'hidden' }}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <div className="fb-overlay-modal__card fb-shadow-modal">
+        <div className="fb-shadow-modal__head">
+          <div>
+            <div className="fb-overlay-modal__head">Shadow</div>
+            <div className="fb-shadow-modal__subtitle">Choose a shadow model and tune it here.</div>
+          </div>
+          <IconButton icon={UIIcons.close} title="Close shadow modal" onClick={onClose} />
+        </div>
+
+        <div className="fb-overlay-modal__body fb-shadow-modal__body">
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Type</span>
+            <ChoiceGroup
+              value={draft.type}
+              onChange={(value) => updateDraft({ type: value })}
+              options={[
+                { value: 'drop', label: 'Drop' },
+                { value: 'realistic', label: 'Realistic' },
+              ]}
+            />
+          </div>
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Position</span>
+            <ChoiceGroup
+              value={draft.position}
+              onChange={(value) => updateDraft({ position: value })}
+              options={[
+                { value: 'outside', label: 'Outside' },
+                { value: 'inside', label: 'Inside' },
+              ]}
+            />
+          </div>
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Color</span>
+            <ShadowColorField
+              color={draft.color}
+              opacity={draft.opacity}
+              onColorChange={(value) => updateDraft({ color: value })}
+              onOpacityChange={(value) => updateDraft({ opacity: value })}
+            />
+          </div>
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">X</span>
+            <ShadowStepper value={draft.x} step={1} onChange={(value) => updateDraft({ x: value })} />
+          </div>
+
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Y</span>
+            <ShadowStepper value={draft.y} step={1} onChange={(value) => updateDraft({ y: value })} />
+          </div>
+
+          {draft.type === 'realistic' ? (
+            <>
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Diffusion</span>
+                <div className="fb-slider-field">
+                  <input
+                    className="fb-prop-input fb-slider-field__value"
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={roundShadowValue(draft.diffusion, 2)}
+                    onChange={(event) => updateDraft({ diffusion: clampShadowValue(event.target.value, draft.diffusion, 0, 1) })}
+                  />
+                  <input
+                    className="fb-slider"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={draft.diffusion}
+                    onChange={(event) => updateDraft({ diffusion: clampShadowValue(event.target.value, draft.diffusion, 0, 1) })}
+                  />
+                </div>
+              </div>
+
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Focus</span>
+                <div className="fb-slider-field">
+                  <input
+                    className="fb-prop-input fb-slider-field__value"
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={roundShadowValue(draft.focus, 2)}
+                    onChange={(event) => updateDraft({ focus: clampShadowValue(event.target.value, draft.focus, 0, 1) })}
+                  />
+                  <input
+                    className="fb-slider"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={draft.focus}
+                    onChange={(event) => updateDraft({ focus: clampShadowValue(event.target.value, draft.focus, 0, 1) })}
+                  />
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Blur</span>
+                <ShadowStepper value={draft.blur} min={0} step={1} onChange={(value) => updateDraft({ blur: value })} />
+              </div>
+
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Spread</span>
+                <ShadowStepper value={draft.spread} step={1} onChange={(value) => updateDraft({ spread: value })} />
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="fb-overlay-modal__actions">
+          <button type="button" className="fb-secondary-btn" onClick={onRemove}>Remove</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(popup, document.body);
 }
