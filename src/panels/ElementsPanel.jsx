@@ -24,6 +24,16 @@ const ELEMENT_TYPES = [
     label: 'Image',
   },
   {
+    type: 'video',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="1.5" y="2" width="13" height="12" rx="1.5"/>
+        <path d="M6 5.5v5l4-2.5-4-2.5z" fill="currentColor" stroke="none"/>
+      </svg>
+    ),
+    label: 'Video',
+  },
+  {
     type: 'text',
     icon: (
       <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

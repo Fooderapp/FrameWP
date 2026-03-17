@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useState } from 'react';
-import { useEditorStore, createFrame, createImage, createText, createIcon, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage, createVideo, createText, createIcon, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected } from '../store/editorStore';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
 import { buildGradient, parseGradient } from '../components/FillPicker';
@@ -2381,6 +2381,8 @@ export default function InfiniteCanvas() {
       }
       const newEl = drawType === 'image'
         ? createImage(localX, localY)
+        : drawType === 'video'
+          ? createVideo(localX, localY)
         : drawType === 'text'
           ? createText(localX, localY)
           : drawType === 'icon'
@@ -3025,6 +3027,10 @@ export default function InfiniteCanvas() {
       const el = createImage(elX, elY);
       addElement(el, null, targetBpId);
       pushHistory();
+    } else if (type === 'video') {
+      const el = createVideo(elX, elY);
+      addElement(el, null, targetBpId);
+      pushHistory();
     } else if (type === 'text') {
       const el = createText(elX, elY);
       addElement(el, null, targetBpId);
@@ -3060,6 +3066,10 @@ export default function InfiniteCanvas() {
       pushHistory();
     } else if (type === 'image') {
       const el = createImage(localX, localY);
+      addElement(el, targetElementId, targetBpId);
+      pushHistory();
+    } else if (type === 'video') {
+      const el = createVideo(localX, localY);
       addElement(el, targetElementId, targetBpId);
       pushHistory();
     } else if (type === 'text') {

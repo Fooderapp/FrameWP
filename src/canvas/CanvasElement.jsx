@@ -4,6 +4,7 @@ import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleF
 import InlineTextToolbar from '../components/InlineTextToolbar';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
 import { getResolvedRichTextHtml, plainTextToRichTextHtml, richTextHtmlToPlainText, sanitizeRichTextHtml } from '../components/richText';
+import { getResolvedVideoSource, getVideoEmbedLayout } from '../components/videoUtils';
 
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
@@ -1085,6 +1086,17 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     '--fb-text-stroke-color': strokeColor,
   } : null;
   const iconMarkup = el.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
+  const videoSource = el.type === 'video'
+    ? getResolvedVideoSource(resolved?.videoProvider, resolved?.src, {
+        controls: resolved?.videoControls !== false,
+        loop: resolved?.videoLoop === true,
+        muted: resolved?.videoMuted === true,
+        autoplay: resolved?.videoAutoplay === true,
+      })
+    : null;
+  const videoEmbedLayout = el.type === 'video'
+    ? getVideoEmbedLayout(resolved?.width ?? width, resolved?.height ?? height, styles?.objectFit ?? 'cover')
+    : null;
 
   useLayoutEffect(() => {
     if (!isEditingText || el?.type !== 'text') {
@@ -1191,6 +1203,60 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               </svg>
               <span>Image</span>
             </div>;
+      })()}
+      {el.type === 'video' && (() => {
+        const objectFit = styles?.objectFit ?? 'cover';
+        if (!videoSource?.isValid) {
+          return (
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'rgba(120,120,140,0.7)', fontSize: 11, pointerEvents: 'none',
+              border: '1.5px dashed rgba(120,120,160,0.35)', borderRadius: 'inherit',
+              gap: 6, flexDirection: 'column', background: 'rgba(0,0,0,0.03)',
+            }}>
+              <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <rect x="1" y="2" width="14" height="12" rx="1.5"/>
+                <path d="M6 5.5v5l4-2.5-4-2.5z" fill="currentColor" stroke="none"/>
+              </svg>
+              <span>Video</span>
+            </div>
+          );
+        }
+        if (videoSource.provider === 'upload') {
+          return (
+            <video
+              src={videoSource.src}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit,
+                borderRadius: 'inherit',
+                pointerEvents: 'none',
+                userSelect: 'none',
+              }}
+              controls={resolved?.videoControls !== false}
+              loop={resolved?.videoLoop === true}
+              muted={resolved?.videoMuted === true}
+              autoPlay={resolved?.videoAutoplay === true}
+              playsInline
+              preload="metadata"
+            />
+          );
+        }
+        return (
+          <div style={{ ...videoEmbedLayout.wrapperStyle, pointerEvents: 'none' }}>
+            <iframe
+              src={videoSource.embedUrl}
+              title={el.name || 'Video'}
+              style={{ ...videoEmbedLayout.frameStyle, pointerEvents: 'none' }}
+              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+              referrerPolicy="strict-origin-when-cross-origin"
+            />
+          </div>
+        );
       })()}
       {hasGradientFrameStroke && styles?.borderWidth > 0 ? (
         <div

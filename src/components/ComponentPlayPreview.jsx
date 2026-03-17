@@ -4,6 +4,7 @@ import { resolveElement } from '../store/editorStore';
 import { familyToFontStack } from './googleFonts';
 import { sanitizeSvgMarkup } from './iconLibrary';
 import { getResolvedRichTextHtml } from './richText';
+import { getResolvedVideoSource, getVideoEmbedLayout } from './videoUtils';
 
 gsap.registerPlugin(Flip);
 
@@ -503,6 +504,17 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const strokeWidth = Math.max(0, parseFloat(styles?.strokeWidth) || 0);
   const strokeColor = getGradientFallbackColor(styles?.strokeColor, element.type === 'icon' ? (styles?.color ?? '#111827') : '#000000');
   const iconMarkup = element.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
+  const videoSource = element.type === 'video'
+    ? getResolvedVideoSource(resolved?.videoProvider, resolved?.src, {
+        controls: resolved?.videoControls !== false,
+        loop: resolved?.videoLoop === true,
+        muted: resolved?.videoMuted === true,
+        autoplay: resolved?.videoAutoplay === true,
+      })
+    : null;
+  const videoEmbedLayout = element.type === 'video'
+    ? getVideoEmbedLayout(width, height, styles?.objectFit ?? 'cover')
+    : null;
   const backgroundColor = styles?.backgroundColor && !String(styles.backgroundColor).includes('gradient(')
     ? styles.backgroundColor
     : undefined;
@@ -595,6 +607,30 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: styles?.objectFit ?? 'cover', borderRadius: 'inherit' }}
           draggable={false}
         />
+      ) : null}
+      {element.type === 'video' && videoSource?.isValid ? (
+        videoSource.provider === 'upload' ? (
+          <video
+            src={videoSource.src}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: styles?.objectFit ?? 'cover', borderRadius: 'inherit' }}
+            controls={resolved?.videoControls !== false}
+            loop={resolved?.videoLoop === true}
+            muted={resolved?.videoMuted === true}
+            autoPlay={resolved?.videoAutoplay === true}
+            playsInline
+            preload="metadata"
+          />
+        ) : (
+          <div style={videoEmbedLayout.wrapperStyle}>
+            <iframe
+              src={videoSource.embedUrl}
+              title={element.name || 'Video'}
+              style={videoEmbedLayout.frameStyle}
+              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+              referrerPolicy="strict-origin-when-cross-origin"
+            />
+          </div>
+        )
       ) : null}
       {element.type === 'text' ? (
         <div className="fb-component-play-preview__text" data-flip-id={`${element.id}__content`} style={textStyle} dangerouslySetInnerHTML={{ __html: getResolvedRichTextHtml(resolved, 'Text') }} />

@@ -63,6 +63,8 @@ class FrameBuilder_Plugin {
 	 * On selection it posts the image URL back to the builder via postMessage.
 	 */
 	public static function render_media_picker() {
+		$media_type = isset( $_GET['type'] ) && 'video' === sanitize_key( $_GET['type'] ) ? 'video' : 'image';
+		$title = 'video' === $media_type ? __( 'Select Video', 'framebuilder' ) : __( 'Select Image', 'framebuilder' );
 		?>
 		<style>
 		  html, body { margin: 0; padding: 0; height: 100vh; overflow: hidden; background: #f0f0f1; }
@@ -84,9 +86,9 @@ class FrameBuilder_Plugin {
 		<script>
 		jQuery( function() {
 			var frame = wp.media( {
-				title:    <?php echo wp_json_encode( __( 'Select Image', 'framebuilder' ) ); ?>,
+				title:    <?php echo wp_json_encode( $title ); ?>,
 				multiple: false,
-				library:  { type: 'image' },
+				library:  { type: <?php echo wp_json_encode( $media_type ); ?> },
 				button:   { text: <?php echo wp_json_encode( __( 'Insert', 'framebuilder' ) ); ?> }
 			} );
 			frame.on( 'select', function() {

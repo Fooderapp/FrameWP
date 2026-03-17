@@ -542,6 +542,7 @@ function getElementIdPrefix(type) {
   if (type === 'text') return 'txt';
   if (type === 'image') return 'img';
   if (type === 'icon') return 'ico';
+  if (type === 'video') return 'vid';
   return 'fr';
 }
 
@@ -570,6 +571,20 @@ function normalizeTextFields(source = {}) {
   return {
     text,
     richTextHtml,
+  };
+}
+
+function normalizeVideoFields(source = {}) {
+  const videoProvider = ['youtube', 'vimeo', 'upload'].includes(source?.videoProvider)
+    ? source.videoProvider
+    : 'upload';
+  return {
+    src: getMediaUrl(source?.src ?? ''),
+    videoProvider,
+    videoControls: source?.videoControls !== false,
+    videoLoop: source?.videoLoop === true,
+    videoMuted: source?.videoMuted === true,
+    videoAutoplay: source?.videoAutoplay === true,
   };
 }
 
@@ -645,8 +660,42 @@ function normalizeIconElementFields(element) {
   };
 }
 
+function normalizeVideoElementFields(element) {
+  if (!element || element.type !== 'video') return element;
+
+  const normalizedBase = {
+    ...(element.base ?? {}),
+    ...normalizeVideoFields(element.base ?? {}),
+  };
+  const normalizedOverrides = { ...(element.overrides ?? {}) };
+
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const bpOverride = normalizedOverrides[bpId];
+    if (!bpOverride) return;
+    const hasVideoField = bpOverride.src != null
+      || bpOverride.videoProvider != null
+      || bpOverride.videoControls != null
+      || bpOverride.videoLoop != null
+      || bpOverride.videoMuted != null;
+    if (!hasVideoField) return;
+    normalizedOverrides[bpId] = {
+      ...bpOverride,
+      ...normalizeVideoFields({
+        ...normalizedBase,
+        ...bpOverride,
+      }),
+    };
+  });
+
+  return {
+    ...element,
+    base: normalizedBase,
+    overrides: normalizedOverrides,
+  };
+}
+
 function normalizeElementDynamicFields(element) {
-  const normalizedElement = normalizeIconElementFields(normalizeTextElementFields(element));
+  const normalizedElement = normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element)));
   return {
     ...normalizedElement,
     animations: normalizeElementAnimations(element?.animations),
@@ -1418,6 +1467,35 @@ export function createImage(x = 80, y = 80, name) {
       minW: null, maxW: null, minH: null, maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
       src: '',
+      styles: {
+        backgroundColor: 'transparent',
+        borderRadius: 0, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
+        opacity: 1, objectFit: 'cover', boxShadow: '', zIndex: 1,
+      },
+    },
+    animations: makeDefaultElementAnimations(),
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
+export function createVideo(x = 80, y = 80, name) {
+  return {
+    id: `vid-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'video',
+    name: name || 'Video',
+    parentId: null,
+    children: [],
+    base: {
+      x, y, width: 320, height: 180, rotation: 0, locked: false, hidden: false,
+      widthMode: 'fixed', heightMode: 'fixed',
+      minW: null, maxW: null, minH: null, maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      src: '',
+      videoProvider: 'upload',
+      videoControls: true,
+      videoLoop: false,
+      videoMuted: false,
+      videoAutoplay: false,
       styles: {
         backgroundColor: 'transparent',
         borderRadius: 0, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',

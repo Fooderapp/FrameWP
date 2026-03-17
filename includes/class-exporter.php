@@ -55,6 +55,113 @@ class FrameBuilder_Exporter {
 		return '';
 	}
 
+	private function normalize_video_provider( $value ): string {
+		return in_array( $value, [ 'youtube', 'vimeo', 'upload' ], true ) ? $value : 'upload';
+	}
+
+	private function extract_youtube_video_id( string $value ): string {
+		$value = trim( $value );
+		if ( preg_match( '/^[A-Za-z0-9_-]{11}$/', $value ) ) return $value;
+		if ( ! preg_match( '/^[a-z]+:/i', $value ) && preg_match( '/^(www\.|[\w-]+\.[a-z]{2,})/i', $value ) ) {
+			$value = 'https://' . $value;
+		}
+		$parts = wp_parse_url( $value );
+		if ( ! is_array( $parts ) ) return '';
+		$host = strtolower( preg_replace( '/^www\./i', '', (string) ( $parts['host'] ?? '' ) ) );
+		$path = trim( (string) ( $parts['path'] ?? '' ), '/' );
+		if ( 'youtu.be' === $host ) {
+			$id = explode( '/', $path )[0] ?? '';
+			return preg_match( '/^[A-Za-z0-9_-]{11}$/', $id ) ? $id : '';
+		}
+		if ( false === strpos( $host, 'youtube.com' ) && false === strpos( $host, 'youtube-nocookie.com' ) ) return '';
+		parse_str( (string) ( $parts['query'] ?? '' ), $query_args );
+		if ( '/watch' === ( '/' . $path ) ) {
+			$id = $query_args['v'] ?? '';
+			return preg_match( '/^[A-Za-z0-9_-]{11}$/', $id ) ? $id : '';
+		}
+		$segments = array_values( array_filter( explode( '/', $path ) ) );
+		foreach ( [ 'embed', 'shorts', 'live', 'v' ] as $marker ) {
+			$index = array_search( $marker, $segments, true );
+			if ( false !== $index && isset( $segments[ $index + 1 ] ) && preg_match( '/^[A-Za-z0-9_-]{11}$/', $segments[ $index + 1 ] ) ) {
+				return $segments[ $index + 1 ];
+			}
+		}
+		return '';
+	}
+
+	private function extract_vimeo_video_id( string $value ): string {
+		$value = trim( $value );
+		if ( preg_match( '/^\d+$/', $value ) ) return $value;
+		if ( ! preg_match( '/^[a-z]+:/i', $value ) && preg_match( '/^(www\.|[\w-]+\.[a-z]{2,})/i', $value ) ) {
+			$value = 'https://' . $value;
+		}
+		$parts = wp_parse_url( $value );
+		if ( ! is_array( $parts ) ) return '';
+		$host = strtolower( preg_replace( '/^www\./i', '', (string) ( $parts['host'] ?? '' ) ) );
+		if ( false === strpos( $host, 'vimeo.com' ) ) return '';
+		$segments = array_reverse( array_values( array_filter( explode( '/', trim( (string) ( $parts['path'] ?? '' ), '/' ) ) ) ) );
+		foreach ( $segments as $segment ) {
+			if ( preg_match( '/^\d+$/', $segment ) ) return $segment;
+		}
+		return '';
+	}
+
+	private function build_video_embed_url( string $provider, string $src, bool $controls, bool $loop, bool $muted, bool $autoplay ): string {
+		$provider = $this->normalize_video_provider( $provider );
+		if ( 'youtube' === $provider ) {
+			$video_id = $this->extract_youtube_video_id( $src );
+			if ( '' === $video_id ) return '';
+			$query = [
+				'controls' => $controls ? '1' : '0',
+				'rel' => '0',
+				'modestbranding' => '1',
+				'playsinline' => '1',
+			];
+			if ( $loop ) {
+				$query['loop'] = '1';
+				$query['playlist'] = $video_id;
+			}
+			if ( $muted ) $query['mute'] = '1';
+			if ( $autoplay ) $query['autoplay'] = '1';
+			return 'https://www.youtube.com/embed/' . rawurlencode( $video_id ) . '?' . http_build_query( $query, '', '&', PHP_QUERY_RFC3986 );
+		}
+		if ( 'vimeo' === $provider ) {
+			$video_id = $this->extract_vimeo_video_id( $src );
+			if ( '' === $video_id ) return '';
+			$query = [
+				'controls' => $controls ? '1' : '0',
+				'title' => '0',
+				'byline' => '0',
+				'portrait' => '0',
+				'dnt' => '1',
+			];
+			if ( $loop ) $query['loop'] = '1';
+			if ( $muted ) $query['muted'] = '1';
+			if ( $autoplay ) $query['autoplay'] = '1';
+			return 'https://player.vimeo.com/video/' . rawurlencode( $video_id ) . '?' . http_build_query( $query, '', '&', PHP_QUERY_RFC3986 );
+		}
+		return '';
+	}
+
+	private function build_video_embed_layout_styles( float $width, float $height, string $mode = 'cover' ): array {
+		$safe_width = max( 1, $width );
+		$safe_height = max( 1, $height );
+		$aspect_ratio = 16 / 9;
+		$container_ratio = $safe_width / $safe_height;
+		$normalized_mode = 'contain' === $mode ? 'contain' : 'cover';
+		$size_by_height = 'contain' === $normalized_mode
+			? $container_ratio > $aspect_ratio
+			: $container_ratio < $aspect_ratio;
+
+		$render_width = $size_by_height ? ( $safe_height * $aspect_ratio ) : $safe_width;
+		$render_height = $size_by_height ? $safe_height : ( $safe_width / $aspect_ratio );
+
+		return [
+			'wrapper' => 'position:absolute;inset:0;overflow:hidden;border-radius:inherit;background:#000;',
+			'frame' => 'position:absolute;left:50%;top:50%;width:' . round( $render_width, 3 ) . 'px;height:' . round( $render_height, 3 ) . 'px;transform:translate(-50%, -50%);border:0;background:#000;',
+		];
+	}
+
 	private function sanitize_svg_markup( $markup ): string {
 		if ( ! is_string( $markup ) || trim( $markup ) === '' ) return '';
 
@@ -698,6 +805,32 @@ class FrameBuilder_Exporter {
 			if ( $src ) {
 				$img_style = "position:absolute;inset:0;width:100%;height:100%;object-fit:{$obj_fit};border-radius:inherit;";
 				$html .= '<img src="' . $src . '" alt="" style="' . esc_attr( $img_style ) . '" loading="lazy">';
+			}
+		}
+
+		if ( ( $el['type'] ?? '' ) === 'video' ) {
+			$provider = $this->normalize_video_provider( $resolved['videoProvider'] ?? 'upload' );
+			$src = 'upload' === $provider
+				? $this->normalize_media_url( $resolved['src'] ?? '' )
+				: trim( (string) ( $resolved['src'] ?? '' ) );
+			$controls = ! isset( $resolved['videoControls'] ) || ! empty( $resolved['videoControls'] );
+			$loop = ! empty( $resolved['videoLoop'] );
+			$muted = ! empty( $resolved['videoMuted'] );
+			$autoplay = ! empty( $resolved['videoAutoplay'] );
+			if ( 'upload' === $provider ) {
+				$video_url = esc_url( $src );
+				if ( $video_url ) {
+					$video_style = 'position:absolute;inset:0;width:100%;height:100%;object-fit:' . esc_attr( $this->sanitize_css_value( $styles['objectFit'] ?? 'cover' ) ) . ';border-radius:inherit;';
+					$html .= '<video src="' . $video_url . '" style="' . esc_attr( $video_style ) . '"' . ( $controls ? ' controls' : '' ) . ( $loop ? ' loop' : '' ) . ( $muted ? ' muted' : '' ) . ( $autoplay ? ' autoplay' : '' ) . ' playsinline preload="metadata"></video>';
+				}
+			} else {
+				$embed_url = esc_url( $this->build_video_embed_url( $provider, $src, $controls, $loop, $muted, $autoplay ) );
+				if ( $embed_url ) {
+					$embed_layout = $this->build_video_embed_layout_styles( $w, $h, $styles['objectFit'] ?? 'cover' );
+					$html .= '<div class="fb-video-embed" style="' . esc_attr( $embed_layout['wrapper'] ) . '">';
+					$html .= '<iframe src="' . $embed_url . '" title="' . esc_attr( $el['name'] ?? 'Video' ) . '" style="' . esc_attr( $embed_layout['frame'] ) . '" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+					$html .= '</div>';
+				}
 			}
 		}
 
@@ -1780,7 +1913,7 @@ class FrameBuilder_Exporter {
 			return;
 		}
 		if (propertyKey === 'src') {
-			var imageNode = node.tagName === 'IMG' ? node : node.querySelector('img');
+			var imageNode = node.tagName === 'IMG' || node.tagName === 'VIDEO' ? node : node.querySelector('img,video');
 			var imageUrl = '';
 			if (value && typeof value === 'object' && typeof value.url === 'string') imageUrl = value.url;
 			else if (typeof value === 'string') imageUrl = value;

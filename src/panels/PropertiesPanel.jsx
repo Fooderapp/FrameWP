@@ -636,14 +636,14 @@ function InteractionSection({ interactions, variableSources, interactionVariable
   );
 }
 
-function MediaPickerModal({ onSelect, onClose }) {
+function MediaPickerModal({ mediaType = 'image', onSelect, onClose }) {
   const adminUrl = window.fbData?.adminUrl ?? '';
   const siteUrl = window.fbData?.siteUrl ?? window.location.origin;
   let src = '';
   try {
-    src = new URL('admin.php?page=fb-media-picker', adminUrl || `${siteUrl.replace(/\/$/, '')}/wp-admin/`).toString();
+    src = new URL(`admin.php?page=fb-media-picker&type=${mediaType === 'video' ? 'video' : 'image'}`, adminUrl || `${siteUrl.replace(/\/$/, '')}/wp-admin/`).toString();
   } catch (error) {
-    src = `${siteUrl.replace(/\/$/, '')}/wp-admin/admin.php?page=fb-media-picker`;
+    src = `${siteUrl.replace(/\/$/, '')}/wp-admin/admin.php?page=fb-media-picker&type=${mediaType === 'video' ? 'video' : 'image'}`;
   }
 
   useEffect(() => {
@@ -666,7 +666,7 @@ function MediaPickerModal({ onSelect, onClose }) {
     >
       <div style={{ width: 920, height: 680, borderRadius: 8, overflow: 'hidden', boxShadow: '0 32px 100px rgba(0,0,0,0.9)', display: 'flex', flexDirection: 'column', border: '1px solid #3c434a' }}>
         <div style={{ display: 'flex', alignItems: 'center', padding: '9px 14px', background: '#1d2327', borderBottom: '1px solid #3c434a', flexShrink: 0 }}>
-          <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: '#f0f0f1', letterSpacing: '0.02em' }}>Media Library</span>
+          <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: '#f0f0f1', letterSpacing: '0.02em' }}>{mediaType === 'video' ? 'Video Library' : 'Media Library'}</span>
           <IconButton icon={UIIcons.close} title="Close media picker" onMouseDown={onClose} className="fb-media-modal__close" />
         </div>
         <iframe
@@ -680,28 +680,33 @@ function MediaPickerModal({ onSelect, onClose }) {
   );
 }
 
-function MediaPickerButton({ value, onChange }) {
+function MediaPickerButton({ value, onChange, mediaType = 'image' }) {
   const [open, setOpen] = useState(false);
   const previewUrl = getMediaUrl(value);
+  const isVideo = mediaType === 'video';
   return (
     <>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
         {previewUrl ? (
           <div style={{ width: 36, height: 36, borderRadius: 4, overflow: 'hidden', border: '1px solid var(--border)', flexShrink: 0 }}>
-            <img src={previewUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            {isVideo ? (
+              <video src={previewUrl} muted playsInline preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', background: '#111' }} />
+            ) : (
+              <img src={previewUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            )}
           </div>
         ) : null}
         <IconButton
           icon={previewUrl ? UIIcons.swap : UIIcons.image}
-          title={previewUrl ? 'Change image' : 'Select image'}
+          title={previewUrl ? `Change ${isVideo ? 'video' : 'image'}` : `Select ${isVideo ? 'video' : 'image'}`}
           style={{ flex: 1 }}
           onClick={() => setOpen(true)}
         />
         {previewUrl ? (
-          <IconButton icon={UIIcons.trash} title="Remove image" onClick={() => onChange('')} />
+          <IconButton icon={UIIcons.trash} title={`Remove ${isVideo ? 'video' : 'image'}`} onClick={() => onChange('')} />
         ) : null}
       </div>
-      {open && <MediaPickerModal onSelect={onChange} onClose={() => setOpen(false)} />}
+      {open && <MediaPickerModal mediaType={mediaType} onSelect={onChange} onClose={() => setOpen(false)} />}
     </>
   );
 }
@@ -2334,7 +2339,7 @@ export default function PropertiesPanel() {
               {fillBindingVariable ? (
                 <BoundVariableCta variable={fillBindingVariable} fallbackLabel="Fill variable" />
               ) : element.type === 'image' ? (
-                <MediaPickerButton value={resolved.src ?? ''} onChange={v => { upd('src', v); commit(); }} />
+                <MediaPickerButton value={resolved.src ?? ''} onChange={v => { upd('src', v); commit(); }} mediaType="image" />
               ) : (
                 <FillPicker value={s.backgroundColor ?? '#ffffff'} onChange={v => { updS('backgroundColor', v); commit(); }} />
               )}
@@ -2354,9 +2359,118 @@ export default function PropertiesPanel() {
                   />
                 ) : null}
               </VariableBindingLabel>
-              {backgroundImageBindingVariable ? <BoundVariableCta variable={backgroundImageBindingVariable} fallbackLabel="Image variable" /> : <MediaPickerButton value={s.backgroundImage ?? ''} onChange={v => { updS('backgroundImage', v); commit(); }} />}
+              {backgroundImageBindingVariable ? <BoundVariableCta variable={backgroundImageBindingVariable} fallbackLabel="Image variable" /> : <MediaPickerButton value={s.backgroundImage ?? ''} onChange={v => { updS('backgroundImage', v); commit(); }} mediaType="image" />}
             </div>
           )}
+
+        {element.type === 'video' && (
+          <Section title="Video" action={<ResetBtn show={isOv('src','videoProvider','videoControls','videoLoop','videoMuted','videoAutoplay') || isSOv('objectFit')} onReset={() => { resetOv('src','videoProvider','videoControls','videoLoop','videoMuted','videoAutoplay'); resetSOv('objectFit'); }} />}>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Provider</span>
+              <ChoiceGroup
+                value={resolved.videoProvider ?? 'upload'}
+                onChange={(value) => {
+                  upd('videoProvider', value);
+                  upd('src', '');
+                  commit();
+                }}
+                options={[
+                  { value: 'youtube', label: 'YouTube' },
+                  { value: 'vimeo', label: 'Vimeo' },
+                  { value: 'upload', label: 'Media' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ alignItems: 'flex-start', marginTop: 8 }}>
+              <span className="fb-prop-label">Source</span>
+              <div style={{ flex: 1 }}>
+                {(resolved.videoProvider ?? 'upload') === 'upload' ? (
+                  <MediaPickerButton value={resolved.src ?? ''} onChange={v => { upd('src', v); commit(); }} mediaType="video" />
+                ) : (
+                  <input
+                    className="fb-prop-input"
+                    type="url"
+                    value={resolved.src ?? ''}
+                    placeholder={(resolved.videoProvider ?? 'upload') === 'vimeo' ? 'https://vimeo.com/...' : 'https://youtube.com/watch?v=...'}
+                    onChange={event => upd('src', event.target.value)}
+                    onBlur={commit}
+                  />
+                )}
+                <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
+                  {(resolved.videoProvider ?? 'upload') === 'upload'
+                    ? 'Choose a video from the WordPress media library.'
+                    : `Paste a ${(resolved.videoProvider ?? 'upload') === 'vimeo' ? 'Vimeo' : 'YouTube'} URL. The builder will convert it to an embed automatically.`}
+                </div>
+              </div>
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Controls</span>
+              <ChoiceGroup
+                value={resolved.videoControls !== false ? 'on' : 'off'}
+                onChange={(value) => { upd('videoControls', value === 'on'); commit(); }}
+                options={[
+                  { value: 'on', label: 'On' },
+                  { value: 'off', label: 'Off' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Loop</span>
+              <ChoiceGroup
+                value={resolved.videoLoop === true ? 'on' : 'off'}
+                onChange={(value) => { upd('videoLoop', value === 'on'); commit(); }}
+                options={[
+                  { value: 'on', label: 'On' },
+                  { value: 'off', label: 'Off' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Mute</span>
+              <ChoiceGroup
+                value={resolved.videoMuted === true ? 'on' : 'off'}
+                onChange={(value) => { upd('videoMuted', value === 'on'); commit(); }}
+                options={[
+                  { value: 'on', label: 'On' },
+                  { value: 'off', label: 'Off' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Autoplay</span>
+              <ChoiceGroup
+                value={resolved.videoAutoplay === true ? 'on' : 'off'}
+                onChange={(value) => {
+                  const enabled = value === 'on';
+                  upd('videoAutoplay', enabled);
+                  if (enabled) upd('videoMuted', true);
+                  commit();
+                }}
+                options={[
+                  { value: 'on', label: 'On' },
+                  { value: 'off', label: 'Off' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Mode</span>
+              <IconGroup
+                value={s.objectFit ?? 'cover'}
+                onChange={v => { updS('objectFit', v); commit(); }}
+                options={[
+                  { value: 'contain', icon: '⊡', label: 'Fit' },
+                  { value: 'cover', icon: '⛶', label: 'Fill' },
+                ]}
+              />
+            </div>
+          </Section>
+        )}
 
           {!isComponentInstanceOnPage && element.type === 'image' && allowVariableBindings && (
             <div className="fb-prop-row">
@@ -2372,7 +2486,7 @@ export default function PropertiesPanel() {
             </div>
           )}
 
-          {!isComponentInstanceOnPage && (element.type === 'image' || (element.type === 'frame' && s.backgroundImage)) && (
+          {!isComponentInstanceOnPage && ((element.type === 'image') || (element.type === 'frame' && s.backgroundImage)) && (
             <div className="fb-prop-row">
               <span className="fb-prop-label">Fit</span>
               <IconGroup
