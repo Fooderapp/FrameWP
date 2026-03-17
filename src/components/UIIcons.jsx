@@ -21,6 +21,7 @@ function Svg({ children, size = 16, strokeWidth = 1.7, ...props }) {
 
 export const UIIcons = {
   arrowLeft: <Svg><path d="M19 12H5" /><path d="M11 6l-6 6 6 6" /></Svg>,
+  select: <Svg><path d="M6 4l10 9-4.5.8L13 20l-2.4-1.3-1.7-5-2.9 2.1Z" /></Svg>,
   undo: <Svg><path d="M9 7H4v5" /><path d="M4 12c1.8-3.8 5-6 9-6 4.4 0 8 3.6 8 8" /></Svg>,
   redo: <Svg><path d="M15 7h5v5" /><path d="M20 12c-1.8-3.8-5-6-9-6-4.4 0-8 3.6-8 8" /></Svg>,
   zoomIn: <Svg><circle cx="11" cy="11" r="6.5" /><path d="M11 8v6M8 11h6M20 20l-4-4" /></Svg>,
@@ -31,6 +32,9 @@ export const UIIcons = {
   play: <Svg><path d="M9 7.5v9l7-4.5-7-4.5z" /><circle cx="12" cy="12" r="9" /></Svg>,
   layers: <Svg><path d="M12 4l8 4-8 4-8-4 8-4z" /><path d="M4 12l8 4 8-4" /><path d="M4 16l8 4 8-4" /></Svg>,
   elements: <Svg><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></Svg>,
+  shapes: <Svg><path d="M12 4 18 8v8l-6 4-6-4V8Z" /><circle cx="7" cy="7" r="1.2" fill="currentColor" stroke="none" /></Svg>,
+  pan: <Svg><path d="M8 12V6a1.5 1.5 0 0 1 3 0v4" /><path d="M11 10V5a1.5 1.5 0 0 1 3 0v5" /><path d="M14 10V6.5a1.5 1.5 0 0 1 3 0V12" /><path d="M17 11.5a1.5 1.5 0 0 1 3 0v1.5c0 4.4-2.6 7-6.6 7H12c-2.7 0-4.6-1.1-5.7-3.4L4.5 13a1.6 1.6 0 0 1 2.8-1.5L8 12Z" /></Svg>,
+  comment: <Svg><path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H10l-4 4v-4H7.5A2.5 2.5 0 0 1 5 12.5Z" /></Svg>,
   component: <Svg><rect x="4" y="6" width="8" height="8" rx="2" /><path d="M14 9h6M17 6v6" /></Svg>,
   variables: <Svg><path d="M5 6h14" /><path d="M5 12h14" /><path d="M5 18h14" /><circle cx="8" cy="6" r="1.5" fill="currentColor" stroke="none" /><circle cx="8" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="8" cy="18" r="1.5" fill="currentColor" stroke="none" /></Svg>,
   plusCircle: <Svg><circle cx="12" cy="12" r="8.5" /><path d="M12 8v8M8 12h8" /></Svg>,

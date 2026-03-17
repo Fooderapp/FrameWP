@@ -281,7 +281,9 @@ export function sanitizeSvgMarkup(markup, options = {}) {
     root.setAttribute('aria-hidden', 'true');
     root.setAttribute('width', '100%');
     root.setAttribute('height', '100%');
-    root.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    if (!root.getAttribute('preserveAspectRatio')) {
+      root.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    }
     root.setAttribute('overflow', 'visible');
     return root.outerHTML;
   } catch (error) {

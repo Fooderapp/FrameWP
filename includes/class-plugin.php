@@ -158,6 +158,10 @@ class FrameBuilder_Plugin {
 			'siteUrl'  => site_url(),
 			'adminUrl' => admin_url(),
 			'postId'   => isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0,
+			'currentUser' => [
+				'displayName' => wp_get_current_user()->display_name,
+				'avatarUrl'   => get_avatar_url( get_current_user_id(), [ 'size' => 96 ] ),
+			],
 		] );
 	}
 

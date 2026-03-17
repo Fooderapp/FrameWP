@@ -504,12 +504,15 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const strokeWidth = Math.max(0, parseFloat(styles?.strokeWidth) || 0);
   const strokeColor = getGradientFallbackColor(styles?.strokeColor, element.type === 'icon' ? (styles?.color ?? '#111827') : '#000000');
   const iconMarkup = element.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
+  const builderVideoAutoplay = element.type === 'video'
+    ? resolved?.videoAutoplay === true && resolved?.videoDisableAutoplayInBuilder !== true
+    : false;
   const videoSource = element.type === 'video'
     ? getResolvedVideoSource(resolved?.videoProvider, resolved?.src, {
         controls: resolved?.videoControls !== false,
         loop: resolved?.videoLoop === true,
         muted: resolved?.videoMuted === true,
-        autoplay: resolved?.videoAutoplay === true,
+        autoplay: builderVideoAutoplay,
       })
     : null;
   const videoEmbedLayout = element.type === 'video'
@@ -616,7 +619,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
             controls={resolved?.videoControls !== false}
             loop={resolved?.videoLoop === true}
             muted={resolved?.videoMuted === true}
-            autoPlay={resolved?.videoAutoplay === true}
+            autoPlay={builderVideoAutoplay}
             playsInline
             preload="metadata"
           />

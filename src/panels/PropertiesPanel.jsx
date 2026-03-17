@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds, resolveElementAnimations } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import CustomSelect from '../components/CustomSelect';
@@ -45,6 +45,17 @@ function getTextColorMeta(resolved, fallback = '#000000') {
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function getShapeTypeLabel(shapeKind) {
+  switch (shapeKind) {
+    case 'circle': return 'Circle';
+    case 'line': return 'Line';
+    case 'polygon': return 'Polygon';
+    case 'path': return 'Path';
+    case 'pen': return 'Pen';
+    default: return 'Shape';
+  }
 }
 
 function normalizeFiniteNumber(value, fallback = 0) {
@@ -861,6 +872,9 @@ export default function PropertiesPanel() {
   const components          = useEditorStore(s => s.components);
   const changeComponentInstanceVariant = useEditorStore(s => s.changeComponentInstanceVariant);
   const updateComponentEditorVariantInteraction = useEditorStore(s => s.updateComponentEditorVariantInteraction);
+  const activeVectorPoint   = useEditorStore(s => s.activeVectorPoint);
+  const setActiveVectorPoint = useEditorStore(s => s.setActiveVectorPoint);
+  const clearActiveVectorPoint = useEditorStore(s => s.clearActiveVectorPoint);
   const updateElementLayout = useEditorStore(s => s.updateElementLayout);
   const updateElementsLayout = useEditorStore(s => s.updateElementsLayout);
   const updateStyles        = useEditorStore(s => s.updateElementStyles);
@@ -1498,6 +1512,28 @@ export default function PropertiesPanel() {
     updateStyles(element.id, bpId, { [key]: val });
   };
   const commit = () => pushHistory();
+  const aspectRatioLocked = resolved.lockAspectRatio === true;
+  const currentAspectRatio = (() => {
+    const safeWidth = Math.max(1, normalizeFiniteNumber(resolved.width ?? element.base?.width ?? 1, 1));
+    const safeHeight = Math.max(1, normalizeFiniteNumber(resolved.height ?? element.base?.height ?? 1, 1));
+    return safeHeight > 0 ? (safeWidth / safeHeight) : 0;
+  })();
+  const applyFixedSizeChange = (dimension, rawValue) => {
+    const nextValue = Math.max(1, normalizeFiniteNumber(rawValue, dimension === 'width' ? (resolved.width ?? 100) : (resolved.height ?? 100)));
+    const updates = dimension === 'width'
+      ? { width: nextValue, widthMode: 'fixed' }
+      : { height: nextValue, heightMode: 'fixed' };
+    if (aspectRatioLocked && currentAspectRatio > 0) {
+      if (dimension === 'width') {
+        updates.height = Math.max(1, Math.round((nextValue / currentAspectRatio) * 1000) / 1000);
+        updates.heightMode = 'fixed';
+      } else {
+        updates.width = Math.max(1, Math.round((nextValue * currentAspectRatio) * 1000) / 1000);
+        updates.widthMode = 'fixed';
+      }
+    }
+    updateElementLayout(element.id, bpId, updates);
+  };
 
   // Auto-layout context: element is a root element inside an artboard with layout on
   const artboardLayout = resolvePageLayout(page?.layout, bpId);
@@ -1518,6 +1554,32 @@ export default function PropertiesPanel() {
   const selectedEditorTransitionTarget = selectedEditorVariant?.interaction?.targetVariantId
     ? (componentEditor.variants ?? []).find((variant) => variant.id === selectedEditorVariant.interaction.targetVariantId) ?? null
     : null;
+  const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(element);
+  const vectorShapeData = ['path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(element) : null;
+  const selectedVectorPoint = activeVectorPoint?.elementId === element?.id && activeVectorPoint?.bpId === bpId && vectorShapeData
+    ? vectorShapeData.points?.[activeVectorPoint.pointIndex] ?? null
+    : null;
+  const polygonSides = shapeKind === 'polygon'
+    ? Math.max(3, Math.min(12, Math.round(normalizeFiniteNumber(resolved.polygonSides ?? element.base?.polygonSides ?? 6, 6))))
+    : null;
+  const applyVectorShapeUpdate = (nextVectorData, options = {}) => {
+    if (!element || !nextVectorData) return;
+    const reframed = reframeVectorShapeData(nextVectorData);
+    updateElementLayout(element.id, bpId, {
+      ...(Number.isFinite(options.x) ? { x: options.x } : {}),
+      ...(Number.isFinite(options.y) ? { y: options.y } : {}),
+      width: reframed.width,
+      height: reframed.height,
+      vectorData: reframed.vectorData,
+      svgMarkup: buildVectorShapeSvgMarkup(reframed.vectorData, {
+        width: reframed.width,
+        height: reframed.height,
+        fill: 'none',
+        stroke: s.strokeColor ?? s.color ?? '#2563eb',
+        strokeWidth: Math.max(0.5, s.strokeWidth || 1.5),
+      }),
+    });
+  };
 
   if (activeSurface === 'component' && element.componentRoot) {
     return (
@@ -1526,18 +1588,29 @@ export default function PropertiesPanel() {
           <div className="fb-right__header">{selectedEditorVariantLabel}</div>
           <div className="fb-panel-body">
             <Section title="Size">
-              <div className="fb-quad" style={{ marginBottom: 6 }}>
-                <NumberInput
-                  value={resolved.width ?? 240}
-                  min={20}
-                  label="W"
-                  onChange={v => { updateElementLayout(element.id, bpId, { width: Math.max(20, v), widthMode: 'fixed' }); commit(); }}
-                />
-                <NumberInput
-                  value={resolved.height ?? 160}
-                  min={20}
-                  label="H"
-                  onChange={v => { updateElementLayout(element.id, bpId, { height: Math.max(20, v), heightMode: 'fixed' }); commit(); }}
+              <div className="fb-size-section" style={{ marginBottom: 6 }}>
+                <div className="fb-size-section__rows fb-size-section__rows--compact">
+                  <div className="fb-quad">
+                    <NumberInput
+                      value={resolved.width ?? 240}
+                      min={20}
+                      label="W"
+                      onChange={v => { applyFixedSizeChange('width', Math.max(20, v)); commit(); }}
+                    />
+                    <NumberInput
+                      value={resolved.height ?? 160}
+                      min={20}
+                      label="H"
+                      onChange={v => { applyFixedSizeChange('height', Math.max(20, v)); commit(); }}
+                    />
+                  </div>
+                </div>
+                <IconButton
+                  icon={UIIcons.link}
+                  title="Lock aspect ratio"
+                  active={aspectRatioLocked}
+                  className="fb-btn--sm fb-size-lock-btn"
+                  onClick={() => { upd('lockAspectRatio', !aspectRatioLocked); commit(); }}
                 />
               </div>
               <div className="fb-artboard-bp-note">
@@ -1842,7 +1915,9 @@ export default function PropertiesPanel() {
         </Section>
 
         {/* ── Size ──────────────────────────────────────────── */}
-        <Section title="Size" action={<ResetBtn show={isOv('width','widthMode','widthPct','widthFr','height','heightMode','heightPct','heightFr','minW','maxW','minH','maxH')} onReset={() => resetOv('width','widthMode','widthPct','widthFr','height','heightMode','heightPct','heightFr','minW','maxW','minH','maxH')} />}>
+        <Section title="Size" action={<ResetBtn show={isOv('width','widthMode','widthPct','widthFr','height','heightMode','heightPct','heightFr','minW','maxW','minH','maxH','lockAspectRatio')} onReset={() => resetOv('width','widthMode','widthPct','widthFr','height','heightMode','heightPct','heightFr','minW','maxW','minH','maxH','lockAspectRatio')} />}>
+          <div className="fb-size-section">
+            <div className="fb-size-section__rows">
           {/* Width row */}
           <div className="fb-prop-row">
             <span className="fb-prop-label">Width</span>
@@ -1853,7 +1928,7 @@ export default function PropertiesPanel() {
                 if (wm === 'hug') return <div className="fb-prop-mini" style={{ flex: 1 }} />;
                 if (wm === 'fill') return <NumberInput key="wfr" value={resolved.widthFr ?? 1} min={0.1} step={0.1} unit="fr" label="fr" onChange={v => { upd('widthFr', v); commit(); }} />;
                 if (wm === 'relative') return <NumberInput key="wpct" value={resolved.widthPct ?? resolved.width ?? 100} min={0} max={100} step={1} unit="%" label="%" onChange={v => { upd('widthPct', v); commit(); }} />;
-                return <NumberInput key="wpx" value={resolved.width ?? 100} min={1} unit="px" onChange={v => { upd('width', v); commit(); }} />;
+                return <NumberInput key="wpx" value={resolved.width ?? 100} min={1} unit="px" onChange={v => { applyFixedSizeChange('width', v); commit(); }} />;
               })()}
               <select
                 className="fb-prop-input fb-size-mode"
@@ -1876,7 +1951,7 @@ export default function PropertiesPanel() {
                 if (hm === 'hug') return <div className="fb-prop-mini" style={{ flex: 1 }} />;
                 if (hm === 'fill') return <NumberInput key="hfr" value={resolved.heightFr ?? 1} min={0.1} step={0.1} unit="fr" label="fr" onChange={v => { upd('heightFr', v); commit(); }} />;
                 if (hm === 'relative') return <NumberInput key="hpct" value={resolved.heightPct ?? resolved.height ?? 100} min={0} max={100} step={1} unit="%" label="%" onChange={v => { upd('heightPct', v); commit(); }} />;
-                return <NumberInput key="hpx" value={resolved.height ?? 100} min={1} unit="px" onChange={v => { upd('height', v); commit(); }} />;
+                return <NumberInput key="hpx" value={resolved.height ?? 100} min={1} unit="px" onChange={v => { applyFixedSizeChange('height', v); commit(); }} />;
               })()}
               <select
                 className="fb-prop-input fb-size-mode"
@@ -1890,6 +1965,15 @@ export default function PropertiesPanel() {
               </select>
             </div>
           </div>
+            </div>
+            <IconButton
+              icon={UIIcons.link}
+              title="Lock aspect ratio"
+              active={aspectRatioLocked}
+              className="fb-btn--sm fb-size-lock-btn"
+              onClick={() => { upd('lockAspectRatio', !aspectRatioLocked); commit(); }}
+            />
+          </div>
           {isComponentRoot && (
             <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
               Top-level component layers use the free canvas. `Fill` is disabled here to avoid unbounded component width or height.
@@ -1897,6 +1981,149 @@ export default function PropertiesPanel() {
           )}
           <MinMaxRow resolved={resolved} upd={upd} commit={commit} />
         </Section>
+
+        {shapeKind ? (
+          <Section title="Shape">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Type</span>
+              <div className="fb-prop-value">{getShapeTypeLabel(shapeKind)}</div>
+            </div>
+
+            {shapeKind === 'polygon' ? (
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Sides</span>
+                <NumberInput
+                  value={polygonSides}
+                  min={3}
+                  max={12}
+                  step={1}
+                  onChange={(value) => {
+                    const nextSides = Math.max(3, Math.min(12, Math.round(normalizeFiniteNumber(value, 6))));
+                    upd('polygonSides', nextSides);
+                    upd('svgMarkup', buildPolygonSvgMarkup(nextSides));
+                    commit();
+                  }}
+                />
+              </div>
+            ) : null}
+
+            {shapeKind === 'circle' ? <div className="fb-artboard-bp-note">Circle is a true 1:1 shape. Resize it to change the diameter; aspect ratio stays locked.</div> : null}
+            {shapeKind === 'line' ? <div className="fb-artboard-bp-note">Line endpoints are editable on canvas. Drag either endpoint directly in the selection overlay.</div> : null}
+            {shapeKind === 'path' ? <div className="fb-artboard-bp-note">Path anchors and Bezier handles are editable on canvas when the shape is selected.</div> : null}
+            {shapeKind === 'pen' ? <div className="fb-artboard-bp-note">Pen now draws anchor-based Bezier paths. Click to add points, drag to pull handles, click the first anchor to close, then press Enter or Escape to finish an open path.</div> : null}
+
+            {(shapeKind === 'path' || shapeKind === 'pen') && vectorShapeData ? (
+              <>
+                {vectorShapeData.closed ? (
+                  <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                    <span className="fb-prop-label">Fill</span>
+                    <div style={{ width: '100%' }}>
+                      <FillPicker value={s.backgroundColor ?? 'rgba(37,99,235,0.16)'} onChange={(value) => { updS('backgroundColor', value); commit(); }} />
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                  <span className="fb-prop-label">Selected anchor</span>
+                  <div className="fb-prop-value">{selectedVectorPoint ? `#${activeVectorPoint.pointIndex + 1}` : 'None'}</div>
+                </div>
+
+                {selectedVectorPoint ? (
+                  <>
+                    <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                      <span className="fb-prop-label">Anchor mode</span>
+                      <ChoiceGroup
+                        value={selectedVectorPoint.mode === 'smooth' ? 'smooth' : 'corner'}
+                        onChange={(value) => {
+                          const nextVectorData = setVectorAnchorMode(vectorShapeData, activeVectorPoint.pointIndex, value === 'smooth' ? 'smooth' : 'corner');
+                          applyVectorShapeUpdate(nextVectorData);
+                          commit();
+                        }}
+                        options={[
+                          { value: 'corner', label: 'Corner' },
+                          { value: 'smooth', label: 'Smooth' },
+                        ]}
+                      />
+                    </div>
+
+                    <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                      <span className="fb-prop-label">Anchor actions</span>
+                      <div className="fb-style-inline-group" style={{ width: '100%' }}>
+                        <button
+                          type="button"
+                          className="fb-secondary-btn fb-btn--sm"
+                          onClick={() => {
+                            const removal = removeVectorAnchor(vectorShapeData, activeVectorPoint.pointIndex);
+                            if (!removal.removed) return;
+                            applyVectorShapeUpdate(removal.vectorData);
+                            const nextIndex = Math.max(0, Math.min(activeVectorPoint.pointIndex - 1, removal.vectorData.points.length - 1));
+                            if (removal.vectorData.points.length > 0) setActiveVectorPoint({ elementId: element.id, bpId, pointIndex: nextIndex });
+                            else clearActiveVectorPoint();
+                            commit();
+                          }}
+                        >
+                          Delete anchor
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="fb-artboard-bp-note">Click an anchor on canvas to edit its mode, or double-click the path to insert a new anchor.</div>
+                )}
+              </>
+            ) : null}
+
+            {element.type === 'icon' ? (
+              <>
+                <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                  <VariableBindingLabel label={shapeKind === 'polygon' ? 'Fill' : (shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen' ? 'Stroke' : 'Color')}>
+                    {allowVariableBindings ? (
+                      <VariableBindingButton
+                        variables={getCompatibleBindingVariables('styles.color')}
+                        binding={iconColorBinding}
+                        onSelect={(binding) => commitBinding('styles.color', binding, (value) => updateStyles(element.id, bpId, shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen'
+                          ? { color: value || '#111827', strokeColor: value || '#111827' }
+                          : { color: value || '#111827' }))}
+                        onRemove={() => commitBinding('styles.color', null)}
+                      />
+                    ) : null}
+                  </VariableBindingLabel>
+                  <div style={{ width: '100%' }}>
+                    {iconColorBindingVariable ? <BoundVariableCta variable={iconColorBindingVariable} fallbackLabel="Color variable" /> : <FillPicker value={(shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen') ? (s.strokeColor ?? s.color ?? '#111827') : (s.color ?? '#111827')} onChange={(value) => {
+                      updS('color', value);
+                      if (shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen') updS('strokeColor', value);
+                      commit();
+                    }} />}
+                  </div>
+                </div>
+
+                {shapeKind === 'polygon' || shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen' ? (
+                  <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                    <span className="fb-prop-label">Stroke</span>
+                    {(s.strokeWidth ?? 0) > 0 ? (
+                      <div className="fb-style-inline-group fb-style-inline-group--stacked" style={{ width: '100%' }}>
+                        <NumberInput value={s.strokeWidth ?? 0} min={0} step={0.1} onChange={v => { updS('strokeWidth', v); commit(); }} />
+                        <FillPicker value={s.strokeColor ?? (s.color ?? '#111827')} onChange={v => { updS('strokeColor', v); commit(); }} />
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="fb-add-field"
+                        onClick={() => {
+                          updS('strokeWidth', shapeKind === 'line' ? 2 : 1);
+                          updS('strokeColor', s.color ?? '#111827');
+                          commit();
+                        }}
+                      >
+                        Add...
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+          </Section>
+        ) : null}
 
         {element.type === 'text' && (
           <Section title="Text" action={<ResetBtn show={isOv('text','richTextHtml') || isSOv('color','strokeWidth','strokeColor','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text','richTextHtml'); resetSOv('color','strokeWidth','strokeColor','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
@@ -2026,7 +2253,7 @@ export default function PropertiesPanel() {
           </Section>
         )}
 
-        {element.type === 'icon' && (
+        {element.type === 'icon' && !shapeKind && (
           <Section title="Icon / SVG" action={<ResetBtn show={isOv('iconSource','iconName','svgMarkup') || isSOv('color','strokeWidth','strokeColor')} onReset={() => { resetOv('iconSource','iconName','svgMarkup'); resetSOv('color','strokeWidth','strokeColor'); }} />}>
             <div className="fb-prop-row">
               <span className="fb-prop-label">Source</span>
@@ -2103,6 +2330,28 @@ export default function PropertiesPanel() {
               </div>
             </div>
             <div className="fb-artboard-bp-note">Tint uses the same picker as fills. Solid colors are recommended for icons that rely on <code>currentColor</code>.</div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Stroke</span>
+              {(s.strokeWidth ?? 0) > 0 ? (
+                <div className="fb-style-inline-group fb-style-inline-group--stacked" style={{ width: '100%' }}>
+                  <NumberInput value={s.strokeWidth ?? 0} min={0} step={0.1} onChange={v => { updS('strokeWidth', v); commit(); }} />
+                  <FillPicker value={s.strokeColor ?? (s.color ?? '#111827')} onChange={v => { updS('strokeColor', v); commit(); }} />
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="fb-add-field"
+                  onClick={() => {
+                    updS('strokeWidth', 1);
+                    updS('strokeColor', s.color ?? '#111827');
+                    commit();
+                  }}
+                >
+                  Add...
+                </button>
+              )}
+            </div>
           </Section>
         )}
 
@@ -2364,7 +2613,7 @@ export default function PropertiesPanel() {
           )}
 
         {element.type === 'video' && (
-          <Section title="Video" action={<ResetBtn show={isOv('src','videoProvider','videoControls','videoLoop','videoMuted','videoAutoplay') || isSOv('objectFit')} onReset={() => { resetOv('src','videoProvider','videoControls','videoLoop','videoMuted','videoAutoplay'); resetSOv('objectFit'); }} />}>
+          <Section title="Video" action={<ResetBtn show={isOv('src','videoProvider','videoControls','videoLoop','videoMuted','videoAutoplay','videoDisableAutoplayInBuilder') || isSOv('objectFit')} onReset={() => { resetOv('src','videoProvider','videoControls','videoLoop','videoMuted','videoAutoplay','videoDisableAutoplayInBuilder'); resetSOv('objectFit'); }} />}>
             <div className="fb-prop-row">
               <span className="fb-prop-label">Provider</span>
               <ChoiceGroup
@@ -2449,6 +2698,21 @@ export default function PropertiesPanel() {
                   const enabled = value === 'on';
                   upd('videoAutoplay', enabled);
                   if (enabled) upd('videoMuted', true);
+                  commit();
+                }}
+                options={[
+                  { value: 'on', label: 'On' },
+                  { value: 'off', label: 'Off' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Builder autoplay</span>
+              <ChoiceGroup
+                value={resolved.videoDisableAutoplayInBuilder === true ? 'off' : 'on'}
+                onChange={(value) => {
+                  upd('videoDisableAutoplayInBuilder', value !== 'on');
                   commit();
                 }}
                 options={[
@@ -2563,7 +2827,7 @@ export default function PropertiesPanel() {
           </div>
           )}
 
-          {!isComponentInstanceOnPage && (element.type === 'text' || element.type === 'icon') && (
+          {!isComponentInstanceOnPage && element.type === 'text' && (
           <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
             <span className="fb-prop-label">Stroke</span>
             {(s.strokeWidth ?? 0) > 0 ? (

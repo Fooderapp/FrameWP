@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 import InlineTextToolbar from '../components/InlineTextToolbar';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
@@ -19,6 +19,11 @@ function getGradientFallbackColor(value, fallback = '#000000') {
   if (!isGradientPaint(value)) return typeof value === 'string' && value.trim() ? value.trim() : fallback;
   const match = value.match(/(#[0-9a-fA-F]{3,8}|rgba?\([^\)]+\)|hsla?\([^\)]+\)|currentColor)/i);
   return match?.[1] || fallback;
+}
+
+function buildSvgDataUrl(markup) {
+  if (typeof markup !== 'string' || !markup.trim()) return '';
+  return `url("data:image/svg+xml;utf8,${encodeURIComponent(markup)}")`;
 }
 
 function scaleTextMetric(value, unit, scale) {
@@ -965,6 +970,12 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const rotationTransform = rotation ? `rotate(${rotation}deg)` : '';
   const composedTransform = [previewTransform, rotationTransform].filter(Boolean).join(' ') || undefined;
   const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
+  const maskedVectorFillActive = (() => {
+    const nextShapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
+    if (!['path', 'pen'].includes(nextShapeKind ?? '')) return false;
+    const nextVectorShapeData = getVectorShapeData(resolved) || getVectorShapeData(el);
+    return nextVectorShapeData?.kind !== 'line' && nextVectorShapeData?.closed === true;
+  })();
   const inlineStyle = {
     position: effectiveRelative ? 'relative' : 'absolute',
     ...(effectiveRelative
@@ -983,10 +994,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     maxHeight: maxH,
     transform: composedTransform,
     // backgroundColor can hold a CSS gradient string — route accordingly
-    backgroundColor: styles?.backgroundColor && !styles.backgroundColor.includes('gradient(')
+    backgroundColor: !maskedVectorFillActive && styles?.backgroundColor && !styles.backgroundColor.includes('gradient(')
       ? styles.backgroundColor
       : undefined,
     backgroundImage: (() => {
+      if (maskedVectorFillActive) return undefined;
       const bg = styles?.backgroundColor;
       if (bg && bg.includes('gradient(')) return bg;
       if (backgroundImageUrl) return `url(${backgroundImageUrl})`;
@@ -1086,12 +1098,40 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     '--fb-text-stroke-color': strokeColor,
   } : null;
   const iconMarkup = el.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
+  const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
+  const vectorShapeData = ['line', 'path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(el) : null;
+  const vectorFillValue = vectorShapeData?.kind !== 'line' && vectorShapeData?.closed
+    ? (styles?.backgroundColor ?? 'transparent')
+    : 'transparent';
+  const vectorFillMask = vectorShapeData?.kind !== 'line' && vectorShapeData?.closed && vectorFillValue !== 'transparent'
+    ? buildSvgDataUrl(buildVectorShapeSvgMarkup(vectorShapeData, {
+        width: resolved?.width ?? width,
+        height: resolved?.height ?? height,
+        fill: '#ffffff',
+        stroke: 'none',
+        strokeWidth: 0,
+      }))
+    : '';
+  const vectorShapeMarkup = vectorShapeData
+    ? buildVectorShapeSvgMarkup(vectorShapeData, {
+        width: resolved?.width ?? width,
+        height: resolved?.height ?? height,
+        fill: vectorShapeData.kind !== 'line' && vectorShapeData.closed && !isGradientPaint(vectorFillValue) && vectorFillValue !== 'transparent'
+          ? vectorFillValue
+          : 'none',
+        stroke: strokeColor,
+        strokeWidth: Math.max(0.5, strokeWidth || (shapeKind === 'line' ? 2 : 1.5)),
+      })
+    : '';
+  const builderVideoAutoplay = el.type === 'video'
+    ? resolved?.videoAutoplay === true && resolved?.videoDisableAutoplayInBuilder !== true
+    : false;
   const videoSource = el.type === 'video'
     ? getResolvedVideoSource(resolved?.videoProvider, resolved?.src, {
         controls: resolved?.videoControls !== false,
         loop: resolved?.videoLoop === true,
         muted: resolved?.videoMuted === true,
-        autoplay: resolved?.videoAutoplay === true,
+        autoplay: builderVideoAutoplay,
       })
     : null;
   const videoEmbedLayout = el.type === 'video'
@@ -1143,7 +1183,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   return (
     <div
       ref={elementRef}
-      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${interactionLocked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}${el.componentInstance ? ' fb-el--component' : ''}${el.componentRoot ? ' fb-el--component-root' : ''}`}
+      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${interactionLocked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}${el.componentInstance ? ' fb-el--component' : ''}${el.componentRoot ? ' fb-el--component-root' : ''}${shapeKind === 'line' ? ' fb-el--vector-line' : ''}`}
       style={inlineStyle}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
@@ -1240,7 +1280,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               controls={resolved?.videoControls !== false}
               loop={resolved?.videoLoop === true}
               muted={resolved?.videoMuted === true}
-              autoPlay={resolved?.videoAutoplay === true}
+              autoPlay={builderVideoAutoplay}
               playsInline
               preload="metadata"
             />
@@ -1375,7 +1415,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           />
         </>
       )}
-      {el.type === 'icon' && (iconMarkup ? (
+      {el.type === 'icon' && ((vectorShapeMarkup || iconMarkup) ? (
         <div
           className={`fb-icon-content${strokeWidth > 0 ? ' fb-icon-content--stroked' : ''}`}
           style={{
@@ -1390,8 +1430,27 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
             pointerEvents: 'none',
             userSelect: 'none',
           }}
-          dangerouslySetInnerHTML={{ __html: iconMarkup }}
-        />
+        >
+          {vectorFillMask ? (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                backgroundColor: isGradientPaint(vectorFillValue) ? undefined : vectorFillValue,
+                backgroundImage: isGradientPaint(vectorFillValue) ? vectorFillValue : undefined,
+                WebkitMaskImage: vectorFillMask,
+                maskImage: vectorFillMask,
+                WebkitMaskRepeat: 'no-repeat',
+                maskRepeat: 'no-repeat',
+                WebkitMaskSize: '100% 100%',
+                maskSize: '100% 100%',
+                WebkitMaskPosition: 'center',
+                maskPosition: 'center',
+              }}
+            />
+          ) : null}
+          <div style={{ position: 'absolute', inset: 0 }} dangerouslySetInnerHTML={{ __html: vectorShapeMarkup || iconMarkup }} />
+        </div>
       ) : (
         <div style={{
           position: 'absolute', inset: 0,

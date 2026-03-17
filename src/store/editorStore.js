@@ -585,7 +585,51 @@ function normalizeVideoFields(source = {}) {
     videoLoop: source?.videoLoop === true,
     videoMuted: source?.videoMuted === true,
     videoAutoplay: source?.videoAutoplay === true,
+    videoDisableAutoplayInBuilder: source?.videoDisableAutoplayInBuilder === true,
   };
+}
+
+function normalizeCommentMessage(message = {}) {
+  const text = typeof message?.text === 'string' ? message.text.trim() : '';
+  return {
+    id: typeof message?.id === 'string' && message.id ? message.id : makeId('comment-msg'),
+    author: typeof message?.author === 'string' && message.author.trim() ? message.author.trim() : 'You',
+    avatarUrl: typeof message?.avatarUrl === 'string' ? message.avatarUrl : '',
+    text,
+    createdAt: Number.isFinite(message?.createdAt) ? message.createdAt : Date.now(),
+  };
+}
+
+function normalizeCommentThread(comment = {}) {
+  const messages = Array.isArray(comment?.messages)
+    ? comment.messages.map(normalizeCommentMessage).filter((entry) => entry.text)
+    : [];
+  return {
+    id: typeof comment?.id === 'string' && comment.id ? comment.id : makeId('comment'),
+    bpId: ['desktop', 'tablet', 'mobile'].includes(comment?.bpId) ? comment.bpId : 'desktop',
+    x: Number.isFinite(comment?.x) ? comment.x : 0,
+    y: Number.isFinite(comment?.y) ? comment.y : 0,
+    author: typeof comment?.author === 'string' && comment.author.trim() ? comment.author.trim() : 'You',
+    avatarUrl: typeof comment?.avatarUrl === 'string' ? comment.avatarUrl : '',
+    resolved: comment?.resolved === true,
+    createdAt: Number.isFinite(comment?.createdAt) ? comment.createdAt : Date.now(),
+    updatedAt: Number.isFinite(comment?.updatedAt) ? comment.updatedAt : Date.now(),
+    messages,
+  };
+}
+
+function getCurrentCommentAuthor() {
+  return {
+    author: typeof window?.fbData?.currentUser?.displayName === 'string' && window.fbData.currentUser.displayName.trim()
+      ? window.fbData.currentUser.displayName.trim()
+      : 'You',
+    avatarUrl: typeof window?.fbData?.currentUser?.avatarUrl === 'string' ? window.fbData.currentUser.avatarUrl : '',
+  };
+}
+
+function normalizeCommentThreads(comments) {
+  if (!Array.isArray(comments)) return [];
+  return comments.map(normalizeCommentThread);
 }
 
 function normalizeTextElementFields(element) {
@@ -676,7 +720,9 @@ function normalizeVideoElementFields(element) {
       || bpOverride.videoProvider != null
       || bpOverride.videoControls != null
       || bpOverride.videoLoop != null
-      || bpOverride.videoMuted != null;
+      || bpOverride.videoMuted != null
+      || bpOverride.videoAutoplay != null
+      || bpOverride.videoDisableAutoplayInBuilder != null;
     if (!hasVideoField) return;
     normalizedOverrides[bpId] = {
       ...bpOverride,
@@ -764,7 +810,7 @@ const COMPONENT_EDITOR_VARIANT_SIDE_PAD = 120;
 
 const COMPONENT_ROOT_LAYOUT_KEYS = [
   'width', 'height', 'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
-  'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints',
+  'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints', 'lockAspectRatio',
 ];
 
 function makeComponentPrimaryRoot(config = {}) {
@@ -789,6 +835,7 @@ function makeComponentPrimaryRoot(config = {}) {
       heightPct: config.heightPct ?? null,
       widthFr: config.widthFr ?? 1,
       heightFr: config.heightFr ?? 1,
+      lockAspectRatio: config.lockAspectRatio ?? false,
       minW: config.minW ?? null,
       maxW: config.maxW ?? null,
       minH: config.minH ?? null,
@@ -1380,6 +1427,7 @@ const makeDefaultPage = () => ({
   // layout: null per bp = inherit; object = { flexDirection, alignItems, justifyContent, flexWrap, gap }
   layout: { desktop: null, tablet: null, mobile: null },
   variables: [],
+  comments: [],
   elements: [],
 });
 
@@ -1424,6 +1472,7 @@ function normalizePageData(page) {
     padding: { ...fallback.padding, ...(page?.padding ?? {}) },
     layout: { ...fallback.layout, ...(page?.layout ?? {}) },
     variables: normalizeVariableList(page?.variables, 'page'),
+    comments: normalizeCommentThreads(page?.comments),
     elements: Array.isArray(page?.elements) ? page.elements.map(normalizeElementDynamicFields) : [],
   };
 }
@@ -1439,6 +1488,7 @@ export function createFrame(x = 80, y = 80, name) {
     base: {
       x, y, width: 240, height: 160, rotation: 0, locked: false, hidden: false,
       widthMode: 'fixed', heightMode: 'fixed',
+      lockAspectRatio: false,
       minW: null, maxW: null, minH: null, maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
       styles: {
@@ -1464,6 +1514,7 @@ export function createImage(x = 80, y = 80, name) {
     base: {
       x, y, width: 240, height: 160, rotation: 0, locked: false, hidden: false,
       widthMode: 'fixed', heightMode: 'fixed',
+      lockAspectRatio: false,
       minW: null, maxW: null, minH: null, maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
       src: '',
@@ -1488,6 +1539,7 @@ export function createVideo(x = 80, y = 80, name) {
     base: {
       x, y, width: 320, height: 180, rotation: 0, locked: false, hidden: false,
       widthMode: 'fixed', heightMode: 'fixed',
+      lockAspectRatio: false,
       minW: null, maxW: null, minH: null, maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
       src: '',
@@ -1496,6 +1548,7 @@ export function createVideo(x = 80, y = 80, name) {
       videoLoop: false,
       videoMuted: false,
       videoAutoplay: false,
+      videoDisableAutoplayInBuilder: false,
       styles: {
         backgroundColor: 'transparent',
         borderRadius: 0, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
@@ -1519,6 +1572,7 @@ export function createIcon(x = 80, y = 80, name) {
     base: {
       x, y, width: 48, height: 48, rotation: 0, locked: false, hidden: false,
       widthMode: 'fixed', heightMode: 'fixed',
+      lockAspectRatio: false,
       minW: null, maxW: null, minH: null, maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
       iconSource: 'preset',
@@ -1537,6 +1591,674 @@ export function createIcon(x = 80, y = 80, name) {
   };
 }
 
+function createCustomShapeIcon({ x = 80, y = 80, name = 'Shape', width = 120, height = 120, markup, color = '#7c3aed', strokeWidth = 0, strokeColor = '#7c3aed' }) {
+  return {
+    id: `ico-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'icon',
+    name,
+    parentId: null,
+    children: [],
+    base: {
+      x, y, width, height, rotation: 0, locked: false, hidden: false,
+      widthMode: 'fixed', heightMode: 'fixed',
+      lockAspectRatio: false,
+      minW: null, maxW: null, minH: null, maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      iconSource: 'custom',
+      iconName: name.toLowerCase().replace(/\s+/g, '-'),
+      shapeType: null,
+      svgMarkup: sanitizeSvgMarkup(markup),
+      styles: {
+        color,
+        strokeWidth,
+        strokeColor,
+        opacity: 1,
+        zIndex: 1,
+      },
+    },
+    animations: makeDefaultElementAnimations(),
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
+function normalizePolygonSides(value, fallback = 6) {
+  const parsed = typeof value === 'number' ? value : parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(3, Math.min(12, Math.round(parsed)));
+}
+
+function roundVectorNumber(value, fallback = 0) {
+  const parsed = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.round(parsed * 1000) / 1000;
+}
+
+function buildVectorPoint(point, fallbackX = 0, fallbackY = 0) {
+  const x = roundVectorNumber(point?.x, fallbackX);
+  const y = roundVectorNumber(point?.y, fallbackY);
+  const inX = roundVectorNumber(point?.inX, x);
+  const inY = roundVectorNumber(point?.inY, y);
+  const outX = roundVectorNumber(point?.outX, x);
+  const outY = roundVectorNumber(point?.outY, y);
+  const mode = point?.mode === 'smooth' || point?.mode === 'corner'
+    ? point.mode
+    : ((isDistinctVectorHandle(x, y, inX, inY) && isDistinctVectorHandle(x, y, outX, outY)) ? 'smooth' : 'corner');
+  return {
+    x,
+    y,
+    inX,
+    inY,
+    outX,
+    outY,
+    mode,
+  };
+}
+
+function lerpNumber(start, end, t) {
+  return start + ((end - start) * t);
+}
+
+function lerpPoint(start, end, t) {
+  return {
+    x: roundVectorNumber(lerpNumber(start.x, end.x, t)),
+    y: roundVectorNumber(lerpNumber(start.y, end.y, t)),
+  };
+}
+
+function getMirroredHandle(anchor, handle) {
+  return {
+    x: roundVectorNumber((anchor.x * 2) - handle.x),
+    y: roundVectorNumber((anchor.y * 2) - handle.y),
+  };
+}
+
+function getHandleVector(anchor, handle) {
+  return {
+    dx: roundVectorNumber(handle.x - anchor.x),
+    dy: roundVectorNumber(handle.y - anchor.y),
+  };
+}
+
+function getHandleLength(vector) {
+  return Math.hypot(vector.dx, vector.dy) || 0;
+}
+
+function createAnchorPoint(point, fallbackX = 0, fallbackY = 0) {
+  const base = buildVectorPoint(point, fallbackX, fallbackY);
+  return {
+    ...base,
+    inX: base.x,
+    inY: base.y,
+    outX: base.x,
+    outY: base.y,
+    mode: 'corner',
+  };
+}
+
+function getVectorSegmentCount(data) {
+  if (!data?.points?.length) return 0;
+  if (data.closed) return data.points.length;
+  return Math.max(0, data.points.length - 1);
+}
+
+function getVectorSegmentEndpoints(data, segmentIndex) {
+  const points = data?.points ?? [];
+  const startPoint = points[segmentIndex] ?? null;
+  if (!startPoint) return null;
+  const nextIndex = segmentIndex === points.length - 1 ? 0 : segmentIndex + 1;
+  const endPoint = points[nextIndex] ?? null;
+  if (!endPoint) return null;
+  return {
+    startIndex: segmentIndex,
+    endIndex: nextIndex,
+    startPoint,
+    endPoint,
+  };
+}
+
+function getCubicPoint(startPoint, endPoint, t) {
+  const p0 = { x: startPoint.x, y: startPoint.y };
+  const p1 = { x: startPoint.outX, y: startPoint.outY };
+  const p2 = { x: endPoint.inX, y: endPoint.inY };
+  const p3 = { x: endPoint.x, y: endPoint.y };
+  const q0 = lerpPoint(p0, p1, t);
+  const q1 = lerpPoint(p1, p2, t);
+  const q2 = lerpPoint(p2, p3, t);
+  const r0 = lerpPoint(q0, q1, t);
+  const r1 = lerpPoint(q1, q2, t);
+  return lerpPoint(r0, r1, t);
+}
+
+function splitVectorSegment(startPoint, endPoint, t = 0.5) {
+  const p0 = { x: startPoint.x, y: startPoint.y };
+  const p1 = { x: startPoint.outX, y: startPoint.outY };
+  const p2 = { x: endPoint.inX, y: endPoint.inY };
+  const p3 = { x: endPoint.x, y: endPoint.y };
+  const q0 = lerpPoint(p0, p1, t);
+  const q1 = lerpPoint(p1, p2, t);
+  const q2 = lerpPoint(p2, p3, t);
+  const r0 = lerpPoint(q0, q1, t);
+  const r1 = lerpPoint(q1, q2, t);
+  const s = lerpPoint(r0, r1, t);
+  return {
+    startOut: q0,
+    insertedIn: r0,
+    insertedAnchor: s,
+    insertedOut: r1,
+    endIn: q2,
+  };
+}
+
+function getDistanceToSegmentSample(point, startPoint, endPoint, sampleCount = 24) {
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestT = 0.5;
+  for (let index = 0; index <= sampleCount; index += 1) {
+    const t = index / sampleCount;
+    const sample = getCubicPoint(startPoint, endPoint, t);
+    const distance = Math.hypot(point.x - sample.x, point.y - sample.y);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestT = t;
+    }
+  }
+  return { distance: bestDistance, t: bestT };
+}
+
+function isDistinctVectorHandle(anchorX, anchorY, handleX, handleY) {
+  return Math.abs(handleX - anchorX) > 0.001 || Math.abs(handleY - anchorY) > 0.001;
+}
+
+export function normalizeVectorShapeData(data, fallbackKind = 'path') {
+  const kind = data?.kind === 'line' || fallbackKind === 'line' ? 'line' : 'path';
+  const rawPoints = Array.isArray(data?.points) ? data.points : [];
+  const fallbackPoints = kind === 'line'
+    ? [{ x: 0, y: 12 }, { x: 160, y: 12 }]
+    : [{ x: 10, y: 90 }, { x: 84, y: 34 }, { x: 150, y: 24 }];
+  const points = (rawPoints.length ? rawPoints : fallbackPoints).map((point, index) => {
+    const fallbackPoint = fallbackPoints[Math.min(index, fallbackPoints.length - 1)] ?? fallbackPoints[0];
+    return buildVectorPoint(point, fallbackPoint.x, fallbackPoint.y);
+  });
+
+  if (kind === 'line') {
+    const first = points[0] ?? buildVectorPoint(null, 0, 12);
+    const second = points[1] ?? buildVectorPoint(null, 160, 12);
+    return {
+      kind: 'line',
+      closed: false,
+      points: [
+        { ...first, inX: first.x, inY: first.y, outX: first.x, outY: first.y },
+        { ...second, inX: second.x, inY: second.y, outX: second.x, outY: second.y },
+      ],
+    };
+  }
+
+  return {
+    kind: 'path',
+    closed: data?.closed === true,
+    points,
+  };
+}
+
+export function setVectorAnchorMode(vectorData, pointIndex, mode = 'corner') {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  if (data.kind === 'line') return data;
+  if (!['corner', 'smooth'].includes(mode)) return data;
+  if (!Number.isInteger(pointIndex) || pointIndex < 0 || pointIndex >= data.points.length) return data;
+  const points = data.points.map((point, index) => {
+    if (index !== pointIndex) return { ...point };
+    const nextPoint = { ...point, mode };
+    if (mode === 'corner') {
+      nextPoint.inX = nextPoint.x;
+      nextPoint.inY = nextPoint.y;
+      nextPoint.outX = nextPoint.x;
+      nextPoint.outY = nextPoint.y;
+      return nextPoint;
+    }
+
+    const previousIndex = pointIndex > 0 ? pointIndex - 1 : (data.closed ? data.points.length - 1 : -1);
+    const nextIndex = pointIndex < data.points.length - 1 ? pointIndex + 1 : (data.closed ? 0 : -1);
+    const previousPoint = previousIndex >= 0 ? data.points[previousIndex] : null;
+    const followingPoint = nextIndex >= 0 ? data.points[nextIndex] : null;
+    const incomingVector = getHandleVector(nextPoint, { x: nextPoint.inX, y: nextPoint.inY });
+    const outgoingVector = getHandleVector(nextPoint, { x: nextPoint.outX, y: nextPoint.outY });
+    const incomingLength = getHandleLength(incomingVector);
+    const outgoingLength = getHandleLength(outgoingVector);
+    let tangentDx = 0;
+    let tangentDy = 0;
+    if (previousPoint && followingPoint) {
+      tangentDx = followingPoint.x - previousPoint.x;
+      tangentDy = followingPoint.y - previousPoint.y;
+    } else if (followingPoint) {
+      tangentDx = followingPoint.x - nextPoint.x;
+      tangentDy = followingPoint.y - nextPoint.y;
+    } else if (previousPoint) {
+      tangentDx = nextPoint.x - previousPoint.x;
+      tangentDy = nextPoint.y - previousPoint.y;
+    } else if (incomingLength > 0) {
+      tangentDx = -incomingVector.dx;
+      tangentDy = -incomingVector.dy;
+    } else if (outgoingLength > 0) {
+      tangentDx = outgoingVector.dx;
+      tangentDy = outgoingVector.dy;
+    } else {
+      tangentDx = 48;
+      tangentDy = 0;
+    }
+    const tangentLength = Math.hypot(tangentDx, tangentDy) || 1;
+    const normalizedDx = tangentDx / tangentLength;
+    const normalizedDy = tangentDy / tangentLength;
+    const nextInLength = incomingLength || (previousPoint ? Math.max(16, Math.hypot(nextPoint.x - previousPoint.x, nextPoint.y - previousPoint.y) / 3) : 24);
+    const nextOutLength = outgoingLength || (followingPoint ? Math.max(16, Math.hypot(followingPoint.x - nextPoint.x, followingPoint.y - nextPoint.y) / 3) : nextInLength);
+    nextPoint.inX = roundVectorNumber(nextPoint.x - (normalizedDx * nextInLength));
+    nextPoint.inY = roundVectorNumber(nextPoint.y - (normalizedDy * nextInLength));
+    nextPoint.outX = roundVectorNumber(nextPoint.x + (normalizedDx * nextOutLength));
+    nextPoint.outY = roundVectorNumber(nextPoint.y + (normalizedDy * nextOutLength));
+    return nextPoint;
+  });
+  return { ...data, points };
+}
+
+export function updateVectorHandle(vectorData, pointIndex, handleKey, handlePosition, mirror = true) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  if (data.kind === 'line') return data;
+  if (!['in', 'out'].includes(handleKey)) return data;
+  if (!Number.isInteger(pointIndex) || pointIndex < 0 || pointIndex >= data.points.length) return data;
+  const points = data.points.map((point, index) => {
+    if (index !== pointIndex) return { ...point };
+    const nextPoint = { ...point };
+    const handleXKey = handleKey === 'in' ? 'inX' : 'outX';
+    const handleYKey = handleKey === 'in' ? 'inY' : 'outY';
+    nextPoint[handleXKey] = roundVectorNumber(handlePosition.x, nextPoint[handleXKey]);
+    nextPoint[handleYKey] = roundVectorNumber(handlePosition.y, nextPoint[handleYKey]);
+    if (nextPoint.mode === 'smooth' && mirror) {
+      const opposite = getMirroredHandle({ x: nextPoint.x, y: nextPoint.y }, { x: nextPoint[handleXKey], y: nextPoint[handleYKey] });
+      if (handleKey === 'in') {
+        nextPoint.outX = opposite.x;
+        nextPoint.outY = opposite.y;
+      } else {
+        nextPoint.inX = opposite.x;
+        nextPoint.inY = opposite.y;
+      }
+    }
+    return nextPoint;
+  });
+  return { ...data, points };
+}
+
+export function moveVectorAnchor(vectorData, pointIndex, nextPosition) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  if (!Number.isInteger(pointIndex) || pointIndex < 0 || pointIndex >= data.points.length) return data;
+  const points = data.points.map((point, index) => {
+    if (index !== pointIndex) return { ...point };
+    const dx = roundVectorNumber(nextPosition.x, point.x) - point.x;
+    const dy = roundVectorNumber(nextPosition.y, point.y) - point.y;
+    return {
+      ...point,
+      x: roundVectorNumber(point.x + dx),
+      y: roundVectorNumber(point.y + dy),
+      inX: roundVectorNumber(point.inX + dx),
+      inY: roundVectorNumber(point.inY + dy),
+      outX: roundVectorNumber(point.outX + dx),
+      outY: roundVectorNumber(point.outY + dy),
+    };
+  });
+  return { ...data, points };
+}
+
+export function insertVectorAnchorAtSegment(vectorData, segmentIndex, t = 0.5) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  if (data.kind === 'line') return { vectorData: data, insertedIndex: -1 };
+  const segmentCount = getVectorSegmentCount(data);
+  if (segmentCount < 1 || segmentIndex < 0 || segmentIndex >= segmentCount) return { vectorData: data, insertedIndex: -1 };
+  const segment = getVectorSegmentEndpoints(data, segmentIndex);
+  if (!segment) return { vectorData: data, insertedIndex: -1 };
+  const split = splitVectorSegment(segment.startPoint, segment.endPoint, Math.max(0.05, Math.min(0.95, t)));
+  const points = data.points.map((point) => ({ ...point }));
+  points[segment.startIndex] = {
+    ...points[segment.startIndex],
+    outX: split.startOut.x,
+    outY: split.startOut.y,
+  };
+  points[segment.endIndex] = {
+    ...points[segment.endIndex],
+    inX: split.endIn.x,
+    inY: split.endIn.y,
+  };
+  const insertedPoint = buildVectorPoint({
+    x: split.insertedAnchor.x,
+    y: split.insertedAnchor.y,
+    inX: split.insertedIn.x,
+    inY: split.insertedIn.y,
+    outX: split.insertedOut.x,
+    outY: split.insertedOut.y,
+    mode: 'smooth',
+  }, split.insertedAnchor.x, split.insertedAnchor.y);
+  const insertIndex = segment.startIndex + 1;
+  points.splice(insertIndex, 0, insertedPoint);
+  return { vectorData: { ...data, points }, insertedIndex: insertIndex };
+}
+
+export function removeVectorAnchor(vectorData, pointIndex) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  if (data.kind === 'line') return { vectorData: data, removed: false };
+  const minimumPoints = data.closed ? 3 : 2;
+  if (!Number.isInteger(pointIndex) || pointIndex < 0 || pointIndex >= data.points.length || data.points.length <= minimumPoints) {
+    return { vectorData: data, removed: false };
+  }
+  const points = data.points.map((point) => ({ ...point }));
+  points.splice(pointIndex, 1);
+  return { vectorData: { ...data, points }, removed: true };
+}
+
+export function toggleVectorPathClosed(vectorData) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  if (data.kind === 'line' || data.points.length < 3) return data;
+  return { ...data, closed: !data.closed };
+}
+
+export function findClosestVectorSegment(vectorData, worldPoint) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  const segmentCount = getVectorSegmentCount(data);
+  if (segmentCount < 1) return null;
+  let closest = null;
+  for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
+    const segment = getVectorSegmentEndpoints(data, segmentIndex);
+    if (!segment) continue;
+    const sample = getDistanceToSegmentSample(worldPoint, segment.startPoint, segment.endPoint);
+    if (!closest || sample.distance < closest.distance) {
+      closest = { segmentIndex, distance: sample.distance, t: sample.t };
+    }
+  }
+  return closest;
+}
+
+export function scaleVectorShapeToBounds(vectorData, nextBounds) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  const startBounds = getVectorShapeBounds(data);
+  const safeWidth = Math.max(1, roundVectorNumber(nextBounds.width, startBounds.width));
+  const safeHeight = Math.max(1, roundVectorNumber(nextBounds.height, startBounds.height));
+  const scaleX = safeWidth / Math.max(startBounds.width, 0.0001);
+  const scaleY = safeHeight / Math.max(startBounds.height, 0.0001);
+  return {
+    ...data,
+    points: data.points.map((point) => ({
+      ...point,
+      x: roundVectorNumber((point.x - startBounds.minX) * scaleX + (nextBounds.minX ?? 0)),
+      y: roundVectorNumber((point.y - startBounds.minY) * scaleY + (nextBounds.minY ?? 0)),
+      inX: roundVectorNumber((point.inX - startBounds.minX) * scaleX + (nextBounds.minX ?? 0)),
+      inY: roundVectorNumber((point.inY - startBounds.minY) * scaleY + (nextBounds.minY ?? 0)),
+      outX: roundVectorNumber((point.outX - startBounds.minX) * scaleX + (nextBounds.minX ?? 0)),
+      outY: roundVectorNumber((point.outY - startBounds.minY) * scaleY + (nextBounds.minY ?? 0)),
+    })),
+  };
+}
+
+export function createVectorLineData(width = 160, height = 24) {
+  const safeWidth = Math.max(1, roundVectorNumber(width, 160));
+  const safeHeight = Math.max(1, roundVectorNumber(height, 24));
+  const midY = roundVectorNumber(safeHeight / 2, 12);
+  return normalizeVectorShapeData({
+    kind: 'line',
+    points: [
+      { x: 0, y: midY },
+      { x: safeWidth, y: midY },
+    ],
+  }, 'line');
+}
+
+export function createDefaultBezierPathData(kind = 'path') {
+  if (kind === 'pen') {
+    return normalizeVectorShapeData({
+      kind: 'path',
+      closed: false,
+      points: [
+        { x: 10, y: 90 },
+        { x: 44, y: 28 },
+        { x: 85, y: 68 },
+        { x: 116, y: 18 },
+        { x: 150, y: 88 },
+      ],
+    }, 'path');
+  }
+
+  return normalizeVectorShapeData({
+    kind: 'path',
+    closed: false,
+    points: [
+      { x: 8, y: 96, outX: 32, outY: 28 },
+      { x: 84, y: 34, inX: 58, inY: 16, outX: 103, outY: 47 },
+      { x: 152, y: 24, inX: 113, inY: 88 },
+    ],
+  }, 'path');
+}
+
+export function getVectorShapeBounds(vectorData) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  const values = [];
+  data.points.forEach((point) => {
+    values.push({ x: point.x, y: point.y });
+    if (data.kind !== 'line') {
+      values.push({ x: point.inX, y: point.inY });
+      values.push({ x: point.outX, y: point.outY });
+    }
+  });
+  const xs = values.map((point) => point.x);
+  const ys = values.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: Math.max(1, roundVectorNumber(maxX - minX, 1)),
+    height: Math.max(1, roundVectorNumber(maxY - minY, 1)),
+  };
+}
+
+export function reframeVectorShapeData(vectorData) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  const bounds = getVectorShapeBounds(data);
+  return {
+    offsetX: bounds.minX,
+    offsetY: bounds.minY,
+    width: bounds.width,
+    height: bounds.height,
+    vectorData: {
+      ...data,
+      points: data.points.map((point) => ({
+        ...point,
+        x: roundVectorNumber(point.x - bounds.minX),
+        y: roundVectorNumber(point.y - bounds.minY),
+        inX: roundVectorNumber(point.inX - bounds.minX),
+        inY: roundVectorNumber(point.inY - bounds.minY),
+        outX: roundVectorNumber(point.outX - bounds.minX),
+        outY: roundVectorNumber(point.outY - bounds.minY),
+      })),
+    },
+  };
+}
+
+export function getVectorShapePathD(vectorData) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  const [firstPoint, ...restPoints] = data.points;
+  if (!firstPoint) return '';
+  const commands = [`M ${firstPoint.x} ${firstPoint.y}`];
+
+  restPoints.forEach((point, index) => {
+    const previous = data.points[index];
+    const useCurve = data.kind !== 'line' && (
+      isDistinctVectorHandle(previous.x, previous.y, previous.outX, previous.outY)
+      || isDistinctVectorHandle(point.x, point.y, point.inX, point.inY)
+    );
+    if (useCurve) commands.push(`C ${previous.outX} ${previous.outY} ${point.inX} ${point.inY} ${point.x} ${point.y}`);
+    else commands.push(`L ${point.x} ${point.y}`);
+  });
+
+  if (data.kind !== 'line' && data.closed && data.points.length > 2) {
+    const lastPoint = data.points[data.points.length - 1];
+    const useCurve = isDistinctVectorHandle(lastPoint.x, lastPoint.y, lastPoint.outX, lastPoint.outY)
+      || isDistinctVectorHandle(firstPoint.x, firstPoint.y, firstPoint.inX, firstPoint.inY);
+    if (useCurve) commands.push(`C ${lastPoint.outX} ${lastPoint.outY} ${firstPoint.inX} ${firstPoint.inY} ${firstPoint.x} ${firstPoint.y}`);
+    else commands.push(`L ${firstPoint.x} ${firstPoint.y}`);
+    commands.push('Z');
+  }
+
+  return commands.join(' ');
+}
+
+export function buildVectorShapeSvgMarkup(vectorData, options = {}) {
+  const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+  const bounds = getVectorShapeBounds(data);
+  const width = Math.max(1, roundVectorNumber(options.width, bounds.width));
+  const height = Math.max(1, roundVectorNumber(options.height, bounds.height));
+  const pathD = getVectorShapePathD(data);
+  const fill = typeof options.fill === 'string' ? options.fill : 'none';
+  const stroke = typeof options.stroke === 'string' ? options.stroke : '#111827';
+  const strokeWidth = Math.max(0, roundVectorNumber(options.strokeWidth, data.kind === 'line' ? 2 : 1.5));
+  const lineCap = options.lineCap ?? 'round';
+  const lineJoin = options.lineJoin ?? 'round';
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"><path d="${pathD}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}"/></svg>`;
+}
+
+export function getVectorShapeData(element = null) {
+  if (!element || typeof element !== 'object') return null;
+  const shapeKind = getShapePresetKind(element);
+  if (!shapeKind || !['line', 'path', 'pen'].includes(shapeKind)) return null;
+
+  const raw = element.vectorData ?? element.base?.vectorData ?? null;
+  if (raw) return normalizeVectorShapeData(raw, shapeKind === 'line' ? 'line' : 'path');
+  if (shapeKind === 'line') return createVectorLineData(element.width ?? element.base?.width ?? 160, element.height ?? element.base?.height ?? 24);
+  return createDefaultBezierPathData(shapeKind === 'pen' ? 'pen' : 'path');
+}
+
+export function buildPolygonSvgMarkup(sides = 6) {
+  const count = normalizePolygonSides(sides);
+  const cx = 60;
+  const cy = 52;
+  const radius = 48;
+  const points = Array.from({ length: count }, (_, index) => {
+    const angle = (-Math.PI / 2) + ((Math.PI * 2 * index) / count);
+    const px = cx + (Math.cos(angle) * radius);
+    const py = cy + (Math.sin(angle) * radius);
+    return `${Math.round(px * 100) / 100},${Math.round(py * 100) / 100}`;
+  }).join(' ');
+  return `<svg viewBox="0 0 120 104" xmlns="http://www.w3.org/2000/svg"><polygon points="${points}" fill="currentColor"/></svg>`;
+}
+
+export function buildCircleSvgMarkup() {
+  return '<svg viewBox="0 0 120 120" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"><circle cx="60" cy="60" r="60" fill="currentColor"/></svg>';
+}
+
+export function getShapePresetKind(element = null) {
+  if (!element || typeof element !== 'object') return null;
+
+  const explicitType = typeof element.shapeType === 'string' && element.shapeType
+    ? element.shapeType
+    : (typeof element.base?.shapeType === 'string' && element.base.shapeType ? element.base.shapeType : null);
+  if (explicitType) return explicitType;
+
+  if (element.type === 'frame') {
+    const name = `${element.name ?? element.base?.name ?? ''}`.trim().toLowerCase();
+    if (name === 'circle') return 'circle';
+    if (name === 'line') return 'line';
+  }
+
+  if (element.type === 'icon') {
+    const iconName = `${element.iconName ?? element.base?.iconName ?? ''}`.trim().toLowerCase();
+    if (iconName === 'line') return 'line';
+    if (iconName === 'polygon') return 'polygon';
+    if (iconName === 'path') return 'path';
+    if (iconName === 'pen-path') return 'pen';
+  }
+
+  return null;
+}
+
+export function createShapePreset(shapeType, x = 80, y = 80) {
+  if (shapeType === 'circle') {
+    const element = createCustomShapeIcon({
+      x,
+      y,
+      name: 'Circle',
+      width: 120,
+      height: 120,
+      color: '#7c3aed',
+      markup: buildCircleSvgMarkup(),
+    });
+    element.base.shapeType = 'circle';
+    element.base.lockAspectRatio = true;
+    element.base.styles = {
+      ...element.base.styles,
+      backgroundColor: 'transparent',
+      color: '#7c3aed',
+      borderRadius: 0,
+      borderWidth: 0,
+    };
+    return element;
+  }
+
+  if (shapeType === 'line') {
+    const vectorData = createVectorLineData(160, 24);
+    const element = createCustomShapeIcon({
+      x,
+      y,
+      name: 'Line',
+      width: 160,
+      height: 24,
+      color: 'transparent',
+      strokeWidth: 2,
+      strokeColor: '#111827',
+      markup: buildVectorShapeSvgMarkup(vectorData, { width: 160, height: 24, fill: 'none', stroke: '#111827', strokeWidth: 2 }),
+    });
+    element.base.shapeType = 'line';
+    element.base.vectorData = vectorData;
+    element.base.styles = {
+      ...element.base.styles,
+      backgroundColor: 'transparent',
+      overflow: 'visible',
+    };
+    return element;
+  }
+
+  if (shapeType === 'polygon') {
+    const element = createCustomShapeIcon({
+      x,
+      y,
+      name: 'Polygon',
+      width: 120,
+      height: 104,
+      color: '#0f766e',
+      markup: buildPolygonSvgMarkup(6),
+    });
+    element.base.shapeType = 'polygon';
+    element.base.polygonSides = 6;
+    return element;
+  }
+
+  const reframedVector = reframeVectorShapeData(createDefaultBezierPathData(shapeType === 'path' ? 'path' : 'pen'));
+  const vectorData = reframedVector.vectorData;
+  const width = reframedVector.width;
+  const height = reframedVector.height;
+  const strokeColor = '#2563eb';
+  const element = createCustomShapeIcon({
+    x,
+    y,
+    name: shapeType === 'path' ? 'Path' : 'Pen Path',
+    width,
+    height,
+    color: 'transparent',
+    strokeWidth: 1.5,
+    strokeColor,
+    markup: buildVectorShapeSvgMarkup(vectorData, { width, height, fill: 'none', stroke: strokeColor, strokeWidth: 1.5 }),
+  });
+  element.base.shapeType = shapeType === 'path' ? 'path' : 'pen';
+  element.base.vectorData = vectorData;
+  return element;
+}
+
 export function createText(x = 80, y = 80, name) {
   const defaultText = 'Text';
   return {
@@ -1548,6 +2270,7 @@ export function createText(x = 80, y = 80, name) {
     base: {
       x, y, width: 240, height: 60, rotation: 0, locked: false, hidden: false,
       widthMode: 'hug', heightMode: 'hug',
+      lockAspectRatio: false,
       minW: null, maxW: null, minH: null, maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
       text: defaultText,
@@ -1801,7 +2524,7 @@ function preserveComponentRootPlacement(nextRoot, currentRoot) {
     'x', 'y', 'width', 'height', 'rotation',
     'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
     'minW', 'maxW', 'minH', 'maxH',
-    'hidden', 'locked', 'positionType', 'absoluteInLayout', 'constraints',
+    'hidden', 'locked', 'positionType', 'absoluteInLayout', 'constraints', 'lockAspectRatio',
   ];
   const result = {
     ...nextRoot,
@@ -1818,7 +2541,7 @@ function preserveComponentRootPlacement(nextRoot, currentRoot) {
       'x', 'y', 'width', 'height', 'rotation',
       'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
       'minW', 'maxW', 'minH', 'maxH',
-      'hidden', 'positionType', 'absoluteInLayout', 'constraints',
+      'hidden', 'positionType', 'absoluteInLayout', 'constraints', 'lockAspectRatio',
     ]);
     if (Object.keys(preserved).length) {
       result.overrides = {
@@ -1897,6 +2620,8 @@ function snapshotComponentEditorState(state) {
     hoveredId: state.hoveredId ?? null,
     drilledContainerId: state.drilledContainerId ?? null,
     pendingDraw: state.pendingDraw ?? null,
+    activeCanvasTool: state.activeCanvasTool ?? 'select',
+    activeCommentId: state.activeCommentId ?? null,
     leftTab: state.leftTab ?? 'layers',
     componentEditor: state.componentEditor,
   });
@@ -1912,6 +2637,8 @@ function restoreComponentEditorSnapshot(snapshot) {
     hoveredId: parsed.hoveredId ?? null,
     drilledContainerId: parsed.drilledContainerId ?? null,
     pendingDraw: parsed.pendingDraw ?? null,
+    activeCanvasTool: parsed.activeCanvasTool ?? 'select',
+    activeCommentId: parsed.activeCommentId ?? null,
     leftTab: parsed.leftTab ?? 'layers',
     componentEditor: parsed.componentEditor
       ? { ...parsed.componentEditor, isOpen: true }
@@ -2634,11 +3361,22 @@ export const useEditorStore = create((set, get) => {
     // ── UI state ───────────────────────────────────────────
     leftTab: 'layers',
     setLeftTab: (tab) => set({ leftTab: tab }),
+    activeVectorPoint: null,
+    setActiveVectorPoint: (payload) => set({
+      activeVectorPoint: payload && payload.elementId && Number.isInteger(payload.pointIndex)
+        ? {
+            elementId: payload.elementId,
+            bpId: payload.bpId ?? 'desktop',
+            pointIndex: payload.pointIndex,
+          }
+        : null,
+    }),
+    clearActiveVectorPoint: () => set({ activeVectorPoint: null }),
     selection: null,   // { elementId, elementIds, bpId }
-    setSelection: (sel) => set({ selection: normalizeSelection(sel) }),
-    clearSelection: () => set({ selection: null }),
+    setSelection: (sel) => set({ selection: normalizeSelection(sel), activeCommentId: null, activeVectorPoint: null }),
+    clearSelection: () => set({ selection: null, activeVectorPoint: null }),
     selectOnly(sel) {
-      set({ selection: normalizeSelection(sel) });
+      set({ selection: normalizeSelection(sel), activeCommentId: null, activeVectorPoint: null });
     },
     addToSelection(sel) {
       set((state) => {
@@ -2646,10 +3384,10 @@ export const useEditorStore = create((set, get) => {
         if (!nextSelection) return state;
         const current = normalizeSelection(state.selection);
         if (!current || current.bpId !== nextSelection.bpId) {
-          return { selection: nextSelection };
+          return { selection: nextSelection, activeCommentId: null, activeVectorPoint: null };
         }
         if (current.elementIds.includes(nextSelection.elementId)) {
-          return { selection: buildSelection(current.elementIds, current.bpId, nextSelection.elementId) };
+          return { selection: buildSelection(current.elementIds, current.bpId, nextSelection.elementId), activeCommentId: null, activeVectorPoint: null };
         }
         return {
           selection: buildSelection(
@@ -2657,16 +3395,18 @@ export const useEditorStore = create((set, get) => {
             current.bpId,
             nextSelection.elementId,
           ),
+          activeCommentId: null,
+          activeVectorPoint: null,
         };
       });
     },
     toggleSelection(sel) {
       set((state) => {
         const nextSelection = normalizeSelection(sel);
-        if (!nextSelection) return { selection: null };
+        if (!nextSelection) return { selection: null, activeVectorPoint: null };
         const current = normalizeSelection(state.selection);
         if (!current || current.bpId !== nextSelection.bpId) {
-          return { selection: nextSelection };
+          return { selection: nextSelection, activeCommentId: null, activeVectorPoint: null };
         }
         if (!current.elementIds.includes(nextSelection.elementId)) {
           return {
@@ -2675,10 +3415,14 @@ export const useEditorStore = create((set, get) => {
               current.bpId,
               nextSelection.elementId,
             ),
+            activeCommentId: null,
+            activeVectorPoint: null,
           };
         }
         return {
           selection: removeSelectionIds(current, [nextSelection.elementId]),
+          activeCommentId: null,
+          activeVectorPoint: null,
         };
       });
     },
@@ -2698,7 +3442,16 @@ export const useEditorStore = create((set, get) => {
     artboardSel: null, // bpId of the currently selected artboard
     setArtboardSel: (bpId) => set({ artboardSel: bpId }),
     pendingDraw: null, // 'frame' | 'image' | null — click-to-draw mode
-    setPendingDraw: (type) => set({ pendingDraw: type }),
+    setPendingDraw: (type) => set({ pendingDraw: type, activeCanvasTool: type ? `draw-${type}` : 'select', activeCommentId: type ? null : get().activeCommentId }),
+    activeCanvasTool: 'select',
+    setActiveCanvasTool: (tool) => set({
+      activeCanvasTool: tool || 'select',
+      pendingDraw: typeof tool === 'string' && tool.startsWith('draw-') ? tool.slice(5) : null,
+      activeCommentId: tool === 'comment' ? get().activeCommentId : null,
+    }),
+    activeCommentId: null,
+    setActiveComment: (commentId) => set({ activeCommentId: commentId ?? null, selection: null, artboardSel: null }),
+    clearActiveComment: () => set({ activeCommentId: null }),
     interacting: false,
     setInteracting: (v) => set({ interacting: v }),
     saveStatus: null,
@@ -2806,6 +3559,14 @@ export const useEditorStore = create((set, get) => {
     getCurrentPage() {
       return getActivePage();
     },
+    getPageComments() {
+      return getActivePage()?.comments ?? [];
+    },
+    getActiveComment() {
+      const activeCommentId = get().activeCommentId;
+      if (!activeCommentId) return null;
+      return (getActivePage()?.comments ?? []).find((comment) => comment.id === activeCommentId) ?? null;
+    },
     getAllElements() { return getEls(); },
     getRootElements() { return getRootElements(getEls()); },
     getChildElements(parentId) { return getChildEls(getEls(), parentId); },
@@ -2847,7 +3608,90 @@ export const useEditorStore = create((set, get) => {
         }
         return next;
       });
-      set({ selection: buildSelection([el.id], bpId ?? 'desktop', el.id) });
+      set({ selection: buildSelection([el.id], bpId ?? 'desktop', el.id), activeCommentId: null, activeCanvasTool: get().activeCanvasTool === 'comment' ? 'select' : get().activeCanvasTool });
+    },
+
+    updateCurrentPage(updater) {
+      set((state) => {
+        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) return state;
+        return {
+          pages: state.pages.map((page) => (
+            page.id === state.currentPageId ? normalizePageData(updater(page)) : page
+          )),
+        };
+      });
+    },
+
+    addCommentThread({ bpId = 'desktop', x = 0, y = 0, text = '', author = null, avatarUrl = null }) {
+      const body = typeof text === 'string' ? text.trim() : '';
+      const currentAuthor = getCurrentCommentAuthor();
+      const safeAuthor = typeof author === 'string' && author.trim() ? author.trim() : currentAuthor.author;
+      const safeAvatarUrl = typeof avatarUrl === 'string' ? avatarUrl : currentAuthor.avatarUrl;
+      const comment = normalizeCommentThread({
+        id: makeId('comment'),
+        bpId,
+        x,
+        y,
+        author: safeAuthor,
+        avatarUrl: safeAvatarUrl,
+        resolved: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: body ? [{ id: makeId('comment-msg'), author: safeAuthor, avatarUrl: safeAvatarUrl, text: body, createdAt: Date.now() }] : [],
+      });
+      get().updateCurrentPage((page) => ({
+        ...page,
+        comments: [...(page.comments ?? []), comment],
+      }));
+      set({ activeCommentId: comment.id, selection: null, artboardSel: null });
+      return comment.id;
+    },
+
+    updateCommentThread(commentId, updater) {
+      if (!commentId || typeof updater !== 'function') return;
+      get().updateCurrentPage((page) => ({
+        ...page,
+        comments: (page.comments ?? []).map((comment) => (
+          comment.id === commentId ? normalizeCommentThread(updater(comment)) : comment
+        )),
+      }));
+    },
+
+    addCommentReply(commentId, text, author = null, avatarUrl = null) {
+      const body = typeof text === 'string' ? text.trim() : '';
+      if (!body) return;
+      const currentAuthor = getCurrentCommentAuthor();
+      const safeAuthor = typeof author === 'string' && author.trim() ? author.trim() : currentAuthor.author;
+      const safeAvatarUrl = typeof avatarUrl === 'string' ? avatarUrl : currentAuthor.avatarUrl;
+      get().updateCommentThread(commentId, (comment) => ({
+        ...comment,
+        updatedAt: Date.now(),
+        messages: [
+          ...(comment.messages ?? []),
+          normalizeCommentMessage({ id: makeId('comment-msg'), author: safeAuthor, avatarUrl: safeAvatarUrl, text: body, createdAt: Date.now() }),
+        ],
+      }));
+      set({ activeCommentId: commentId });
+    },
+
+    setCommentResolved(commentId, resolved) {
+      get().updateCommentThread(commentId, (comment) => ({
+        ...comment,
+        resolved: resolved === true,
+        updatedAt: Date.now(),
+      }));
+      set({ activeCommentId: commentId });
+    },
+
+    deleteCommentThread(commentId) {
+      if (!commentId) return;
+      get().updateCurrentPage((page) => ({
+        ...page,
+        comments: (page.comments ?? []).filter((comment) => comment.id !== commentId),
+      }));
+      if (get().activeCommentId === commentId) {
+        set({ activeCommentId: null });
+      }
     },
 
     /** Update base (desktop) non-style props: name, locked, etc. */

@@ -3,9 +3,11 @@ import TopBar from './panels/TopBar';
 import LeftPanel from './panels/LeftPanel';
 import InfiniteCanvas from './canvas/InfiniteCanvas';
 import PropertiesPanel from './panels/PropertiesPanel';
+import CommentsPanel from './panels/CommentsPanel';
 import ComponentEditorOverlay from './components/ComponentEditorOverlay';
 import IconLibraryModal from './components/IconLibraryModal';
 import VariablesModal from './components/VariablesModal';
+import BottomToolbar from './components/BottomToolbar';
 import { ICON_PACK_MANIFEST, warmIconPackPreviewCache } from './components/iconCatalog';
 import { useEditorStore } from './store/editorStore';
 
@@ -28,6 +30,8 @@ export default function App() {
   const closeIconLibraryModal = useEditorStore(s => s.closeIconLibraryModal);
   const applyIconLibrarySelection = useEditorStore(s => s.applyIconLibrarySelection);
   const getAllElements = useEditorStore(s => s.getAllElements);
+  const activeCanvasTool = useEditorStore(s => s.activeCanvasTool);
+  const activeCommentId = useEditorStore(s => s.activeCommentId);
   const [leftWidth, setLeftWidth] = useState(240);
   const [rightWidth, setRightWidth] = useState(312);
   const resizeStateRef = useRef(null);
@@ -128,6 +132,8 @@ export default function App() {
     applyIconLibrarySelection(icon);
   };
 
+  const showCommentsPanel = activeSurface === 'page' && (activeCanvasTool === 'comment' || !!activeCommentId);
+
   return (
     <div className="fb-app">
       <TopBar />
@@ -139,9 +145,10 @@ export default function App() {
         <InfiniteCanvas />
         <div className="fb-side-shell fb-side-shell--right" style={{ width: rightWidth }}>
           <button type="button" className="fb-panel-resize-handle fb-panel-resize-handle--right" aria-label="Resize right panel" onPointerDown={startResize('right')} />
-          <PropertiesPanel />
+          {showCommentsPanel ? <CommentsPanel /> : <PropertiesPanel />}
         </div>
       </div>
+      <BottomToolbar />
       {variablesModalOpen ? <VariablesModal /> : null}
       {iconLibraryModal ? (
         <IconLibraryModal

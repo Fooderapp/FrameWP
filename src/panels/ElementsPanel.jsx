@@ -2,7 +2,7 @@ import React from 'react';
 import { useEditorStore } from '../store/editorStore';
 import { getIconPresetMarkup } from '../components/iconLibrary';
 
-const ELEMENT_TYPES = [
+export const ELEMENT_TYPES = [
   {
     type: 'frame',
     icon: (
@@ -53,34 +53,46 @@ const ELEMENT_TYPES = [
   },
 ];
 
-export default function ElementsPanel() {
-  const pendingDraw  = useEditorStore(s => s.pendingDraw);
+export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null, compact = false }) {
+  const pendingDraw = useEditorStore(s => s.pendingDraw);
   const setPendingDraw = useEditorStore(s => s.setPendingDraw);
 
   const handleDragStart = (e, type) => {
-    // Drag → fixed-size drop (existing behaviour); cancel any draw mode
     setPendingDraw(null);
     e.dataTransfer.setData('fb-element-type', type);
+    onItemDragStart?.(type);
+  };
+
+  const handleClick = (type) => {
+    const nextValue = pendingDraw === type ? null : type;
+    setPendingDraw(nextValue);
+    onItemChosen?.(nextValue, type);
   };
 
   return (
+    <div className={`fb-elements-grid${compact ? ' fb-elements-grid--compact' : ''}`}>
+      {ELEMENT_TYPES.map(({ type, icon, label }) => (
+        <div
+          key={type}
+          className={`fb-element-card${pendingDraw === type ? ' fb-element-card--active' : ''}`}
+          draggable
+          onDragStart={(e) => handleDragStart(e, type)}
+          onClick={() => handleClick(type)}
+          title={pendingDraw === type ? `Click on canvas to draw ${label} — Esc to cancel` : `Click to draw ${label}, or drag to place`}
+        >
+          <div className="fb-element-card__icon">{icon}</div>
+          <div className="fb-element-card__label">{label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function ElementsPanel() {
+  return (
     <div>
       <div className="fb-section-label">Layout</div>
-      <div className="fb-elements-grid">
-        {ELEMENT_TYPES.map(({ type, icon, label }) => (
-          <div
-            key={type}
-            className={`fb-element-card${pendingDraw === type ? ' fb-element-card--active' : ''}`}
-            draggable
-            onDragStart={(e) => handleDragStart(e, type)}
-            onClick={() => setPendingDraw(pendingDraw === type ? null : type)}
-            title={pendingDraw === type ? `Click on canvas to draw ${label} — Esc to cancel` : `Click to draw ${label}, or drag to place`}
-          >
-            <div className="fb-element-card__icon">{icon}</div>
-            <div className="fb-element-card__label">{label}</div>
-          </div>
-        ))}
-      </div>
+      <ElementPickerGrid />
 
       <div className="fb-section-label" style={{ marginTop: 8 }}>How to use</div>
       <div style={{ padding: '4px 12px 12px', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>

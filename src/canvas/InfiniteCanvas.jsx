@@ -1,5 +1,5 @@
-import React, { useRef, useEffect, useCallback, useLayoutEffect, useState } from 'react';
-import { useEditorStore, createFrame, createImage, createVideo, createText, createIcon, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected } from '../store/editorStore';
+import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
+import { useEditorStore, createFrame, createImage, createVideo, createText, createIcon, createShapePreset, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds } from '../store/editorStore';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
 import { buildGradient, parseGradient } from '../components/FillPicker';
@@ -8,6 +8,8 @@ import { extractSvgMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
 const SNAP_THRESHOLD_PX = 6;
+const COMMENT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2728%27 height=%2728%27 viewBox=%270 0 28 28%27%3E%3Cpath fill=%27%23f4b400%27 d=%27M6 5h12a4 4 0 0 1 4 4v7a4 4 0 0 1-4 4H11l-5 5v-5H6a4 4 0 0 1-4-4V9a4 4 0 0 1 4-4Z%27/%3E%3Cpath fill=%27none%27 stroke=%27%2319150a%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27 d=%27M6 5h12a4 4 0 0 1 4 4v7a4 4 0 0 1-4 4H11l-5 5v-5H6a4 4 0 0 1-4-4V9a4 4 0 0 1 4-4Z%27/%3E%3Ccircle cx=%2710%27 cy=%2712%27 r=%271.4%27 fill=%27%2319150a%27/%3E%3Ccircle cx=%2714%27 cy=%2712%27 r=%271.4%27 fill=%27%2319150a%27/%3E%3Ccircle cx=%2718%27 cy=%2712%27 r=%271.4%27 fill=%27%2319150a%27/%3E%3C/svg%3E") 6 6, crosshair';
+const PEN_CLOSE_SNAP_PX = 16;
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
 
@@ -110,6 +112,40 @@ function buildConnectorPath(start, end) {
   return `M ${start.x} ${start.y} C ${start.x + deltaX} ${start.y}, ${end.x - deltaX} ${end.y}, ${end.x} ${end.y}`;
 }
 
+function formatCommentTimestamp(value) {
+  if (!Number.isFinite(value)) return 'Now';
+  const delta = Math.max(0, Date.now() - value);
+  const minutes = Math.floor(delta / 60000);
+  if (minutes < 1) return 'Now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function getCurrentCommentUserName() {
+  return typeof window?.fbData?.currentUser?.displayName === 'string'
+    ? window.fbData.currentUser.displayName.trim()
+    : '';
+}
+
+function getExternalReplyCount(comment, currentUserName) {
+  if (!comment || !Array.isArray(comment.messages) || !currentUserName) return 0;
+  return comment.messages.slice(1).reduce((count, message) => {
+    const author = typeof message?.author === 'string' ? message.author.trim() : '';
+    return author && author !== currentUserName ? count + 1 : count;
+  }, 0);
+}
+
+function CommentAvatar({ author, avatarUrl, className = '' }) {
+  const fallback = (author || '?').trim().charAt(0).toUpperCase() || '?';
+  if (avatarUrl) {
+    return <img className={`fb-comment-avatar ${className}`.trim()} src={avatarUrl} alt={author || 'User'} />;
+  }
+  return <span className={`fb-comment-avatar fb-comment-avatar--fallback ${className}`.trim()}>{fallback}</span>;
+}
+
 function normalizeAngle(degrees) {
   const normalized = degrees % 360;
   return normalized < 0 ? normalized + 360 : normalized;
@@ -157,6 +193,108 @@ function pointForProjection(direction, projection, lineCenter) {
   return {
     x: lineCenter.x + direction.x * delta,
     y: lineCenter.y + direction.y * delta,
+  };
+}
+
+function getAspectRatio(width, height) {
+  const safeWidth = Number.isFinite(width) ? Math.max(0.0001, width) : 0;
+  const safeHeight = Number.isFinite(height) ? Math.max(0.0001, height) : 0;
+  if (safeWidth <= 0 || safeHeight <= 0) return 0;
+  return safeWidth / safeHeight;
+}
+
+function resolveResizedBounds({ startBounds, handle, pointer, minSize = 20, keepAspectRatio = false }) {
+  const minDimension = Math.max(1, minSize);
+  const origin = {
+    minX: startBounds.minX,
+    minY: startBounds.minY,
+    maxX: startBounds.minX + startBounds.width,
+    maxY: startBounds.minY + startBounds.height,
+  };
+  let minX = origin.minX;
+  let minY = origin.minY;
+  let maxX = origin.maxX;
+  let maxY = origin.maxY;
+
+  if (handle.includes('w')) minX = Math.min(pointer.x, maxX - minDimension);
+  if (handle.includes('e')) maxX = Math.max(pointer.x, minX + minDimension);
+  if (handle.includes('n')) minY = Math.min(pointer.y, maxY - minDimension);
+  if (handle.includes('s')) maxY = Math.max(pointer.y, minY + minDimension);
+
+  if (!keepAspectRatio) {
+    return {
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: Math.max(minDimension, maxX - minX),
+      height: Math.max(minDimension, maxY - minY),
+    };
+  }
+
+  const aspectRatio = getAspectRatio(startBounds.width, startBounds.height);
+  if (!aspectRatio) {
+    return {
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: Math.max(minDimension, maxX - minX),
+      height: Math.max(minDimension, maxY - minY),
+    };
+  }
+
+  const activeX = handle.includes('e') || handle.includes('w');
+  const activeY = handle.includes('n') || handle.includes('s');
+  const startCenterX = origin.minX + ((origin.maxX - origin.minX) / 2);
+  const startCenterY = origin.minY + ((origin.maxY - origin.minY) / 2);
+  let nextWidth = Math.max(minDimension, maxX - minX);
+  let nextHeight = Math.max(minDimension, maxY - minY);
+
+  if (activeX && activeY) {
+    if ((nextWidth / nextHeight) > aspectRatio) nextHeight = nextWidth / aspectRatio;
+    else nextWidth = nextHeight * aspectRatio;
+
+    if (handle.includes('w')) minX = origin.maxX - nextWidth;
+    else maxX = origin.minX + nextWidth;
+
+    if (handle.includes('n')) minY = origin.maxY - nextHeight;
+    else maxY = origin.minY + nextHeight;
+  } else if (activeX) {
+    nextHeight = nextWidth / aspectRatio;
+    if (handle.includes('w')) minX = origin.maxX - nextWidth;
+    else maxX = origin.minX + nextWidth;
+    minY = startCenterY - (nextHeight / 2);
+    maxY = startCenterY + (nextHeight / 2);
+  } else if (activeY) {
+    nextWidth = nextHeight * aspectRatio;
+    if (handle.includes('n')) minY = origin.maxY - nextHeight;
+    else maxY = origin.minY + nextHeight;
+    minX = startCenterX - (nextWidth / 2);
+    maxX = startCenterX + (nextWidth / 2);
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: Math.max(minDimension, maxX - minX),
+    height: Math.max(minDimension, maxY - minY),
+  };
+}
+
+function getResizeHandlePoint(startBounds, handle) {
+  const minX = startBounds.minX;
+  const minY = startBounds.minY;
+  const maxX = startBounds.minX + startBounds.width;
+  const maxY = startBounds.minY + startBounds.height;
+  const centerX = minX + ((maxX - minX) / 2);
+  const centerY = minY + ((maxY - minY) / 2);
+
+  return {
+    x: handle.includes('w') ? minX : (handle.includes('e') ? maxX : centerX),
+    y: handle.includes('n') ? minY : (handle.includes('s') ? maxY : centerY),
   };
 }
 
@@ -300,6 +438,34 @@ function offsetFromCenter(point, center, distance) {
     x: point.x + (dx / length) * distance,
     y: point.y + (dy / length) * distance,
   };
+}
+
+function getWorldVectorData(vectorData, worldX, worldY) {
+  const data = getVectorShapeData({ shapeType: vectorData?.kind === 'line' ? 'line' : 'path', vectorData }) ?? vectorData;
+  return {
+    ...data,
+    points: (data?.points ?? []).map((point) => ({
+      ...point,
+      x: point.x + worldX,
+      y: point.y + worldY,
+      inX: point.inX + worldX,
+      inY: point.inY + worldY,
+      outX: point.outX + worldX,
+      outY: point.outY + worldY,
+    })),
+  };
+}
+
+function buildWorldVectorPathD(vectorData, worldX, worldY) {
+  const worldData = getWorldVectorData(vectorData, worldX, worldY);
+  return getVectorShapePathD(worldData);
+}
+
+function isPathHandleDistinct(point, handleKey) {
+  if (!point) return false;
+  const handleX = handleKey === 'in' ? point.inX : point.outX;
+  const handleY = handleKey === 'in' ? point.inY : point.outY;
+  return Math.abs(handleX - point.x) > 0.001 || Math.abs(handleY - point.y) > 0.001;
 }
 
 function getDragSessionWorldPosition(session, clientX, clientY, getProjectedWorldPoint) {
@@ -491,9 +657,206 @@ function ViewportFoldOverlay({ onStartFoldDrag }) {
   );
 }
 
+function CommentOverlay({ commentDraft, onStartCommentDrag }) {
+  const activeSurface = useEditorStore((state) => state.activeSurface);
+  const comments = useEditorStore((state) => state.getPageComments());
+  const activeCommentId = useEditorStore((state) => state.activeCommentId);
+  const setActiveComment = useEditorStore((state) => state.setActiveComment);
+  const setActiveCanvasTool = useEditorStore((state) => state.setActiveCanvasTool);
+  const breakpointDefs = useEditorStore((state) => state.breakpointDefs);
+  const viewportScale = useEditorStore((state) => state.viewport.scale);
+  const page = useEditorStore((state) => state.getCurrentPage());
+  const currentUserName = getCurrentCommentUserName();
+
+  if (activeSurface === 'component') return null;
+
+  return (
+    <>
+      {(comments ?? []).filter((comment) => !comment.resolved).map((comment) => {
+        const bp = breakpointDefs[comment.bpId];
+        if (!bp) return null;
+        const pad = resolvePagePadding(page?.padding, comment.bpId);
+        const left = bp.x + (pad?.left ?? 0) + (comment.x ?? 0);
+        const top = bp.y + (pad?.top ?? 0) + (comment.y ?? 0);
+        const preview = comment.messages?.[comment.messages.length - 1]?.text ?? 'Comment';
+        const isActive = comment.id === activeCommentId;
+        const externalReplyCount = getExternalReplyCount(comment, currentUserName);
+        return (
+          <button
+            key={comment.id}
+            type="button"
+            className={`fb-comment-pin${isActive ? ' is-active' : ''}${comment.resolved ? ' is-resolved' : ''}`}
+            style={{ left, top, transform: `translate(-50%, -50%) scale(${1 / Math.max(viewportScale || 1, MIN_SCALE)})` }}
+            onMouseDown={(event) => {
+              event.stopPropagation();
+              setActiveComment(comment.id);
+              setActiveCanvasTool('comment');
+              onStartCommentDrag?.(event, comment);
+            }}
+            title={preview}
+          >
+            <span className="fb-comment-pin__dot">
+              <CommentAvatar author={comment.author} avatarUrl={comment.avatarUrl} className="fb-comment-pin__avatar" />
+              {externalReplyCount > 0 ? <span className="fb-comment-pin__badge">{externalReplyCount}</span> : null}
+            </span>
+          </button>
+        );
+      })}
+      {commentDraft ? (
+        <button
+          type="button"
+          className="fb-comment-pin is-draft is-active"
+          style={{
+            left: commentDraft.left,
+            top: commentDraft.top,
+            transform: `translate(-50%, -50%) scale(${1 / Math.max(viewportScale || 1, MIN_SCALE)})`,
+          }}
+          onMouseDown={(event) => {
+            event.stopPropagation();
+            onStartCommentDrag?.(event, commentDraft);
+          }}
+          title="Draft comment"
+        >
+          <span className="fb-comment-pin__dot fb-comment-pin__dot--draft">
+            <span className="fb-comment-pin__plus">+</span>
+          </span>
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+function CommentCanvasCard({ containerRef, viewport, commentDraft, onSubmitDraft, onDiscardDraft }) {
+  const activeSurface = useEditorStore((state) => state.activeSurface);
+  const activeComment = useEditorStore((state) => state.getActiveComment());
+  const breakpointDefs = useEditorStore((state) => state.breakpointDefs);
+  const page = useEditorStore((state) => state.getCurrentPage());
+  const addCommentReply = useEditorStore((state) => state.addCommentReply);
+  const setCommentResolved = useEditorStore((state) => state.setCommentResolved);
+  const clearActiveComment = useEditorStore((state) => state.clearActiveComment);
+  const [replyText, setReplyText] = useState('');
+
+  useEffect(() => {
+    setReplyText('');
+  }, [activeComment?.id, commentDraft?.id]);
+
+  const cardComment = activeComment ?? commentDraft;
+  const hasMessages = (cardComment?.messages ?? []).length > 0;
+  const isDraftOnly = !activeComment && !!commentDraft && !hasMessages;
+
+  const cardPosition = useMemo(() => {
+    if (activeSurface === 'component' || !cardComment) return null;
+    const bp = breakpointDefs[cardComment.bpId];
+    if (!bp) return null;
+    const pad = resolvePagePadding(page?.padding, cardComment.bpId);
+    const anchorX = (bp.x + (pad?.left ?? 0) + (cardComment.x ?? 0)) * viewport.scale + viewport.x;
+    const anchorY = (bp.y + (pad?.top ?? 0) + (cardComment.y ?? 0)) * viewport.scale + viewport.y;
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    const width = 320;
+    const minLeft = 12;
+    const maxLeft = Math.max(minLeft, (containerRect?.width ?? width + 24) - width - 12);
+    const minTop = 12;
+    const maxTop = Math.max(minTop, (containerRect?.height ?? 380) - 260);
+    return {
+      left: Math.min(Math.max(anchorX + 30, minLeft), maxLeft),
+      top: Math.min(Math.max(anchorY - 18, minTop), maxTop),
+    };
+  }, [cardComment, activeSurface, breakpointDefs, containerRef, page?.padding, viewport.scale, viewport.x, viewport.y]);
+
+  if (!cardComment || !cardPosition || activeSurface === 'component') return null;
+
+  const handleReply = () => {
+    if (!replyText.trim()) return;
+    if (activeComment?.id) addCommentReply(activeComment.id, replyText);
+    else if (commentDraft) onSubmitDraft?.(replyText.trim());
+    setReplyText('');
+  };
+
+  const handleToggleResolved = () => {
+    if (!activeComment?.id) return;
+    const nextResolved = !activeComment.resolved;
+    setCommentResolved(activeComment.id, nextResolved);
+    if (nextResolved) clearActiveComment();
+  };
+
+  return (
+    <div
+      className={`fb-comment-card${activeComment?.resolved ? ' is-resolved' : ''}${isDraftOnly ? ' is-compact' : ''}`}
+      style={cardPosition}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      {!isDraftOnly ? (
+        <div className="fb-comment-card__head">
+          <div>
+            <div className="fb-comment-card__title">{hasMessages ? 'Comment' : 'New comment'}</div>
+            <div className="fb-comment-card__meta">{cardComment.bpId} artboard • {formatCommentTimestamp(cardComment.updatedAt ?? cardComment.createdAt)}</div>
+          </div>
+          <button type="button" className="fb-comment-card__close" onClick={() => activeComment ? clearActiveComment() : onDiscardDraft?.()} aria-label="Close comment thread">×</button>
+        </div>
+      ) : null}
+
+      {hasMessages ? (
+        <div className="fb-comment-card__messages">
+          {(cardComment.messages ?? []).map((message) => (
+            <div key={message.id} className="fb-comment-card__message">
+              <CommentAvatar author={message.author} avatarUrl={message.avatarUrl} />
+              <div className="fb-comment-card__bubble">
+                <div className="fb-comment-card__message-head">
+                  <strong>{message.author || 'You'}</strong>
+                  <span>{formatCommentTimestamp(message.createdAt)}</span>
+                </div>
+                <div className="fb-comment-card__message-body">{message.text}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className={`fb-comment-card__composer${isDraftOnly ? ' is-compact' : ''}`}>
+        <input
+          className="fb-comment-card__input"
+          placeholder={hasMessages ? 'Reply to this thread' : 'Type a comment'}
+          value={replyText}
+          onChange={(event) => setReplyText(event.target.value)}
+          autoFocus
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              handleReply();
+            }
+          }}
+        />
+        <div className="fb-comment-card__actions">
+          {hasMessages ? (
+            <button
+              type="button"
+              className="fb-comment-card__toggle"
+              onClick={handleToggleResolved}
+            >
+              {activeComment.resolved ? 'Reopen' : 'Mark complete'}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="fb-comment-card__submit"
+            onClick={handleReply}
+            disabled={!replyText.trim()}
+            aria-label={hasMessages ? 'Reply' : 'Add comment'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 12h12" />
+              <path d="M13 6l6 6-6 6" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Renders a bounding-box overlay in world-space, as a sibling of artboards.
  *  Not clipped by artboard's overflow:hidden, so it shows even for overflowing elements. */
-function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onStartGradientDrag, dragOverlay, gradientDragOverlay }) {
+function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onStartGradientDrag, onStartVectorPointDrag, onInsertVectorPoint, dragOverlay, gradientDragOverlay }) {
   const selection              = useEditorStore(s => s.selection);
   const bpDefs                 = useEditorStore(s => s.breakpointDefs);
   const allElements            = useEditorStore(s => s.getAllElements());
@@ -504,6 +867,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const setSelection           = useEditorStore(s => s.setSelection);
   const viewport               = useEditorStore(s => s.viewport);
+  const activeVectorPoint      = useEditorStore(s => s.activeVectorPoint);
   const [measuredRect, setMeasuredRect] = useState(null);
   const selectionIds = getSelectionElementIds(selection);
 
@@ -679,6 +1043,8 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
     worldY = dragOverlay.worldY;
   }
 
+  const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
+  const isVectorShape = ['line', 'path', 'pen'].includes(shapeKind ?? '');
   const hasRotation = Math.abs(parseFloat(rotation) || 0) > 0.01;
   const visualRect = measuredRect ?? (selectedRect && boardRect
     ? {
@@ -689,7 +1055,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
       }
     : null);
   const shouldUseVisualPosition = !!visualRect;
-  const shouldUseVisualSize = !!visualRect && (resolved.positionType === 'relative' || isFlowInLayout || resolved.widthMode === 'hug' || resolved.heightMode === 'hug');
+  const shouldUseVisualSize = !!visualRect && !isVectorShape && (resolved.positionType === 'relative' || isFlowInLayout || resolved.widthMode === 'hug' || resolved.heightMode === 'hug');
   const overlayW = isDragging
     ? (dragOverlay.width ?? w)
     : (hasRotation ? w : (shouldUseVisualSize ? visualRect.width : w));
@@ -776,6 +1142,12 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
       ? `0 0 0 calc(1px * var(--inv-scale, 1)) ${outlineShadow}`
       : undefined,
     background: 'rgba(0,0,0,0.001)',
+  };
+  const resizePayload = {
+    frameWorldX: overlayHitRect.left,
+    frameWorldY: overlayHitRect.top,
+    vectorWidth: overlayHitRect.width,
+    vectorHeight: overlayHitRect.height,
   };
   const handleSize = 8 / scale;
   const rotateHandleSize = 14 / scale;
@@ -883,6 +1255,187 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
         { key: 'w', start: tl, end: bl, handle: 'w', enabled: overlayHandles.includes('w') },
       ].filter((edge) => edge.enabled)
     : [];
+  const vectorShapeData = ['line', 'path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(el) : null;
+
+  const vectorEditingOverlay = vectorShapeData && shapeKind !== 'line' ? (
+    <>
+      <path
+        d={buildWorldVectorPathD(vectorShapeData, worldX, worldY)}
+        fill="none"
+        stroke="rgba(0,0,0,0.001)"
+        strokeWidth={18 / scale}
+        vectorEffect="non-scaling-stroke"
+        pointerEvents={el.locked ? 'none' : 'stroke'}
+        style={{ cursor: el.locked ? 'default' : 'copy' }}
+        onDoubleClick={(event) => {
+          if (el.locked) return;
+          event.stopPropagation();
+          event.preventDefault();
+          onInsertVectorPoint(event, selection.bpId, el, worldX, worldY);
+        }}
+      />
+      <path
+        d={buildWorldVectorPathD(vectorShapeData, worldX, worldY)}
+        fill="none"
+        stroke={outlineColor}
+        strokeWidth={1.5 / scale}
+        strokeDasharray={`${6 / scale} ${4 / scale}`}
+        vectorEffect="non-scaling-stroke"
+        opacity={0.7}
+      />
+      {vectorShapeData.points.map((rawPoint, index) => {
+        const point = {
+          x: rawPoint.x + worldX,
+          y: rawPoint.y + worldY,
+          inX: rawPoint.inX + worldX,
+          inY: rawPoint.inY + worldY,
+          outX: rawPoint.outX + worldX,
+          outY: rawPoint.outY + worldY,
+        };
+        return (
+          <React.Fragment key={`vector-point-${index}`}>
+            {isPathHandleDistinct(point, 'in') ? (
+              <>
+                <line
+                  x1={point.x}
+                  y1={point.y}
+                  x2={point.inX}
+                  y2={point.inY}
+                  stroke="rgba(59,130,246,0.7)"
+                  strokeWidth={1.5 / scale}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <circle
+                  cx={point.inX}
+                  cy={point.inY}
+                  r={5 / scale}
+                  fill="#fff"
+                  stroke="#3b82f6"
+                  strokeWidth={1.5 / scale}
+                  vectorEffect="non-scaling-stroke"
+                  pointerEvents={el.locked ? 'none' : 'all'}
+                  style={{ cursor: 'grab' }}
+                  onMouseDown={(event) => {
+                    event.stopPropagation();
+                    event.preventDefault();
+                    onStartVectorPointDrag(event, selection.bpId, el, index, 'in', worldX, worldY);
+                  }}
+                />
+              </>
+            ) : null}
+            {isPathHandleDistinct(point, 'out') ? (
+              <>
+                <line
+                  x1={point.x}
+                  y1={point.y}
+                  x2={point.outX}
+                  y2={point.outY}
+                  stroke="rgba(59,130,246,0.7)"
+                  strokeWidth={1.5 / scale}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <circle
+                  cx={point.outX}
+                  cy={point.outY}
+                  r={5 / scale}
+                  fill="#fff"
+                  stroke="#3b82f6"
+                  strokeWidth={1.5 / scale}
+                  vectorEffect="non-scaling-stroke"
+                  pointerEvents={el.locked ? 'none' : 'all'}
+                  style={{ cursor: 'grab' }}
+                  onMouseDown={(event) => {
+                    event.stopPropagation();
+                    event.preventDefault();
+                    onStartVectorPointDrag(event, selection.bpId, el, index, 'out', worldX, worldY);
+                  }}
+                />
+              </>
+            ) : null}
+            <circle
+              cx={point.x}
+              cy={point.y}
+              r={5.5 / scale}
+              fill={activeVectorPoint?.elementId === el.id && activeVectorPoint?.bpId === selection.bpId && activeVectorPoint?.pointIndex === index ? '#fff' : '#3b82f6'}
+              stroke={outlineColor}
+              strokeWidth={1.5 / scale}
+              vectorEffect="non-scaling-stroke"
+              pointerEvents={el.locked ? 'none' : 'all'}
+              style={{ cursor: el.locked ? 'default' : 'grab' }}
+              onMouseDown={(event) => {
+                event.stopPropagation();
+                event.preventDefault();
+                onStartVectorPointDrag(event, selection.bpId, el, index, 'anchor', worldX, worldY);
+              }}
+            />
+          </React.Fragment>
+        );
+      })}
+    </>
+  ) : null;
+
+  if (vectorShapeData && shapeKind === 'line') {
+    const pathD = buildWorldVectorPathD(vectorShapeData, worldX, worldY);
+    const vectorPoints = vectorShapeData.points.map((point) => ({
+      x: point.x + worldX,
+      y: point.y + worldY,
+      inX: point.inX + worldX,
+      inY: point.inY + worldY,
+      outX: point.outX + worldX,
+      outY: point.outY + worldY,
+    }));
+    return (
+      <svg
+        className="fb-sel-overlay-svg"
+        width={svgWidth}
+        height={svgHeight}
+        style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 10000 }}
+      >
+        <path
+          d={pathD}
+          fill="none"
+          stroke="rgba(0,0,0,0.001)"
+          strokeWidth={Math.max(18 / scale, overlayH + 12 / scale)}
+          vectorEffect="non-scaling-stroke"
+          pointerEvents="stroke"
+          style={{ cursor: el.locked ? 'default' : 'move' }}
+          onMouseDown={(event) => {
+            if (el.locked) return;
+            event.stopPropagation();
+            event.preventDefault();
+            onStartMove(event, selection.bpId, el);
+          }}
+        />
+        <path
+          d={pathD}
+          fill="none"
+          stroke={outlineColor}
+          strokeWidth={2 / scale}
+          vectorEffect="non-scaling-stroke"
+          style={{ filter: outlineShadow !== 'transparent' ? `drop-shadow(0 0 ${1 / scale}px ${outlineShadow})` : undefined }}
+        />
+        {vectorPoints.map((point, index) => (
+          <circle
+            key={`anchor-${index}`}
+            cx={point.x}
+            cy={point.y}
+            r={(shapeKind === 'line' ? 6 : 5.5) / scale}
+            fill={shapeKind === 'line' ? '#fff' : '#3b82f6'}
+            stroke={outlineColor}
+            strokeWidth={1.5 / scale}
+            vectorEffect="non-scaling-stroke"
+            pointerEvents={el.locked ? 'none' : 'all'}
+            style={{ cursor: el.locked ? 'default' : 'grab' }}
+              onMouseDown={(event) => {
+              event.stopPropagation();
+              event.preventDefault();
+                onStartVectorPointDrag(event, selection.bpId, el, index, 'anchor', worldX, worldY);
+            }}
+          />
+        ))}
+      </svg>
+    );
+  }
 
   return (
     <>
@@ -945,7 +1498,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
             onMouseDown={(e) => {
               e.stopPropagation();
               e.preventDefault();
-              onStartResize(e, selection.bpId, el, edge.handle);
+              onStartResize(e, selection.bpId, el, edge.handle, resizePayload);
             }}
           />
         ))}
@@ -969,7 +1522,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
               onMouseDown={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                onStartResize(e, selection.bpId, el, handle);
+                onStartResize(e, selection.bpId, el, handle, resizePayload);
               }}
             />
           );
@@ -989,7 +1542,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
               onMouseDown={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                onStartResize(e, selection.bpId, el, `rotate-${handle}`);
+                onStartResize(e, selection.bpId, el, `rotate-${handle}`, resizePayload);
               }}
             />
           );
@@ -1108,6 +1661,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
             ))}
           </>
         ) : null}
+        {vectorEditingOverlay}
       </svg>
     </>
   );
@@ -1123,9 +1677,13 @@ export default function InfiniteCanvas() {
   const setViewport   = useEditorStore(s => s.setViewport);
   const activeSurface = useEditorStore(s => s.activeSurface);
   const selection     = useEditorStore(s => s.selection);
+  const activeVectorPoint = useEditorStore(s => s.activeVectorPoint);
   const componentEditor = useEditorStore(s => s.componentEditor);
   const bpDefs        = useEditorStore(s => s.breakpointDefs);
+  const page          = useEditorStore(s => s.getCurrentPage());
   const setSelection  = useEditorStore(s => s.setSelection);
+  const setActiveVectorPoint = useEditorStore(s => s.setActiveVectorPoint);
+  const clearActiveVectorPoint = useEditorStore(s => s.clearActiveVectorPoint);
   const setArtboardSel = useEditorStore(s => s.setArtboardSel);
   const artboardSel    = useEditorStore(s => s.artboardSel);
   const setDrilled     = useEditorStore(s => s.setDrilledContainerId);
@@ -1145,12 +1703,20 @@ export default function InfiniteCanvas() {
   const setInteracting       = useEditorStore(s => s.setInteracting);
   const pendingDraw          = useEditorStore(s => s.pendingDraw);
   const setPendingDraw       = useEditorStore(s => s.setPendingDraw);
+  const activeCanvasTool     = useEditorStore(s => s.activeCanvasTool);
+  const setActiveCanvasTool  = useEditorStore(s => s.setActiveCanvasTool);
+  const clearActiveComment   = useEditorStore(s => s.clearActiveComment);
+  const activeComment        = useEditorStore(s => s.getActiveComment());
+  const [commentDraft, setCommentDraft] = useState(null);
+  const [penDraft, setPenDraft] = useState(null);
+  const [penDraftCloseHint, setPenDraftCloseHint] = useState(false);
 
   // Draw-mode rubber-band preview rect (screen coords)
   const [drawRect, setDrawRect] = useState(null); // { left, top, width, height } in screen px
 
   // ── Pan state ──────────────────────────────────────────────
   const isPanning  = useRef(false);
+  const commentDrag = useRef(null);
   const panOrigin  = useRef({ x: 0, y: 0 });
   const panStart   = useRef({ x: 0, y: 0 });
   const spaceDown  = useRef(false);
@@ -1177,6 +1743,102 @@ export default function InfiniteCanvas() {
   const clipboard = useRef(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const startCommentDrag = useCallback((event, comment) => {
+    if (!comment || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    commentDrag.current = {
+      commentId: comment.id ?? null,
+      bpId: comment.bpId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: comment.x ?? 0,
+      startY: comment.y ?? 0,
+      isDraft: !!comment.isDraft,
+      moved: false,
+    };
+    setInteracting(true);
+  }, [setInteracting]);
+
+  const submitCommentDraft = useCallback((text) => {
+    const body = typeof text === 'string' ? text.trim() : '';
+    if (!commentDraft || !body) return;
+    const state = useEditorStore.getState();
+    const commentId = state.addCommentThread({
+      bpId: commentDraft.bpId,
+      x: commentDraft.x,
+      y: commentDraft.y,
+      text: body,
+    });
+    state.setActiveComment(commentId);
+    state.pushHistory();
+    setCommentDraft(null);
+  }, [commentDraft]);
+
+  const discardCommentDraft = useCallback(() => {
+    setCommentDraft(null);
+  }, []);
+
+  const discardPenDraft = useCallback(() => {
+    setPenDraft(null);
+    setPenDraftCloseHint(false);
+  }, []);
+
+  const commitPenDraft = useCallback((draft = null) => {
+    const currentDraft = draft ?? penDraft;
+    if (!currentDraft || !Array.isArray(currentDraft.points) || currentDraft.points.length < 2) {
+      setPenDraft(null);
+      setPenDraftCloseHint(false);
+      return false;
+    }
+    const isClosed = currentDraft.closed === true && currentDraft.points.length > 2;
+    const worldVectorData = { kind: 'path', closed: isClosed, points: currentDraft.points };
+    const reframed = reframeVectorShapeData(worldVectorData);
+    const bp = useEditorStore.getState().breakpointDefs[currentDraft.bpId];
+    if (!bp) {
+      setPenDraft(null);
+      setPenDraftCloseHint(false);
+      return false;
+    }
+    const pageLayout = resolvePageLayout(useEditorStore.getState().getCurrentPage()?.layout, currentDraft.bpId);
+    const pagePadding = resolvePagePadding(useEditorStore.getState().getCurrentPage()?.padding, currentDraft.bpId);
+    const localX = Math.round(reframed.offsetX - bp.x - (pageLayout ? 0 : (pagePadding?.left ?? 0)));
+    const localY = Math.round(reframed.offsetY - bp.y - (pageLayout ? 0 : (pagePadding?.top ?? 0)));
+    const element = createShapePreset('pen', localX, localY);
+    if (pageLayout) {
+      element.base.positionType = 'absolute';
+      element.base.absoluteInLayout = true;
+    }
+    element.base.width = reframed.width;
+    element.base.height = reframed.height;
+    element.base.vectorData = reframed.vectorData;
+    element.base.svgMarkup = buildVectorShapeSvgMarkup(reframed.vectorData, {
+      width: reframed.width,
+      height: reframed.height,
+      fill: isClosed && typeof element.base.styles?.backgroundColor === 'string' && !element.base.styles.backgroundColor.includes('gradient(')
+        ? element.base.styles.backgroundColor
+        : 'none',
+      stroke: element.base.styles?.strokeColor ?? '#2563eb',
+      strokeWidth: Math.max(0.5, element.base.styles?.strokeWidth || 1.5),
+    });
+    addElement(element, null, currentDraft.bpId);
+    useEditorStore.getState().setSelection({ elementId: element.id, bpId: currentDraft.bpId });
+    setPenDraft(null);
+    setPenDraftCloseHint(false);
+    pushHistory();
+    setPendingDraw(null);
+    setActiveCanvasTool('select');
+    return true;
+  }, [addElement, penDraft, pushHistory, setActiveCanvasTool, setPendingDraw]);
+
+  const resolvePenDraftCloseIntent = useCallback((draft, bpId, worldX, worldY, scaleValue) => {
+    if (!draft || draft.bpId !== bpId || !Array.isArray(draft.points) || draft.points.length < 3) return false;
+    const firstPoint = draft.points[0];
+    if (!firstPoint) return false;
+    const threshold = PEN_CLOSE_SNAP_PX / Math.max(scaleValue || 1, MIN_SCALE);
+    return Math.hypot(worldX - firstPoint.x, worldY - firstPoint.y) <= threshold;
+  }, []);
 
   useEffect(() => {
     if (!selection?.elementId || !selection?.bpId) {
@@ -1795,6 +2457,33 @@ export default function InfiniteCanvas() {
     };
   }, [getProjectedWorldPoint]);
 
+  const commitVectorShapeData = useCallback((elementId, bpId, resolvedElement, nextVectorData) => {
+    const reframed = reframeVectorShapeData(nextVectorData);
+    const shapeKind = getShapePresetKind(resolvedElement);
+    const strokeColor = resolvedElement?.styles?.strokeColor ?? resolvedElement?.styles?.color ?? (shapeKind === 'line' ? '#111827' : '#2563eb');
+    const strokeWidth = Math.max(0.5, resolvedElement?.styles?.strokeWidth || (shapeKind === 'line' ? 2 : 1.5));
+    const fillValue = reframed.vectorData.kind !== 'line' && reframed.vectorData.closed && typeof resolvedElement?.styles?.backgroundColor === 'string' && !resolvedElement.styles.backgroundColor.includes('gradient(')
+      ? resolvedElement.styles.backgroundColor
+      : 'none';
+    useEditorStore.getState().updateElementLayout(elementId, bpId, {
+      ...(Number.isFinite(resolvedElement?.x) ? { x: resolvedElement.x } : {}),
+      ...(Number.isFinite(resolvedElement?.y) ? { y: resolvedElement.y } : {}),
+      ...(typeof resolvedElement?.positionType === 'string' ? { positionType: resolvedElement.positionType } : {}),
+      ...(resolvedElement?.absoluteInLayout != null ? { absoluteInLayout: resolvedElement.absoluteInLayout } : {}),
+      width: reframed.width,
+      height: reframed.height,
+      vectorData: reframed.vectorData,
+      svgMarkup: buildVectorShapeSvgMarkup(reframed.vectorData, {
+        width: reframed.width,
+        height: reframed.height,
+        fill: fillValue,
+        stroke: strokeColor,
+        strokeWidth,
+      }),
+    });
+    return reframed;
+  }, []);
+
   // ── Keyboard ───────────────────────────────────────────────
   useEffect(() => {
     const handlePointerDown = () => setContextMenu(null);
@@ -1805,11 +2494,21 @@ export default function InfiniteCanvas() {
   useEffect(() => {
     const onKeyDown = (e) => {
       const isEditableTarget = e.target.matches('input,textarea') || e.target.isContentEditable;
-        if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'f') {
-          e.preventDefault();
-          useEditorStore.getState().setPendingDraw('frame');
-          return;
-        }
+      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        useEditorStore.getState().setPendingDraw('frame');
+        return;
+      }
+      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'h') {
+        e.preventDefault();
+        useEditorStore.getState().setActiveCanvasTool('pan');
+        return;
+      }
+      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        useEditorStore.getState().setActiveCanvasTool('comment');
+        return;
+      }
       if (e.code === 'Space' && !e.target.matches('input,textarea')) {
         e.preventDefault();
         spaceDown.current = true;
@@ -1823,8 +2522,23 @@ export default function InfiniteCanvas() {
       // Escape: cancel draw mode first, then move one level up in drill mode.
       if (e.key === 'Escape' && !isEditableTarget) {
         const st = useEditorStore.getState();
+        if (penDraft) {
+          if (!commitPenDraft({ ...penDraft, closed: false })) {
+            setPenDraft(null);
+            setPenDraftCloseHint(false);
+            st.setPendingDraw(null);
+            st.setActiveCanvasTool('select');
+          }
+          return;
+        }
         if (st.pendingDraw) {
           st.setPendingDraw(null);
+          return;
+        }
+        if (st.activeCanvasTool === 'comment' || st.activeCanvasTool === 'pan') {
+          st.setActiveCanvasTool('select');
+          st.clearActiveComment();
+          setCommentDraft(null);
           return;
         }
         const drilled = st.drilledContainerId;
@@ -1834,7 +2548,33 @@ export default function InfiniteCanvas() {
           st.setDrilledContainerId(parentId);
         }
       }
+      if (e.key === 'Enter' && !isEditableTarget && penDraft) {
+        e.preventDefault();
+        commitPenDraft({ ...penDraft, closed: false });
+        return;
+      }
       if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditableTarget) {
+        const vectorPoint = useEditorStore.getState().activeVectorPoint;
+        const liveSelection = useEditorStore.getState().selection;
+        if (vectorPoint?.elementId && Number.isInteger(vectorPoint.pointIndex)) {
+          const vectorEl = useEditorStore.getState().getAllElements().find((entry) => entry.id === vectorPoint.elementId) ?? null;
+          if (vectorEl && liveSelection?.bpId === vectorPoint.bpId) {
+            e.preventDefault();
+            const resolvedVectorEl = resolveElement(vectorEl, vectorPoint.bpId);
+            const vectorData = getVectorShapeData(resolvedVectorEl) || getVectorShapeData(vectorEl);
+            if (vectorData) {
+              const removal = removeVectorAnchor(vectorData, vectorPoint.pointIndex);
+              if (removal.removed) {
+                commitVectorShapeData(vectorPoint.elementId, vectorPoint.bpId, resolvedVectorEl, removal.vectorData);
+                const nextIndex = Math.max(0, Math.min(vectorPoint.pointIndex - 1, removal.vectorData.points.length - 1));
+                if (removal.vectorData.points.length > 0) setActiveVectorPoint({ elementId: vectorPoint.elementId, bpId: vectorPoint.bpId, pointIndex: nextIndex });
+                else clearActiveVectorPoint();
+                pushHistory();
+                return;
+              }
+            }
+          }
+        }
         const { selection } = useEditorStore.getState();
         if (!selection) return;
         const allSelected = useEditorStore.getState().getSelectedElements().filter((el) => !el.locked);
@@ -1918,7 +2658,7 @@ export default function InfiniteCanvas() {
       window.removeEventListener('paste', onPaste);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [canPasteIntoFrame, copyElementToClipboard, cutElementToClipboard, deleteElement, pasteClipboardAt, pasteSvgMarkupAt, pushHistory]);
+  }, [canPasteIntoFrame, commitPenDraft, copyElementToClipboard, cutElementToClipboard, deleteElement, pasteClipboardAt, pasteSvgMarkupAt, penDraft, pushHistory]);
 
   // ── Initial fit-to-canvas ─────────────────────────────────
   useEffect(() => {
@@ -1977,7 +2717,14 @@ export default function InfiniteCanvas() {
   // ── Mouse down (pan only; empty-space clicks keep selection) ─────────────
   const onMouseDown = (e) => {
     if (contextMenu) setContextMenu(null);
-    if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
+    if (e.target.closest('.fb-comment-card, .fb-comment-pin')) return;
+    if (commentDraft) {
+      setCommentDraft(null);
+    }
+    if (activeComment) {
+      clearActiveComment();
+    }
+    if (e.button === 1 || (e.button === 0 && (spaceDown.current || activeCanvasTool === 'pan'))) {
       e.preventDefault();
       isPanning.current = true;
       panOrigin.current = { x: e.clientX, y: e.clientY };
@@ -1988,6 +2735,8 @@ export default function InfiniteCanvas() {
       setSelection(null);
       setArtboardSel(null);
       setDrilled(null);
+      clearActiveComment();
+      setCommentDraft(null);
     }
   };
 
@@ -2036,6 +2785,44 @@ export default function InfiniteCanvas() {
   // ── Mouse move (pan + element drag/resize) ─────────────────
   const onMouseMove = useCallback((e) => {
     lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
+    if (penDraft && !drag.current && (pendingDraw === 'pen' || activeCanvasTool === 'draw-pen')) {
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      const state = useEditorStore.getState();
+      let targetBpId = null;
+      for (const bp of Object.values(state.breakpointDefs)) {
+        if (pointer.worldX >= bp.x && pointer.worldX <= bp.x + bp.width && pointer.worldY >= bp.y && pointer.worldY <= bp.y + bp.height) {
+          targetBpId = bp.id;
+          break;
+        }
+      }
+      setPenDraftCloseHint(resolvePenDraftCloseIntent(penDraft, targetBpId, pointer.worldX, pointer.worldY, state.viewport.scale));
+    } else if (penDraftCloseHint) {
+      setPenDraftCloseHint(false);
+    }
+    if (commentDrag.current) {
+      const state = useEditorStore.getState();
+      const session = commentDrag.current;
+      const bp = state.breakpointDefs[session.bpId];
+      if (!bp) return;
+      const pad = resolvePagePadding(state.getCurrentPage?.()?.padding, session.bpId);
+      const contentWidth = Math.max(0, bp.width - (pad?.left ?? 0) - (pad?.right ?? 0));
+      const contentHeight = Math.max(0, bp.height - (pad?.top ?? 0) - (pad?.bottom ?? 0));
+      const dxWorld = (e.clientX - session.startClientX) / Math.max(state.viewport.scale, MIN_SCALE);
+      const dyWorld = (e.clientY - session.startClientY) / Math.max(state.viewport.scale, MIN_SCALE);
+      const nextX = Math.max(0, Math.min(contentWidth, Math.round(session.startX + dxWorld)));
+      const nextY = Math.max(0, Math.min(contentHeight, Math.round(session.startY + dyWorld)));
+      if (nextX !== session.startX || nextY !== session.startY) session.moved = true;
+      if (session.isDraft) {
+        setCommentDraft((current) => current ? { ...current, x: nextX, y: nextY, updatedAt: Date.now() } : current);
+      } else {
+        state.updateCommentThread(session.commentId, (comment) => ({
+          ...comment,
+          x: nextX,
+          y: nextY,
+        }));
+      }
+      return;
+    }
     // Pan — read scale from store to avoid stale closure
     if (isPanning.current) {
       const currentScale = useEditorStore.getState().viewport.scale;
@@ -2080,7 +2867,30 @@ export default function InfiniteCanvas() {
     drag.current.lastMX = e.clientX;
     drag.current.lastMY = e.clientY;
 
-    if (type === 'element-drag') {
+    if (type === 'pen-create-point') {
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      setPenDraft((current) => {
+        if (!current) return current;
+        const nextPoints = current.points.map((point, index) => {
+          if (index !== drag.current.pointIndex) return point;
+          const anchorX = point.x;
+          const anchorY = point.y;
+          const dx = pointer.worldX - anchorX;
+          const dy = pointer.worldY - anchorY;
+          if (Math.hypot(dx, dy) < 1 / Math.max(scale, MIN_SCALE)) {
+            return { ...point, inX: anchorX, inY: anchorY, outX: anchorX, outY: anchorY };
+          }
+          return {
+            ...point,
+            inX: anchorX - dx,
+            inY: anchorY - dy,
+            outX: pointer.worldX,
+            outY: pointer.worldY,
+          };
+        });
+        return { ...current, points: nextPoints };
+      });
+    } else if (type === 'element-drag') {
       const hasMoved = Math.abs(e.clientX - drag.current.startMX) > 4 ||
         Math.abs(e.clientY - drag.current.startMY) > 4;
       if (hasMoved) drag.current.hasMoved = true;
@@ -2128,6 +2938,91 @@ export default function InfiniteCanvas() {
       setReorderGhost(preview.hint === 'Auto' ? preview.ghost : null);
       setAlignmentGuides(preview.alignmentGuides ?? []);
       setDragHint({ label: preview.hint, clientX: e.clientX, clientY: e.clientY });
+    } else if (type === 'vector-point') {
+      if (Math.abs(dxScreen) > 1 || Math.abs(dyScreen) > 1) drag.current.hasMoved = true;
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      const state = useEditorStore.getState();
+      const vectorEl = state.getAllElements().find((candidate) => candidate.id === elementId);
+      if (!vectorEl) return;
+      const resolvedVectorEl = resolveElement(vectorEl, bpId);
+      const vectorShapeData = getVectorShapeData(resolvedVectorEl) || getVectorShapeData(vectorEl);
+      if (!vectorShapeData) return;
+
+      const frameWorldX = Number.isFinite(drag.current.frameWorldX) ? drag.current.frameWorldX : (resolvedVectorEl.x ?? 0);
+      const frameWorldY = Number.isFinite(drag.current.frameWorldY) ? drag.current.frameWorldY : (resolvedVectorEl.y ?? 0);
+      const worldVectorData = getWorldVectorData(vectorShapeData, frameWorldX, frameWorldY);
+      let nextWorldVectorData = worldVectorData;
+      if (drag.current.handleMode === 'anchor') {
+        nextWorldVectorData = moveVectorAnchor(worldVectorData, drag.current.pointIndex, { x: pointer.worldX, y: pointer.worldY });
+      } else if (drag.current.handleMode === 'in' || drag.current.handleMode === 'out') {
+        nextWorldVectorData = updateVectorHandle(worldVectorData, drag.current.pointIndex, drag.current.handleMode, { x: pointer.worldX, y: pointer.worldY }, !e.altKey);
+      }
+
+      const reframed = reframeVectorShapeData(nextWorldVectorData);
+      const nextLocalX = (drag.current.localX ?? resolvedVectorEl.x ?? 0) + (reframed.offsetX - frameWorldX);
+      const nextLocalY = (drag.current.localY ?? resolvedVectorEl.y ?? 0) + (reframed.offsetY - frameWorldY);
+      commitVectorShapeData(elementId, bpId, { ...resolvedVectorEl, x: nextLocalX, y: nextLocalY }, nextWorldVectorData);
+      drag.current.frameWorldX = reframed.offsetX;
+      drag.current.frameWorldY = reframed.offsetY;
+      drag.current.localX = nextLocalX;
+      drag.current.localY = nextLocalY;
+    } else if (type === 'vector-resize') {
+      if (Math.abs(dxScreen) > 1 || Math.abs(dyScreen) > 1) drag.current.hasMoved = true;
+      const session = drag.current;
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      const center = {
+        x: session.originFrameWorldX + (session.originVectorWidth / 2),
+        y: session.originFrameWorldY + (session.originVectorHeight / 2),
+      };
+      const unrotatedPointer = rotatePointAround(pointer, center, -(session.startRotation ?? 0));
+      const nextBounds = resolveResizedBounds({
+        startBounds: {
+          minX: session.originFrameWorldX,
+          minY: session.originFrameWorldY,
+          width: session.originVectorWidth,
+          height: session.originVectorHeight,
+        },
+        handle: session.handle,
+        pointer: unrotatedPointer,
+        minSize: 20,
+        keepAspectRatio: session.lockAspectRatio || e.shiftKey,
+      });
+      const nextLocalVectorData = scaleVectorShapeToBounds(session.startVectorData, {
+        minX: 0,
+        minY: 0,
+        width: nextBounds.width,
+        height: nextBounds.height,
+      });
+      const state = useEditorStore.getState();
+      const vectorEl = state.getAllElements().find((candidate) => candidate.id === elementId);
+      if (!vectorEl) return;
+      const resolvedVectorEl = resolveElement(vectorEl, bpId);
+      const nextLocalX = (session.originX ?? resolvedVectorEl.x ?? 0) + (nextBounds.minX - session.originFrameWorldX);
+      const nextLocalY = (session.originY ?? resolvedVectorEl.y ?? 0) + (nextBounds.minY - session.originFrameWorldY);
+      const reframed = commitVectorShapeData(elementId, bpId, {
+        ...resolvedVectorEl,
+        positionType: session.pinToAbsoluteLayout ? 'absolute' : resolvedVectorEl.positionType,
+        absoluteInLayout: session.pinToAbsoluteLayout ? true : resolvedVectorEl.absoluteInLayout,
+        x: nextLocalX,
+        y: nextLocalY,
+        width: nextBounds.width,
+        height: nextBounds.height,
+      }, nextLocalVectorData);
+      drag.current.frameWorldX = nextBounds.minX;
+      drag.current.frameWorldY = nextBounds.minY;
+      drag.current.localX = nextLocalX;
+      drag.current.localY = nextLocalY;
+      drag.current.startVectorWidth = reframed.width;
+      drag.current.startVectorHeight = reframed.height;
+    } else if (type === 'vector-rotate') {
+      if (Math.abs(dxScreen) > 1 || Math.abs(dyScreen) > 1) drag.current.hasMoved = true;
+      const session = drag.current;
+      const currentAngle = Math.atan2(e.clientY - session.centerClientY, e.clientX - session.centerClientX) * 180 / Math.PI;
+      const startAngle = Math.atan2(session.startMY - session.centerClientY, session.startMX - session.centerClientX) * 180 / Math.PI;
+      let nextRotation = Math.round(((session.startRotation ?? 0) + currentAngle - startAngle) * 10) / 10;
+      if (e.shiftKey) nextRotation = Math.round(nextRotation / 15) * 15;
+      state.updateElementLayout(elementId, bpId, { rotation: nextRotation });
+      setDragHint({ label: `${Math.round(nextRotation)}deg`, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'multi-element-drag') {
       const hasMoved = Math.abs(e.clientX - drag.current.startMX) > 4 ||
         Math.abs(e.clientY - drag.current.startMY) > 4;
@@ -2169,19 +3064,22 @@ export default function InfiniteCanvas() {
       useEditorStore.getState().updateElementLayout(rotId, bpId, { rotation: nextRotation });
       setDragHint({ label: `${Math.round(nextRotation)}deg`, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'resize') {
-      let newX = startX, newY = startY, newW = startW, newH = startH;
-      switch (handle) {
-        case 'se': newW = Math.max(20, startW + dxWorld); newH = Math.max(20, startH + dyWorld); break;
-        case 'sw': newX = startX + dxWorld; newW = Math.max(20, startW - dxWorld); newH = Math.max(20, startH + dyWorld); break;
-        case 'ne': newW = Math.max(20, startW + dxWorld); newY = startY + dyWorld; newH = Math.max(20, startH - dyWorld); break;
-        case 'nw': newX = startX + dxWorld; newY = startY + dyWorld; newW = Math.max(20, startW - dxWorld); newH = Math.max(20, startH - dyWorld); break;
-        case 'n':  newY = startY + dyWorld; newH = Math.max(20, startH - dyWorld); break;
-        case 's':  newH = Math.max(20, startH + dyWorld); break;
-        case 'e':  newW = Math.max(20, startW + dxWorld); break;
-        case 'w':  newX = startX + dxWorld; newW = Math.max(20, startW - dxWorld); break;
-        default: break;
-      }
-      useEditorStore.getState().updateElementLayout(elementId, bpId, { x: newX, y: newY, width: newW, height: newH });
+      const nextBounds = resolveResizedBounds({
+        startBounds: { minX: startX, minY: startY, width: startW, height: startH },
+        handle,
+        pointer: {
+          x: (drag.current.startHandleX ?? (startX + startW)) + dxWorld,
+          y: (drag.current.startHandleY ?? (startY + startH)) + dyWorld,
+        },
+        minSize: 20,
+        keepAspectRatio: drag.current.lockAspectRatio || e.shiftKey,
+      });
+      useEditorStore.getState().updateElementLayout(elementId, bpId, {
+        x: nextBounds.minX,
+        y: nextBounds.minY,
+        width: nextBounds.width,
+        height: nextBounds.height,
+      });
     } else if (type === 'text-font-size') {
       const { elementId: textId, bpId: textBpId, startFontSize } = drag.current;
       const delta = Math.max(dxWorld, dyWorld);
@@ -2311,9 +3209,16 @@ export default function InfiniteCanvas() {
       }
       setFoldDragInfo({ value: newFoldH, clientX: e.clientX, clientY: e.clientY });
     }
-  }, [getProjectedWorldPoint, resolveElementDragDrop, resolveHoveredElementId, setHoveredId, setViewport]);
+  }, [activeCanvasTool, getProjectedWorldPoint, penDraft, penDraftCloseHint, pendingDraw, resolveElementDragDrop, resolveHoveredElementId, resolvePenDraftCloseIntent, setHoveredId, setViewport]);
 
   const onMouseUp = useCallback((e) => {
+    if (commentDrag.current) {
+      const session = commentDrag.current;
+      commentDrag.current = null;
+      if (session.moved) pushHistory();
+      setInteracting(false);
+      return;
+    }
     if (isPanning.current) {
       isPanning.current = false;
     }
@@ -2353,6 +3258,7 @@ export default function InfiniteCanvas() {
       if (!targetBpId) { setPendingDraw(null); return; }
       const targetBpDef = bpDefsNow[targetBpId];
       const page2 = useEditorStore.getState().getCurrentPage();
+      const pageLayout2 = resolvePageLayout(page2?.layout, targetBpId);
       const pad2  = resolvePagePadding(page2?.padding, targetBpId);
       let localX = Math.round(elX - targetBpDef.x - (pad2?.left ?? 0));
       let localY = Math.round(elY - targetBpDef.y - (pad2?.top  ?? 0));
@@ -2379,6 +3285,11 @@ export default function InfiniteCanvas() {
           break;
         }
       }
+      const rootAbsoluteInLayout = !parentId && pageLayout2 !== null;
+      if (rootAbsoluteInLayout) {
+        localX = Math.round(elX - targetBpDef.x);
+        localY = Math.round(elY - targetBpDef.y);
+      }
       const newEl = drawType === 'image'
         ? createImage(localX, localY)
         : drawType === 'video'
@@ -2387,9 +3298,73 @@ export default function InfiniteCanvas() {
           ? createText(localX, localY)
           : drawType === 'icon'
             ? createIcon(localX, localY)
+            : ['circle', 'line', 'polygon', 'path', 'pen'].includes(drawType)
+              ? createShapePreset(drawType === 'pen' ? 'path' : drawType, localX, localY)
             : createFrame(localX, localY);
-      newEl.base.width  = elW;
-      newEl.base.height = elH;
+      if (drawType === 'circle') {
+        const circleSize = Math.max(elW, elH);
+        newEl.base.width = circleSize;
+        newEl.base.height = circleSize;
+      } else {
+        newEl.base.width = elW;
+        newEl.base.height = drawType === 'line' ? Math.max(2, Math.min(elH, 12)) : elH;
+      }
+      if (drawType === 'line') {
+        const lineWidth = Math.max(1, Math.round(Math.abs(rawW)));
+        const lineHeight = Math.max(1, Math.round(Math.abs(rawH)));
+        const vectorData = reframeVectorShapeData({
+          kind: 'line',
+          points: [
+            { x: rawW < 0 ? lineWidth : 0, y: rawH < 0 ? lineHeight : 0 },
+            { x: rawW < 0 ? 0 : lineWidth, y: rawH < 0 ? 0 : lineHeight },
+          ],
+        });
+        newEl.base.width = vectorData.width;
+        newEl.base.height = vectorData.height;
+        newEl.base.vectorData = vectorData.vectorData;
+        newEl.base.svgMarkup = buildVectorShapeSvgMarkup(vectorData.vectorData, {
+          width: vectorData.width,
+          height: vectorData.height,
+          fill: 'none',
+          stroke: newEl.base.styles?.strokeColor ?? '#111827',
+          strokeWidth: Math.max(0.5, newEl.base.styles?.strokeWidth || 2),
+        });
+      }
+      if (drawType === 'path') {
+        const vectorData = getVectorShapeData(newEl.base) || getVectorShapeData(newEl);
+        if (vectorData) {
+          const baseBounds = reframeVectorShapeData(vectorData);
+          const scaleX = Math.max(0.1, elW / Math.max(baseBounds.width, 1));
+          const scaleY = Math.max(0.1, elH / Math.max(baseBounds.height, 1));
+          const scaled = {
+            ...baseBounds.vectorData,
+            points: baseBounds.vectorData.points.map((point) => ({
+              ...point,
+              x: point.x * scaleX,
+              y: point.y * scaleY,
+              inX: point.inX * scaleX,
+              inY: point.inY * scaleY,
+              outX: point.outX * scaleX,
+              outY: point.outY * scaleY,
+            })),
+          };
+          const reframed = reframeVectorShapeData(scaled);
+          newEl.base.width = reframed.width;
+          newEl.base.height = reframed.height;
+          newEl.base.vectorData = reframed.vectorData;
+          newEl.base.svgMarkup = buildVectorShapeSvgMarkup(reframed.vectorData, {
+            width: reframed.width,
+            height: reframed.height,
+            fill: 'none',
+            stroke: newEl.base.styles?.strokeColor ?? '#2563eb',
+            strokeWidth: Math.max(0.5, newEl.base.styles?.strokeWidth || 1.5),
+          });
+        }
+      }
+      if (rootAbsoluteInLayout) {
+        newEl.base.positionType = 'absolute';
+        newEl.base.absoluteInLayout = true;
+      }
       addElement(newEl, parentId, targetBpId);
       // If drawn inside a container, drill into it so the element is interactable
       if (parentId) useEditorStore.getState().setDrilledContainerId(parentId);
@@ -2398,10 +3373,28 @@ export default function InfiniteCanvas() {
       useEditorStore.getState().setSelection({ elementId: newEl.id, bpId: targetBpId });
       pushHistory();
       setPendingDraw(null);
+      if (['circle', 'line', 'polygon', 'path', 'pen'].includes(drawType)) {
+        setActiveCanvasTool('select');
+      }
+      return;
+    }
+    if (drag.current?.type === 'pen-create-point') {
+      const session = drag.current;
+      drag.current = null;
+      setInteracting(false);
+      if (session.finalizeOnUp) {
+        commitPenDraft();
+      }
       return;
     }
     if (drag.current) {
       let shouldPushHistory = drag.current.type !== 'element-drag' || !!drag.current.hasMoved;
+      if (drag.current.type === 'vector-point') {
+        shouldPushHistory = !!drag.current.hasMoved;
+      }
+      if (drag.current.type === 'vector-resize' || drag.current.type === 'vector-rotate') {
+        shouldPushHistory = !!drag.current.hasMoved;
+      }
       if (drag.current.type === 'viewport-fold') {
         setFoldDragInfo(null);
         drag.current = null;
@@ -2538,6 +3531,9 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'gradient-linear-handle' || drag.current.type === 'gradient-stop' || drag.current.type === 'gradient-radial-center' || drag.current.type === 'gradient-radial-radius') {
         setDragHint(null);
       }
+      if (drag.current.type === 'vector-point') {
+        setDragHint(null);
+      }
       setDraggingElementId(null);
       if (shouldPushHistory) pushHistory();
       drag.current = null;
@@ -2560,15 +3556,103 @@ export default function InfiniteCanvas() {
   // is still active because React hasn't yet re-run the cleanup effect.
   useEffect(() => {
     const handleCaptureDown = (e) => {
-      const drawType = useEditorStore.getState().pendingDraw; // always fresh
-      if (!drawType) return;
+      const state = useEditorStore.getState();
+      const drawType = state.pendingDraw; // always fresh
+      const tool = state.activeCanvasTool;
       if (e.button !== 0 || spaceDown.current) return;
       if (!containerRef.current?.contains(e.target)) return;
-      if (e.target.closest('.fb-artboard-header, .fb-right, .fb-left, .fb-topbar')) return;
+      if (e.target.closest('.fb-artboard-header, .fb-right, .fb-left, .fb-topbar, .fb-bottom-toolbar-wrap')) return;
+      if (e.target.closest('.fb-comment-card')) return;
+      if (tool === 'pan') {
+        e.preventDefault();
+        e.stopPropagation();
+        isPanning.current = true;
+        panOrigin.current = { x: e.clientX, y: e.clientY };
+        panStart.current = { x: state.viewport.x, y: state.viewport.y };
+        return;
+      }
+      if (tool === 'comment') {
+        if (state.activeSurface === 'component') return;
+        if (e.target.closest('.fb-comment-pin, .fb-comment-card')) return;
+        if (commentDraft || state.activeCommentId) {
+          state.clearActiveComment();
+          setCommentDraft(null);
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = containerRef.current.getBoundingClientRect();
+        const { x: panX, y: panY, scale } = state.viewport;
+        const worldX = (e.clientX - rect.left - panX) / scale;
+        const worldY = (e.clientY - rect.top - panY) / scale;
+        let targetBp = null;
+        for (const bp of Object.values(state.breakpointDefs)) {
+          if (worldX >= bp.x && worldX <= bp.x + bp.width && worldY >= bp.y && worldY <= bp.y + bp.height) {
+            targetBp = bp;
+            break;
+          }
+        }
+        if (!targetBp) return;
+        const pad = resolvePagePadding(state.getCurrentPage()?.padding, targetBp.id);
+        const localX = Math.max(0, Math.round(worldX - targetBp.x - (pad?.left ?? 0)));
+        const localY = Math.max(0, Math.round(worldY - targetBp.y - (pad?.top ?? 0)));
+        state.clearActiveComment();
+        setCommentDraft({
+          id: 'draft-comment',
+          isDraft: true,
+          bpId: targetBp.id,
+          x: localX,
+          y: localY,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: [],
+        });
+        return;
+      }
+      if (!drawType) return;
+      if (drawType === 'pen') {
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = containerRef.current.getBoundingClientRect();
+        const { x: panX, y: panY, scale } = state.viewport;
+        const worldX = (e.clientX - rect.left - panX) / scale;
+        const worldY = (e.clientY - rect.top - panY) / scale;
+        let targetBpId = null;
+        for (const bp of Object.values(state.breakpointDefs)) {
+          if (worldX >= bp.x && worldX <= bp.x + bp.width && worldY >= bp.y && worldY <= bp.y + bp.height) {
+            targetBpId = bp.id;
+            break;
+          }
+        }
+        if (!targetBpId) return;
+        if (resolvePenDraftCloseIntent(penDraft, targetBpId, worldX, worldY, scale)) {
+          e.preventDefault();
+          e.stopPropagation();
+          commitPenDraft({ ...penDraft, closed: true });
+          return;
+        }
+        setPenDraft((current) => {
+          const nextPoint = { x: worldX, y: worldY, inX: worldX, inY: worldY, outX: worldX, outY: worldY };
+          const nextDraft = current && current.bpId === targetBpId
+            ? { ...current, closed: false, points: [...current.points, nextPoint] }
+            : { bpId: targetBpId, closed: false, points: [nextPoint] };
+          drag.current = {
+            type: 'pen-create-point',
+            bpId: targetBpId,
+            pointIndex: nextDraft.points.length - 1,
+            startMX: e.clientX,
+            startMY: e.clientY,
+            finalizeOnUp: e.detail >= 2 && nextDraft.points.length > 1,
+          };
+          setInteracting(true);
+          return nextDraft;
+        });
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       const rect = containerRef.current.getBoundingClientRect();
-      const { x: panX, y: panY, scale } = useEditorStore.getState().viewport;
+      const { x: panX, y: panY, scale } = state.viewport;
       const worldX = (e.clientX - rect.left - panX) / scale;
       const worldY = (e.clientY - rect.top  - panY) / scale;
       drag.current = {
@@ -2580,7 +3664,7 @@ export default function InfiniteCanvas() {
     };
     window.addEventListener('mousedown', handleCaptureDown, true);
     return () => window.removeEventListener('mousedown', handleCaptureDown, true);
-  }, []); // empty — handler reads store directly
+  }, [commentDraft, commitPenDraft, penDraft, resolvePenDraftCloseIntent, setCommentDraft]); // reads store directly; local draft setter is stable
   // ── Start move from overlay (for elements clipped by artboard overflow) ───
   const startMoveFromOverlay = useCallback((e, bpId, element) => {
     const { getAllElements } = useEditorStore.getState();
@@ -2787,6 +3871,109 @@ export default function InfiniteCanvas() {
     setInteracting(true);
   }, [setInteracting]);
 
+  const startVectorPointDrag = useCallback((e, bpId, element, pointIndex, handleMode = 'anchor', frameWorldX = 0, frameWorldY = 0) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const resolved = resolveElement(element, bpId);
+    setActiveVectorPoint({ elementId: element.id, bpId, pointIndex });
+    drag.current = {
+      type: 'vector-point',
+      bpId,
+      elementId: element.id,
+      pointIndex,
+      handleMode,
+      frameWorldX,
+      frameWorldY,
+      localX: resolved.x ?? 0,
+      localY: resolved.y ?? 0,
+      startMX: e.clientX,
+      startMY: e.clientY,
+    };
+    setInteracting(true);
+  }, [setActiveVectorPoint, setInteracting]);
+
+  const startVectorResize = useCallback((e, bpId, element, handle, frameWorldX, frameWorldY, vectorWidth, vectorHeight, centerClientX, centerClientY) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const state = useEditorStore.getState();
+    let resolved = resolveElement(element, bpId);
+    let vectorData = getVectorShapeData(resolved) || getVectorShapeData(element);
+    if (!vectorData) return;
+    const reframedVector = reframeVectorShapeData(vectorData);
+    const needsNormalization = Math.abs(reframedVector.offsetX) > 0.001
+      || Math.abs(reframedVector.offsetY) > 0.001
+      || Math.abs(reframedVector.width - (resolved.width ?? reframedVector.width)) > 0.001
+      || Math.abs(reframedVector.height - (resolved.height ?? reframedVector.height)) > 0.001;
+    if (needsNormalization) {
+      resolved = {
+        ...resolved,
+        x: (resolved.x ?? 0) + reframedVector.offsetX,
+        y: (resolved.y ?? 0) + reframedVector.offsetY,
+        width: reframedVector.width,
+        height: reframedVector.height,
+        vectorData: reframedVector.vectorData,
+      };
+      vectorData = reframedVector.vectorData;
+      frameWorldX += reframedVector.offsetX;
+      frameWorldY += reframedVector.offsetY;
+      vectorWidth = reframedVector.width;
+      vectorHeight = reframedVector.height;
+    }
+    const pageLayout = resolvePageLayout(state.getCurrentPage()?.layout, bpId);
+    const bp = state.breakpointDefs[bpId] ?? null;
+    const pinToAbsoluteLayout = !element.parentId
+      && pageLayout !== null
+      && !resolved.absoluteInLayout
+      && resolved.positionType !== 'fixed';
+    const originLocalX = pinToAbsoluteLayout && bp ? Math.round(frameWorldX - bp.x) : (resolved.x ?? 0);
+    const originLocalY = pinToAbsoluteLayout && bp ? Math.round(frameWorldY - bp.y) : (resolved.y ?? 0);
+    drag.current = {
+      type: String(handle).startsWith('rotate-') ? 'vector-rotate' : 'vector-resize',
+      bpId,
+      elementId: element.id,
+      handle,
+      startMX: e.clientX,
+      startMY: e.clientY,
+      startX: originLocalX,
+      startY: originLocalY,
+      startRotation: parseFloat(resolved.rotation) || 0,
+      lockAspectRatio: resolved.lockAspectRatio === true,
+      originFrameWorldX: frameWorldX,
+      originFrameWorldY: frameWorldY,
+      originVectorWidth: vectorWidth,
+      originVectorHeight: vectorHeight,
+      originX: originLocalX,
+      originY: originLocalY,
+      originWidth: resolved.width ?? vectorWidth,
+      originHeight: resolved.height ?? vectorHeight,
+      pinToAbsoluteLayout,
+      frameWorldX,
+      frameWorldY,
+      startVectorWidth: vectorWidth,
+      startVectorHeight: vectorHeight,
+      startVectorData: vectorData,
+      centerClientX,
+      centerClientY,
+    };
+    clearActiveVectorPoint();
+    setInteracting(true);
+  }, [clearActiveVectorPoint, setInteracting]);
+
+  const insertVectorPoint = useCallback((event, bpId, element, frameWorldX, frameWorldY) => {
+    const resolved = resolveElement(element, bpId);
+    const vectorData = getVectorShapeData(resolved) || getVectorShapeData(element);
+    if (!vectorData || vectorData.kind === 'line') return;
+    const pointer = getProjectedWorldPoint(event.clientX, event.clientY, 0, 0);
+    const localPoint = { x: pointer.worldX - frameWorldX, y: pointer.worldY - frameWorldY };
+    const closestSegment = findClosestVectorSegment(vectorData, localPoint);
+    if (!closestSegment) return;
+    const insertion = insertVectorAnchorAtSegment(vectorData, closestSegment.segmentIndex, closestSegment.t);
+    if (insertion.insertedIndex < 0) return;
+    commitVectorShapeData(element.id, bpId, resolved, insertion.vectorData);
+    setActiveVectorPoint({ elementId: element.id, bpId, pointIndex: insertion.insertedIndex });
+    pushHistory();
+  }, [commitVectorShapeData, getProjectedWorldPoint, pushHistory, setActiveVectorPoint]);
+
 
   // ── Select artboard (deselects any element) ───────────────
   const onSelectArtboard = useCallback((bpId) => {
@@ -2943,13 +4130,31 @@ export default function InfiniteCanvas() {
   }, [getProjectedWorldPoint, setSelection, setArtboardSel, setInteracting, setDraggingElementId]);
 
   // ── Start resize (called from child) ──────────────────────
-  const startResize = useCallback((e, bpId, element, handle) => {
+  const startResize = useCallback((e, bpId, element, handle, payload = null) => {
     e.stopPropagation();
     e.preventDefault();
     const { getAllElements } = useEditorStore.getState();
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
+    const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
     setSelection({ elementId: el.id, bpId });
+    if ((shapeKind === 'path' || shapeKind === 'pen') && (String(handle).startsWith('rotate-') || ['nw','n','ne','e','se','s','sw','w'].includes(handle))) {
+      const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+      const domRect = boardDom?.querySelector(`[data-id="${el.id}"]`)?.getBoundingClientRect() ?? null;
+      startVectorResize(
+        e,
+        bpId,
+        el,
+        handle,
+        payload?.frameWorldX ?? (resolved.x ?? 0),
+        payload?.frameWorldY ?? (resolved.y ?? 0),
+        payload?.vectorWidth ?? (resolved.width ?? el.base?.width ?? 100),
+        payload?.vectorHeight ?? (resolved.height ?? el.base?.height ?? 100),
+        domRect ? domRect.left + (domRect.width / 2) : e.clientX,
+        domRect ? domRect.top + (domRect.height / 2) : e.clientY,
+      );
+      return;
+    }
     if (String(handle).startsWith('rotate-')) {
       const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
       const domEl = boardDom?.querySelector(`[data-id="${el.id}"]`);
@@ -2988,16 +4193,26 @@ export default function InfiniteCanvas() {
       setInteracting(true);
       return;
     }
+    const startBounds = {
+      minX: resolved.x ?? el.base?.x ?? 0,
+      minY: resolved.y ?? el.base?.y ?? 0,
+      width: resolved.width ?? el.base?.width ?? 100,
+      height: resolved.height ?? el.base?.height ?? 100,
+    };
+    const startHandlePoint = getResizeHandlePoint(startBounds, handle);
     drag.current = {
       type: 'resize', bpId, elementId: el.id, handle,
       startMX: e.clientX, startMY: e.clientY,
-      startX: resolved.x ?? el.base?.x ?? 0,
-      startY: resolved.y ?? el.base?.y ?? 0,
-      startW: resolved.width ?? el.base?.width ?? 100,
-      startH: resolved.height ?? el.base?.height ?? 100,
+      startX: startBounds.minX,
+      startY: startBounds.minY,
+      startW: startBounds.width,
+      startH: startBounds.height,
+      startHandleX: startHandlePoint.x,
+      startHandleY: startHandlePoint.y,
+      lockAspectRatio: resolved.lockAspectRatio === true,
     };
     setInteracting(true);
-  }, [setSelection, setInteracting]);
+  }, [setSelection, setInteracting, startVectorResize]);
 
   // ── Drop from elements panel ───────────────────────────────
   const onDrop = useCallback((e) => {
@@ -3089,7 +4304,11 @@ export default function InfiniteCanvas() {
   const onDragOver = (e) => e.preventDefault();
 
   const cursor = pendingDraw
-    ? 'crosshair'
+    ? ((pendingDraw === 'pen' && penDraftCloseHint) ? 'pointer' : 'crosshair')
+    : activeCanvasTool === 'comment'
+    ? COMMENT_CURSOR
+    : activeCanvasTool === 'pan'
+    ? (isPanning.current ? 'grabbing' : 'grab')
     : spacePanCursor
     ? (isPanning.current ? 'grabbing' : 'grab')
     : isPanning.current
@@ -3185,6 +4404,7 @@ export default function InfiniteCanvas() {
   const variantInteractionTarget = variantInteractionModal
     ? (componentEditor.variants ?? []).find((variant) => variant.id === variantInteractionModal.targetVariantId) ?? null
     : null;
+  const penDraftPath = penDraft?.points?.length ? getVectorShapePathD({ kind: 'path', points: penDraft.points, closed: penDraft.closed === true }) : '';
   const saveVariantInteraction = useCallback((nextInteraction) => {
     if (!variantInteractionModal?.sourceVariantId || !variantInteractionModal?.targetVariantId) return;
     updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, {
@@ -3244,7 +4464,79 @@ export default function InfiniteCanvas() {
           />
         ))}
         {activeSurface !== 'component' ? <ViewportFoldOverlay onStartFoldDrag={startViewportFoldDrag} /> : null}
-        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} onStartGradientDrag={startGradientDrag} dragOverlay={dragOverlay} gradientDragOverlay={gradientDragOverlay} />
+        <CommentOverlay
+          commentDraft={commentDraft ? {
+            ...commentDraft,
+            left: (bpDefs[commentDraft.bpId]?.x ?? 0) + (resolvePagePadding(page?.padding, commentDraft.bpId)?.left ?? 0) + (commentDraft.x ?? 0),
+            top: (bpDefs[commentDraft.bpId]?.y ?? 0) + (resolvePagePadding(page?.padding, commentDraft.bpId)?.top ?? 0) + (commentDraft.y ?? 0),
+          } : null}
+          onStartCommentDrag={startCommentDrag}
+        />
+        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} onStartGradientDrag={startGradientDrag} onStartVectorPointDrag={startVectorPointDrag} onInsertVectorPoint={insertVectorPoint} dragOverlay={dragOverlay} gradientDragOverlay={gradientDragOverlay} />
+        {penDraft?.points?.length ? (
+          <svg
+            className="fb-sel-overlay-svg"
+            width={Math.max(...Object.values(bpDefs).map((entry) => entry.x + entry.width), 0) + 400}
+            height={Math.max(...Object.values(bpDefs).map((entry) => entry.y + entry.height), 0) + 400}
+            style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 10000 }}
+          >
+            <path
+              d={penDraftPath}
+              fill={penDraft?.closed ? 'rgba(37,99,235,0.14)' : 'none'}
+              stroke="#2563eb"
+              strokeWidth={2 / Math.max(scale, MIN_SCALE)}
+              vectorEffect="non-scaling-stroke"
+              strokeDasharray={penDraft?.closed ? undefined : `${8 / Math.max(scale, MIN_SCALE)} ${6 / Math.max(scale, MIN_SCALE)}`}
+            />
+            {penDraft.points.flatMap((point, index) => {
+              const items = [];
+              if (isPathHandleDistinct(point, 'in')) {
+                items.push(
+                  <g key={`pen-in-${index}`}>
+                    <line x1={point.x} y1={point.y} x2={point.inX} y2={point.inY} stroke="rgba(37,99,235,0.7)" strokeWidth={1.5 / Math.max(scale, MIN_SCALE)} vectorEffect="non-scaling-stroke" />
+                    <circle cx={point.inX} cy={point.inY} r={4.5 / Math.max(scale, MIN_SCALE)} fill="#fff" stroke="#2563eb" strokeWidth={1.5 / Math.max(scale, MIN_SCALE)} vectorEffect="non-scaling-stroke" />
+                  </g>
+                );
+              }
+              if (isPathHandleDistinct(point, 'out')) {
+                items.push(
+                  <g key={`pen-out-${index}`}>
+                    <line x1={point.x} y1={point.y} x2={point.outX} y2={point.outY} stroke="rgba(37,99,235,0.7)" strokeWidth={1.5 / Math.max(scale, MIN_SCALE)} vectorEffect="non-scaling-stroke" />
+                    <circle cx={point.outX} cy={point.outY} r={4.5 / Math.max(scale, MIN_SCALE)} fill="#fff" stroke="#2563eb" strokeWidth={1.5 / Math.max(scale, MIN_SCALE)} vectorEffect="non-scaling-stroke" />
+                  </g>
+                );
+              }
+              items.push(
+                <circle
+                  key={`pen-anchor-${index}`}
+                  cx={point.x}
+                  cy={point.y}
+                  r={(index === 0 && penDraftCloseHint) ? (7 / Math.max(scale, MIN_SCALE)) : (5 / Math.max(scale, MIN_SCALE))}
+                  fill={index === 0 && penDraftCloseHint ? '#fff' : '#2563eb'}
+                  stroke="#2563eb"
+                  strokeWidth={1.5 / Math.max(scale, MIN_SCALE)}
+                  vectorEffect="non-scaling-stroke"
+                />
+              );
+              if (index === 0 && penDraftCloseHint) {
+                items.push(
+                  <circle
+                    key="pen-anchor-close-ring"
+                    cx={point.x}
+                    cy={point.y}
+                    r={11 / Math.max(scale, MIN_SCALE)}
+                    fill="none"
+                    stroke="#2563eb"
+                    strokeWidth={1.5 / Math.max(scale, MIN_SCALE)}
+                    vectorEffect="non-scaling-stroke"
+                    strokeDasharray={`${4 / Math.max(scale, MIN_SCALE)} ${3 / Math.max(scale, MIN_SCALE)}`}
+                  />
+                );
+              }
+              return items;
+            })}
+          </svg>
+        ) : null}
         {alignmentGuides.map((guide, index) => (
           <div
             key={`${guide.orientation}-${index}`}
@@ -3381,6 +4673,15 @@ export default function InfiniteCanvas() {
           </button>
         ) : null}
       </div>
+      {(activeComment || commentDraft) ? (
+        <CommentCanvasCard
+          containerRef={containerRef}
+          viewport={viewport}
+          commentDraft={commentDraft}
+          onSubmitDraft={submitCommentDraft}
+          onDiscardDraft={discardCommentDraft}
+        />
+      ) : null}
       {reorderIndicatorOverlay && (
         <div
           className={`fb-reorder-indicator-overlay fb-reorder-indicator-overlay--${reorderIndicatorOverlay.axis}`}
