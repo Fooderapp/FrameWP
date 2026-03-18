@@ -51,7 +51,10 @@ function summarizeVariantTargets(targets, variantOptions) {
   if (!Array.isArray(targets) || !targets.length) return 'No markers yet';
   return targets.map((target) => {
     const option = variantOptions.find((entry) => entry.value === target.targetVariantId) ?? null;
-    return `${option?.label || 'Variant'} ${Math.round((target.marker ?? 0) * 100)}%`;
+    if (Number.isFinite(target.markerOffsetPx)) {
+      return `${option?.label || 'Variant'} ${Math.round(target.markerOffsetPx)}px`;
+    }
+    return `${option?.label || 'Variant'} marker`;
   }).join(' · ');
 }
 
@@ -170,7 +173,12 @@ export default function ElementAnimationModal({
   }, [animation]);
 
   const triggerLabel = useMemo(() => {
-    if (draft.type === 'scroll') return `Start ${Math.round((draft.start ?? 0) * 100)}% · End ${Math.round((draft.end ?? 0) * 100)}%`;
+    if (draft.type === 'scroll') {
+      if (Number.isFinite(draft.startOffsetPx) && Number.isFinite(draft.endOffsetPx)) {
+        return `Start ${Math.round(draft.startOffsetPx)}px · End ${Math.round(draft.endOffsetPx)}px`;
+      }
+      return 'Artboard-linked start and end markers';
+    }
     if (draft.type === 'scroll-variant') return summarizeVariantTargets(draft.targets, variantOptions);
     return null;
   }, [draft, variantOptions]);
@@ -286,7 +294,9 @@ export default function ElementAnimationModal({
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
-              <div className="fb-animation-target-row__marker">{Math.round((target.marker ?? 0) * 100)}%</div>
+              <div className="fb-animation-target-row__marker">
+                {Number.isFinite(target.markerOffsetPx) ? `${Math.round(target.markerOffsetPx)}px` : 'Marker'}
+              </div>
               <button
                 type="button"
                 className="fb-icon-btn"

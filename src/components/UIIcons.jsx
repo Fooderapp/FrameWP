@@ -37,6 +37,7 @@ export const UIIcons = {
   comment: <Svg><path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H10l-4 4v-4H7.5A2.5 2.5 0 0 1 5 12.5Z" /></Svg>,
   component: <Svg><rect x="4" y="6" width="8" height="8" rx="2" /><path d="M14 9h6M17 6v6" /></Svg>,
   variables: <Svg><path d="M5 6h14" /><path d="M5 12h14" /><path d="M5 18h14" /><circle cx="8" cy="6" r="1.5" fill="currentColor" stroke="none" /><circle cx="8" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="8" cy="18" r="1.5" fill="currentColor" stroke="none" /></Svg>,
+  flow: <Svg><circle cx="6" cy="6" r="2" fill="currentColor" stroke="none" /><circle cx="18" cy="12" r="2" fill="currentColor" stroke="none" /><circle cx="6" cy="18" r="2" fill="currentColor" stroke="none" /><path d="M8 6h4" /><path d="M12 6l4 4" /><path d="M8 18h4" /><path d="M12 18l4-4" /></Svg>,
   plusCircle: <Svg><circle cx="12" cy="12" r="8.5" /><path d="M12 8v8M8 12h8" /></Svg>,
   link: <Svg><path d="M10 14l4-4" /><path d="M7.5 16.5l-1 1a3 3 0 1 1-4.2-4.2l3-3a3 3 0 0 1 4.2 0" /><path d="M16.5 7.5l1-1a3 3 0 1 1 4.2 4.2l-3 3a3 3 0 0 1-4.2 0" /></Svg>,
   close: <Svg><path d="M6 6l12 12M18 6L6 18" /></Svg>,

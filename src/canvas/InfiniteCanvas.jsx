@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { useEditorStore, createFrame, createImage, createVideo, createText, createIcon, createShapePreset, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage, createVideo, createScrollSequence, createText, createIcon, createShapePreset, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds } from '../store/editorStore';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
 import { buildGradient, parseGradient } from '../components/FillPicker';
@@ -3294,6 +3294,8 @@ export default function InfiniteCanvas() {
         ? createImage(localX, localY)
         : drawType === 'video'
           ? createVideo(localX, localY)
+        : drawType === 'scroll-sequence'
+          ? createScrollSequence(localX, localY)
         : drawType === 'text'
           ? createText(localX, localY)
           : drawType === 'icon'
@@ -4246,6 +4248,10 @@ export default function InfiniteCanvas() {
       const el = createVideo(elX, elY);
       addElement(el, null, targetBpId);
       pushHistory();
+    } else if (type === 'scroll-sequence') {
+      const el = createScrollSequence(elX, elY);
+      addElement(el, null, targetBpId);
+      pushHistory();
     } else if (type === 'text') {
       const el = createText(elX, elY);
       addElement(el, null, targetBpId);
@@ -4285,6 +4291,10 @@ export default function InfiniteCanvas() {
       pushHistory();
     } else if (type === 'video') {
       const el = createVideo(localX, localY);
+      addElement(el, targetElementId, targetBpId);
+      pushHistory();
+    } else if (type === 'scroll-sequence') {
+      const el = createScrollSequence(localX, localY);
       addElement(el, targetElementId, targetBpId);
       pushHistory();
     } else if (type === 'text') {

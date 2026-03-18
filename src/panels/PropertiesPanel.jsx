@@ -490,160 +490,51 @@ function BoundVariableCta({ variable, fallbackLabel = 'Bound variable' }) {
   );
 }
 
-function InteractionSection({ interactions, variableSources, interactionVariables, allVariables, updateInteraction, removeInteraction, addInteraction }) {
-  const interactionCount = interactions.length;
+function InteractionSection({ flow, legacyInteractions, onOpenFlow, onMigrateLegacy }) {
+  const interactionCount = legacyInteractions.length;
   const title = (
     <span className="fb-section-title-with-badge">
       <span>Interactions</span>
-      {interactionCount ? <span className="fb-section-badge">{interactionCount} added</span> : null}
+      {flow ? <span className="fb-section-badge">Flow</span> : interactionCount ? <span className="fb-section-badge">Legacy</span> : null}
     </span>
   );
 
   return (
     <Section
       title={title}
-      defaultOpen={interactionCount > 0}
-      action={<button type="button" className="fb-add-field fb-add-field--compact" onClick={addInteraction}>Add</button>}
+      defaultOpen={!!flow || interactionCount > 0}
+      action={<button type="button" className="fb-add-field fb-add-field--compact" onClick={onOpenFlow}>Open Flow</button>}
     >
-      {interactionCount ? interactions.map((interaction) => {
-        const selectedVariable = interaction.type === 'set-variable'
-          ? allVariables.find((variable) => variable.id === interaction.variableId && variable.scope === interaction.variableScope) ?? null
-          : null;
-        const operation = interaction.operation || 'set';
-        const usesDefaultValue = operation === 'default';
-        const usesToggle = selectedVariable?.type === 'boolean' && operation === 'toggle';
-        const showValueInput = !!selectedVariable && !usesDefaultValue && !usesToggle;
-
-        return (
-          <div key={interaction.id} className="fb-interaction-card">
-            <div className="fb-interaction-card__head">
-              <select
-                className="fb-prop-input"
-                value={interaction.type}
-                onChange={(event) => {
-                  if (event.target.value === 'navigate') {
-                    const nextPage = variableSources.pages[0] ?? null;
-                    updateInteraction(interaction.id, {
-                      type: 'navigate',
-                      pageId: nextPage?.id ?? 0,
-                      pageTitle: nextPage?.title ?? '',
-                      pageUrl: nextPage?.url ?? '',
-                    });
-                    return;
-                  }
-                  const nextVariable = interactionVariables[0] ?? null;
-                  updateInteraction(interaction.id, {
-                    type: 'set-variable',
-                    variableId: nextVariable?.id ?? '',
-                    variableScope: nextVariable?.scope ?? 'page',
-                    variableType: nextVariable?.type ?? 'string',
-                    operation: 'set',
-                    value: getDefaultInteractionValue(nextVariable?.type ?? 'string'),
-                  });
-                }}
-              >
-                <option value="navigate">Navigate to</option>
-                <option value="set-variable">Set variable</option>
-              </select>
-              <span className="fb-interaction-card__status">Added</span>
-              <IconButton icon={UIIcons.trash} title="Remove interaction" onClick={() => removeInteraction(interaction.id)} />
+      {flow ? (
+        <div className="fb-interaction-card">
+          <div className="fb-interaction-card__head">
+            <div>
+              <strong>{flow.name || 'Interaction Flow'}</strong>
+              <div className="fb-interaction-card__hint">{Math.max(0, (flow.nodes ?? []).length - 1)} step(s) in a guided action flow.</div>
             </div>
-
-            {interaction.type === 'navigate' ? (
-              <div className="fb-prop-row" style={{ marginBottom: 0 }}>
-                <span className="fb-prop-label">Page</span>
-                <select
-                  className="fb-prop-input"
-                  value={interaction.pageId || ''}
-                  onChange={(event) => {
-                    const nextPage = variableSources.pages.find((pageEntry) => String(pageEntry.id) === event.target.value) ?? null;
-                    updateInteraction(interaction.id, {
-                      pageId: nextPage?.id ?? 0,
-                      pageTitle: nextPage?.title ?? '',
-                      pageUrl: nextPage?.url ?? '',
-                    });
-                  }}
-                >
-                  <option value="">Select page</option>
-                  {variableSources.pages.map((pageEntry) => <option key={pageEntry.id} value={pageEntry.id}>{pageEntry.title}</option>)}
-                </select>
-              </div>
-            ) : (
-              <>
-                <div className="fb-prop-row">
-                  <span className="fb-prop-label">Variable</span>
-                  <select
-                    className="fb-prop-input"
-                    value={`${interaction.variableScope}:${interaction.variableId}`}
-                    onChange={(event) => {
-                      const nextVariable = allVariables.find((variable) => `${variable.scope}:${variable.id}` === event.target.value) ?? null;
-                      if (!nextVariable) return;
-                      updateInteraction(interaction.id, {
-                        variableId: nextVariable.id,
-                        variableScope: nextVariable.scope,
-                        variableType: nextVariable.type,
-                        operation: 'set',
-                        value: getDefaultInteractionValue(nextVariable.type),
-                      });
-                    }}
-                  >
-                    <option value="">Select variable</option>
-                    {interactionVariables.map((variable) => <option key={`${variable.scope}:${variable.id}`} value={`${variable.scope}:${variable.id}`}>{variable.name} ({variable.scope})</option>)}
-                  </select>
-                </div>
-
-                {selectedVariable?.type === 'number' ? (
-                  <div className="fb-quad" style={{ marginTop: 6 }}>
-                    <select className="fb-prop-input" value={operation} onChange={(event) => updateInteraction(interaction.id, { operation: event.target.value })}>
-                      <option value="set">Set exact</option>
-                      <option value="increment">Increase</option>
-                      <option value="decrement">Decrease</option>
-                      <option value="default">Set default value</option>
-                    </select>
-                    {showValueInput ? <input className="fb-prop-input" type="number" value={interaction.value ?? 0} onChange={(event) => updateInteraction(interaction.id, { value: parseFloat(event.target.value) || 0 })} /> : <div className="fb-interaction-card__hint">Uses the variable&apos;s default value</div>}
-                  </div>
-                ) : null}
-
-                {selectedVariable?.type === 'string' ? (
-                  <div className="fb-quad" style={{ marginTop: 6 }}>
-                    <select className="fb-prop-input" value={operation} onChange={(event) => updateInteraction(interaction.id, { operation: event.target.value })}>
-                      <option value="set">Set exact</option>
-                      <option value="default">Set default value</option>
-                    </select>
-                    {showValueInput ? <input className="fb-prop-input" type="text" value={interaction.value ?? ''} onChange={(event) => updateInteraction(interaction.id, { value: event.target.value })} /> : <div className="fb-interaction-card__hint">Uses the variable&apos;s default value</div>}
-                  </div>
-                ) : null}
-
-                {selectedVariable?.type === 'color' ? (
-                  <div className="fb-quad" style={{ marginTop: 6 }}>
-                    <select className="fb-prop-input" value={operation} onChange={(event) => updateInteraction(interaction.id, { operation: event.target.value })}>
-                      <option value="set">Set exact</option>
-                      <option value="default">Set default value</option>
-                    </select>
-                    {showValueInput ? <FillPicker value={interaction.value || '#000000'} onChange={(value) => updateInteraction(interaction.id, { value })} /> : <div className="fb-interaction-card__hint">Uses the variable&apos;s default value</div>}
-                  </div>
-                ) : null}
-
-                {selectedVariable?.type === 'boolean' ? (
-                  <div className="fb-quad" style={{ marginTop: 6 }}>
-                    <select className="fb-prop-input" value={operation} onChange={(event) => updateInteraction(interaction.id, { operation: event.target.value })}>
-                      <option value="set">Set exact</option>
-                      <option value="toggle">Toggle</option>
-                      <option value="default">Set default value</option>
-                    </select>
-                    {showValueInput ? (
-                      <select className="fb-prop-input" value={interaction.value ? 'true' : 'false'} onChange={(event) => updateInteraction(interaction.id, { value: event.target.value === 'true' })}>
-                        <option value="false">False</option>
-                        <option value="true">True</option>
-                      </select>
-                    ) : <div className="fb-interaction-card__hint">{usesToggle ? 'Flips the current value' : 'Uses the variable\'s default value'}</div>}
-                  </div>
-                ) : null}
-              </>
-            )}
+            <span className="fb-interaction-card__status">Flow</span>
           </div>
-        );
-      }) : <div className="fb-artboard-bp-note">No interactions yet.</div>}
+          <div className="fb-interaction-flow-summary">
+            {flow.trigger?.type === 'element-click' ? 'Starts on click' : 'Custom trigger'}
+          </div>
+        </div>
+      ) : interactionCount ? (
+        <div className="fb-interaction-card">
+          <div className="fb-interaction-card__head">
+            <div>
+              <strong>Legacy interactions detected</strong>
+              <div className="fb-interaction-card__hint">This element still uses the old flat interaction list.</div>
+            </div>
+            <span className="fb-interaction-card__status">Legacy</span>
+          </div>
+          <div className="fb-artboard-bp-note" style={{ marginBottom: 10 }}>
+            Convert them into a guided flow to continue editing in the new builder.
+          </div>
+          <button type="button" className="fb-secondary-btn" onClick={onMigrateLegacy}>Convert to Flow</button>
+        </div>
+      ) : (
+        <div className="fb-artboard-bp-note">Create a guided interaction flow for this element.</div>
+      )}
     </Section>
   );
 }
@@ -720,6 +611,60 @@ function MediaPickerButton({ value, onChange, mediaType = 'image' }) {
       </div>
       {open && <MediaPickerModal mediaType={mediaType} onSelect={onChange} onClose={() => setOpen(false)} />}
     </>
+  );
+}
+
+function normalizeScrollSequenceFrameItems(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (entry && typeof entry === 'object' && typeof entry.url === 'string') return entry.url.trim();
+      return typeof entry === 'string' ? entry.trim() : '';
+    });
+}
+
+function ScrollSequenceFrameListEditor({ value, sourceMode = 'library', onChange }) {
+  const items = normalizeScrollSequenceFrameItems(value);
+
+  const updateItem = (index, nextValue) => {
+    const nextItems = [...items];
+    const normalizedValue = getMediaUrl(nextValue);
+    nextItems[index] = normalizedValue;
+    onChange(nextItems.filter(Boolean));
+  };
+
+  const removeItem = (index) => {
+    onChange(items.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const addItem = () => {
+    onChange([...items, '']);
+  };
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {items.length ? items.map((item, index) => (
+        <div key={`${sourceMode}-${index}`} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <div style={{ flex: 1 }}>
+            {sourceMode === 'library' ? (
+              <MediaPickerButton value={item} onChange={(nextValue) => updateItem(index, nextValue)} mediaType="image" />
+            ) : (
+              <input
+                className="fb-prop-input"
+                type="url"
+                value={item}
+                placeholder={`Frame ${index + 1} URL`}
+                onChange={(event) => updateItem(index, event.target.value)}
+              />
+            )}
+          </div>
+          <IconButton icon={UIIcons.trash} title="Remove frame" onClick={() => removeItem(index)} />
+        </div>
+      )) : (
+        <div className="fb-artboard-bp-note">Add frames in the exact order they should play.</div>
+      )}
+      <button type="button" className="fb-secondary-btn" onClick={addItem}>Add Frame</button>
+    </div>
   );
 }
 
@@ -1062,6 +1007,9 @@ export default function PropertiesPanel() {
   const getElementPropertyBinding = useEditorStore(s => s.getElementPropertyBinding);
   const setElementPropertyBinding = useEditorStore(s => s.setElementPropertyBinding);
   const setElementInteractions = useEditorStore(s => s.setElementInteractions);
+  const openFlowEditor = useEditorStore(s => s.openFlowEditor);
+  const ensureElementFlow = useEditorStore(s => s.ensureElementFlow);
+  const migrateLegacyElementInteractionsToFlow = useEditorStore(s => s.migrateLegacyElementInteractionsToFlow);
   const allEls              = useEditorStore(s => s.getAllElements());
   const viewportScale       = useEditorStore(s => s.viewport.scale);
   const openIconLibraryModal = useEditorStore(s => s.openIconLibraryModal);
@@ -1070,6 +1018,8 @@ export default function PropertiesPanel() {
   const removeElementAnimation = useEditorStore(s => s.removeElementAnimation);
   const openAnimationEditor = useEditorStore(s => s.openAnimationEditor);
   const closeAnimationEditor = useEditorStore(s => s.closeAnimationEditor);
+  const openScrollSequenceRangeEditor = useEditorStore(s => s.openScrollSequenceRangeEditor);
+  const closeScrollSequenceRangeEditor = useEditorStore(s => s.closeScrollSequenceRangeEditor);
 
   // Artboard selection
   const artboardSel         = useEditorStore(s => s.artboardSel);
@@ -1080,6 +1030,7 @@ export default function PropertiesPanel() {
   const setPageLayout           = useEditorStore(s => s.setPageLayout);
   const page                    = useEditorStore(s => s.getCurrentPage());
   const pageVariables           = Array.isArray(page?.variables) ? page.variables : [];
+  const pageFlows               = Array.isArray(page?.flows) ? page.flows : [];
   // Remembers the last active layout per artboard bp before it was turned off,
   // so toggling back on restores gap/direction/etc. instead of resetting to defaults.
   const savedLayoutRef          = useRef({});
@@ -1153,7 +1104,10 @@ export default function PropertiesPanel() {
   };
 
   useEffect(() => () => resetFontPreview(), []);
-  useEffect(() => () => closeAnimationEditor(), [closeAnimationEditor]);
+  useEffect(() => () => {
+    closeAnimationEditor();
+    closeScrollSequenceRangeEditor();
+  }, [closeAnimationEditor, closeScrollSequenceRangeEditor]);
 
   const resolveBoundVariable = (binding) => binding ? (variableLookup.get(`${binding.scope}:${binding.variableId}`) ?? null) : null;
   const getBindingForProperty = (propertyKey) => element ? getElementPropertyBinding(element.id, selection?.bpId || 'desktop', propertyKey) : null;
@@ -1191,6 +1145,19 @@ export default function PropertiesPanel() {
         : null;
     if (!nextInteraction) return;
     updateInteractions([...interactions, nextInteraction]);
+  };
+  const selectedElementFlow = element
+    ? (pageFlows.find((flow) => flow?.trigger?.type === 'element-click' && flow?.trigger?.elementId === element.id) ?? null)
+    : null;
+  const handleOpenInteractionFlow = () => {
+    if (!element) return;
+    const flowId = selectedElementFlow?.id || ensureElementFlow(element.id, { name: `${element.name || 'Element'} interaction` });
+    openFlowEditor({ elementId: element.id, flowId });
+  };
+  const handleMigrateLegacyInteractions = () => {
+    if (!element) return;
+    const flowId = migrateLegacyElementInteractionsToFlow(element.id) || selectedElementFlow?.id || ensureElementFlow(element.id, { name: `${element.name || 'Element'} interaction` });
+    openFlowEditor({ elementId: element.id, flowId });
   };
 
   useEffect(() => {
@@ -1892,13 +1859,10 @@ export default function PropertiesPanel() {
 
         {activeSurface === 'page' ? (
           <InteractionSection
-            interactions={interactions}
-            variableSources={variableSources}
-            interactionVariables={interactionVariables}
-            allVariables={allVariables}
-            updateInteraction={updateInteraction}
-            removeInteraction={removeInteraction}
-            addInteraction={addInteraction}
+            flow={selectedElementFlow}
+            legacyInteractions={interactions}
+            onOpenFlow={handleOpenInteractionFlow}
+            onMigrateLegacy={handleMigrateLegacyInteractions}
           />
         ) : null}
 
@@ -2934,6 +2898,104 @@ export default function PropertiesPanel() {
                   { value: 'cover', icon: '⛶', label: 'Fill' },
                 ]}
               />
+            </div>
+          </Section>
+        )}
+
+        {element.type === 'scroll-sequence' && (
+          <Section title="Scroll Sequence" action={<ResetBtn show={isOv('scrollSequenceType','scrollSequenceSourceMode','scrollSequenceSrc','scrollSequenceFrames','scrollSequenceStart','scrollSequenceEnd','scrollSequenceStartOffsetPx','scrollSequenceEndOffsetPx') || isSOv('objectFit')} onReset={() => { resetOv('scrollSequenceType','scrollSequenceSourceMode','scrollSequenceSrc','scrollSequenceFrames','scrollSequenceStart','scrollSequenceEnd','scrollSequenceStartOffsetPx','scrollSequenceEndOffsetPx'); resetSOv('objectFit'); }} />}>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Content</span>
+              <ChoiceGroup
+                value={resolved.scrollSequenceType ?? 'video'}
+                onChange={(value) => {
+                  upd('scrollSequenceType', value);
+                  if (value !== 'image-sequence') upd('scrollSequenceFrames', []);
+                  commit();
+                }}
+                options={[
+                  { value: 'video', label: 'Video' },
+                  { value: 'image-sequence', label: 'Image Seq' },
+                  { value: 'gif', label: 'GIF' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Source</span>
+              <ChoiceGroup
+                value={resolved.scrollSequenceSourceMode ?? 'library'}
+                onChange={(value) => { upd('scrollSequenceSourceMode', value); commit(); }}
+                options={[
+                  { value: 'library', label: 'Library' },
+                  { value: 'url', label: 'Link' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ alignItems: 'flex-start', marginTop: 8 }}>
+              <span className="fb-prop-label">Media</span>
+              <div style={{ flex: 1, display: 'grid', gap: 6 }}>
+                {(resolved.scrollSequenceType ?? 'video') === 'image-sequence' ? (
+                  <ScrollSequenceFrameListEditor
+                    value={resolved.scrollSequenceFrames ?? []}
+                    sourceMode={resolved.scrollSequenceSourceMode ?? 'library'}
+                    onChange={(nextFrames) => { upd('scrollSequenceFrames', nextFrames); commit(); }}
+                  />
+                ) : ((resolved.scrollSequenceSourceMode ?? 'library') === 'library' ? (
+                  <MediaPickerButton
+                    value={resolved.scrollSequenceSrc ?? ''}
+                    onChange={(nextValue) => { upd('scrollSequenceSrc', nextValue); commit(); }}
+                    mediaType={(resolved.scrollSequenceType ?? 'video') === 'video' ? 'video' : 'image'}
+                  />
+                ) : (
+                  <input
+                    className="fb-prop-input"
+                    type="url"
+                    value={resolved.scrollSequenceSrc ?? ''}
+                    placeholder={(resolved.scrollSequenceType ?? 'video') === 'video' ? 'https://example.com/video.mp4' : 'https://example.com/sequence.gif'}
+                    onChange={(event) => upd('scrollSequenceSrc', event.target.value)}
+                    onBlur={commit}
+                  />
+                ))}
+                <div className="fb-artboard-bp-note">
+                  {(resolved.scrollSequenceType ?? 'video') === 'image-sequence'
+                    ? 'Add each frame in order. Use the media library or paste direct image URLs.'
+                    : ((resolved.scrollSequenceType ?? 'video') === 'video'
+                      ? 'Use a direct MP4/WebM file from the WordPress library or a public media URL.'
+                      : 'Choose or paste a GIF source. GIF playback is shown inside the same scroll range markers.')}
+                </div>
+              </div>
+            </div>
+
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Mode</span>
+              <IconGroup
+                value={s.objectFit ?? 'cover'}
+                onChange={v => { updS('objectFit', v); commit(); }}
+                options={[
+                  { value: 'contain', icon: '⊡', label: 'Fit' },
+                  { value: 'cover', icon: '⛶', label: 'Fill' },
+                ]}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ alignItems: 'center', marginTop: 8 }}>
+              <span className="fb-prop-label">Markers</span>
+              <div style={{ flex: 1, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
+                <button
+                  type="button"
+                  className="fb-secondary-btn"
+                  onClick={() => openScrollSequenceRangeEditor({ elementId: element.id, bpId })}
+                >
+                  Edit Markers
+                </button>
+                <span className="fb-artboard-bp-note" style={{ margin: 0 }}>
+                  {Number.isFinite(resolved.scrollSequenceStartOffsetPx) && Number.isFinite(resolved.scrollSequenceEndOffsetPx)
+                    ? `${Math.round(resolved.scrollSequenceStartOffsetPx)} px to ${Math.round(resolved.scrollSequenceEndOffsetPx)} px`
+                    : 'Artboard-linked marker positions'}
+                </span>
+              </div>
             </div>
           </Section>
         )}

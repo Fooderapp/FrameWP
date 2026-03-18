@@ -21,6 +21,33 @@ function getGradientFallbackColor(value, fallback = '#000000') {
   return match?.[1] || fallback;
 }
 
+function getScrollSequenceFrameList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => getMediaUrl(entry))
+    .filter(Boolean);
+}
+
+function getScrollSequencePreview(resolved) {
+  const type = resolved?.scrollSequenceType ?? 'video';
+  const src = getMediaUrl(resolved?.scrollSequenceSrc);
+  const frames = getScrollSequenceFrameList(resolved?.scrollSequenceFrames);
+  if (type === 'image-sequence') {
+    return {
+      type,
+      src: frames[0] ?? '',
+      frameCount: frames.length,
+      hasMedia: frames.length > 0,
+    };
+  }
+  return {
+    type,
+    src,
+    frameCount: frames.length,
+    hasMedia: Boolean(src),
+  };
+}
+
 function buildSvgDataUrl(markup) {
   if (typeof markup !== 'string' || !markup.trim()) return '';
   return `url("data:image/svg+xml;utf8,${encodeURIComponent(markup)}")`;
@@ -1141,6 +1168,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const videoEmbedLayout = el.type === 'video'
     ? getVideoEmbedLayout(resolved?.width ?? width, resolved?.height ?? height, styles?.objectFit ?? 'cover')
     : null;
+  const scrollSequencePreview = el.type === 'scroll-sequence'
+    ? getScrollSequencePreview(resolved)
+    : null;
 
   useLayoutEffect(() => {
     if (!isEditingText || el?.type !== 'text') {
@@ -1300,6 +1330,98 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               referrerPolicy="strict-origin-when-cross-origin"
             />
           </div>
+        );
+      })()}
+      {el.type === 'scroll-sequence' && (() => {
+        const objectFit = styles?.objectFit ?? 'cover';
+        const previewType = scrollSequencePreview?.type ?? 'video';
+        const previewSrc = scrollSequencePreview?.src ?? '';
+        const hasMedia = scrollSequencePreview?.hasMedia === true;
+        return (
+          <>
+            {hasMedia ? (
+              previewType === 'video' ? (
+                <video
+                  src={previewSrc}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    objectFit,
+                    borderRadius: 'inherit',
+                    pointerEvents: 'none',
+                    userSelect: 'none',
+                    background: '#040712',
+                  }}
+                  muted
+                  playsInline
+                  preload="metadata"
+                />
+              ) : (
+                <img
+                  src={previewSrc}
+                  alt=""
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    objectFit,
+                    borderRadius: 'inherit',
+                    pointerEvents: 'none',
+                    userSelect: 'none',
+                  }}
+                  draggable={false}
+                />
+              )
+            ) : (
+              <div style={{
+                position: 'absolute', inset: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'rgba(224,231,255,0.82)', fontSize: 11, pointerEvents: 'none',
+                border: '1.5px dashed rgba(120,140,255,0.28)', borderRadius: 'inherit',
+                gap: 6, flexDirection: 'column', background: 'linear-gradient(180deg, rgba(7,11,25,0.92), rgba(9,17,42,0.82))',
+              }}>
+                <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1.5" y="2" width="13" height="11" rx="1.8"/>
+                  <path d="M4 5.5h5" />
+                  <path d="M4 8h8" />
+                  <path d="M4 10.5h4" />
+                </svg>
+                <span>Scroll Sequence</span>
+              </div>
+            )}
+            <div style={{
+              position: 'absolute',
+              left: 10,
+              right: 10,
+              bottom: 10,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 8,
+              pointerEvents: 'none',
+            }}>
+              <span style={{
+                padding: '5px 8px',
+                borderRadius: 999,
+                background: 'rgba(5, 10, 24, 0.74)',
+                color: '#f8fafc',
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+              }}>
+                {previewType === 'image-sequence' ? 'Image Sequence' : previewType}
+              </span>
+              {previewType === 'image-sequence' && scrollSequencePreview?.frameCount ? (
+                <span style={{ color: 'rgba(226,232,240,0.92)', fontSize: 10, fontWeight: 600 }}>
+                  {scrollSequencePreview.frameCount} frames
+                </span>
+              ) : null}
+            </div>
+          </>
         );
       })()}
       {hasGradientFrameStroke && styles?.borderWidth > 0 ? (

@@ -17,6 +17,33 @@ function getMediaUrl(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function getScrollSequenceFrameList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => getMediaUrl(entry))
+    .filter(Boolean);
+}
+
+function getScrollSequencePreview(resolved) {
+  const type = resolved?.scrollSequenceType ?? 'video';
+  const src = getMediaUrl(resolved?.scrollSequenceSrc);
+  const frames = getScrollSequenceFrameList(resolved?.scrollSequenceFrames);
+  if (type === 'image-sequence') {
+    return {
+      type,
+      src: frames[0] ?? '',
+      frameCount: frames.length,
+      hasMedia: frames.length > 0,
+    };
+  }
+  return {
+    type,
+    src,
+    frameCount: frames.length,
+    hasMedia: Boolean(src),
+  };
+}
+
 function deepMerge(base, override) {
   if (!isObject(base) || !isObject(override)) return override;
   const next = { ...base };
@@ -521,6 +548,9 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const videoEmbedLayout = element.type === 'video'
     ? getVideoEmbedLayout(width, height, styles?.objectFit ?? 'cover')
     : null;
+  const scrollSequencePreview = element.type === 'scroll-sequence'
+    ? getScrollSequencePreview(resolved)
+    : null;
   const backgroundColor = styles?.backgroundColor && !String(styles.backgroundColor).includes('gradient(')
     ? styles.backgroundColor
     : undefined;
@@ -637,6 +667,24 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
               referrerPolicy="strict-origin-when-cross-origin"
             />
           </div>
+        )
+      ) : null}
+      {element.type === 'scroll-sequence' && scrollSequencePreview?.hasMedia ? (
+        scrollSequencePreview.type === 'video' ? (
+          <video
+            src={scrollSequencePreview.src}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: styles?.objectFit ?? 'cover', borderRadius: 'inherit', background: '#040712' }}
+            muted
+            playsInline
+            preload="metadata"
+          />
+        ) : (
+          <img
+            src={scrollSequencePreview.src}
+            alt=""
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: styles?.objectFit ?? 'cover', borderRadius: 'inherit' }}
+            draggable={false}
+          />
         )
       ) : null}
       {element.type === 'text' ? (

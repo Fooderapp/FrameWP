@@ -38,6 +38,8 @@ class FrameBuilder_Exporter {
 	private array $page_variables = [];
 	/** @var array<int,array> Global variable definitions */
 	private array $global_variables = [];
+	/** @var array<int,array> Page-scoped interaction flows */
+	private array $page_flows = [];
 
 	/** @var array<string,float|null> Per-breakpoint viewport fold height (null = auto-compute) */
 	private array $viewport_fold_h = [ 'desktop' => null, 'tablet' => null, 'mobile' => null ];
@@ -57,6 +59,44 @@ class FrameBuilder_Exporter {
 
 	private function normalize_video_provider( $value ): string {
 		return in_array( $value, [ 'youtube', 'vimeo', 'upload' ], true ) ? $value : 'upload';
+	}
+
+	private function normalize_scroll_sequence_type( $value ): string {
+		return in_array( $value, [ 'video', 'image-sequence', 'gif' ], true ) ? $value : 'video';
+	}
+
+	private function normalize_scroll_sequence_source_mode( $value ): string {
+		return 'url' === $value ? 'url' : 'library';
+	}
+
+	private function normalize_scroll_sequence_frames( $value ): array {
+		if ( ! is_array( $value ) ) return [];
+		$frames = [];
+		foreach ( $value as $entry ) {
+			$url = $this->normalize_media_url( $entry );
+			if ( '' !== $url ) $frames[] = $url;
+		}
+		return $frames;
+	}
+
+	private function get_scroll_sequence_config( array $resolved, array $styles ): ?array {
+		$type = $this->normalize_scroll_sequence_type( $resolved['scrollSequenceType'] ?? 'video' );
+		$source_mode = $this->normalize_scroll_sequence_source_mode( $resolved['scrollSequenceSourceMode'] ?? 'library' );
+		$src = $this->normalize_media_url( $resolved['scrollSequenceSrc'] ?? '' );
+		$frames = $this->normalize_scroll_sequence_frames( $resolved['scrollSequenceFrames'] ?? [] );
+		if ( 'image-sequence' === $type && empty( $frames ) ) return null;
+		if ( 'image-sequence' !== $type && '' === $src ) return null;
+		return [
+			'type' => $type,
+			'sourceMode' => $source_mode,
+			'src' => $src,
+			'frames' => $frames,
+			'objectFit' => 'contain' === ( $styles['objectFit'] ?? 'cover' ) ? 'contain' : 'cover',
+			'start' => isset( $resolved['scrollSequenceStart'] ) ? max( 0, min( 1, (float) $resolved['scrollSequenceStart'] ) ) : 0.2,
+			'end' => isset( $resolved['scrollSequenceEnd'] ) ? max( 0, min( 1, (float) $resolved['scrollSequenceEnd'] ) ) : 0.68,
+			'startOffsetPx' => isset( $resolved['scrollSequenceStartOffsetPx'] ) && is_numeric( $resolved['scrollSequenceStartOffsetPx'] ) ? (float) $resolved['scrollSequenceStartOffsetPx'] : null,
+			'endOffsetPx' => isset( $resolved['scrollSequenceEndOffsetPx'] ) && is_numeric( $resolved['scrollSequenceEndOffsetPx'] ) ? (float) $resolved['scrollSequenceEndOffsetPx'] : null,
+		];
 	}
 
 	private function extract_youtube_video_id( string $value ): string {
@@ -425,6 +465,7 @@ class FrameBuilder_Exporter {
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
 		$this->component_library = $this->load_component_library();
 		$this->page_variables = $this->normalize_variable_list( $layout['variables'] ?? [], 'page' );
+		$this->page_flows = $this->normalize_flow_list( $layout['flows'] ?? [] );
 		$this->global_variables = $this->normalize_variable_list(
 			json_decode( get_option( '_fb_global_variables', '[]' ), true ),
 			'global'
@@ -783,17 +824,33 @@ class FrameBuilder_Exporter {
 		$component_instance = is_array( $el['componentInstance'] ?? null ) ? $el['componentInstance'] : null;
 		$component_id = sanitize_text_field( $component_instance['componentId'] ?? '' );
 		$bindings_json = ! empty( $el['bindings'] ) ? esc_attr( wp_json_encode( $this->normalize_bindings( $el['bindings'] ) ) ) : '';
+		$flow_json = '';
+		$element_flow = $this->get_element_flow( $id );
+		if ( $element_flow ) {
+			$flow_json = esc_attr( wp_json_encode( $element_flow ) );
+		}
+		$scroll_sequence_json = '';
+		$scroll_sequence = $this->get_scroll_sequence_config( $resolved, $styles );
+		if ( $scroll_sequence ) {
+			$scroll_sequence_json = esc_attr( wp_json_encode( $scroll_sequence ) );
+		}
 		$interactions_json = ! empty( $el['interactions'] ) ? esc_attr( wp_json_encode( $el['interactions'] ) ) : '';
 		$animations_json = ! empty( $el['animations'] ) ? esc_attr( wp_json_encode( $el['animations'] ) ) : '';
 		$runtime_attrs = '';
 		if ( $bindings_json !== '' ) {
 			$runtime_attrs .= ' data-fb-bindings="' . $bindings_json . '"';
 		}
-		if ( $interactions_json !== '' ) {
+		if ( $flow_json !== '' ) {
+			$runtime_attrs .= ' data-fb-flow="' . $flow_json . '"';
+		}
+		if ( $interactions_json !== '' && $flow_json === '' ) {
 			$runtime_attrs .= ' data-fb-interactions="' . $interactions_json . '"';
 		}
 		if ( $animations_json !== '' ) {
 			$runtime_attrs .= ' data-fb-animations="' . $animations_json . '"';
+		}
+		if ( $scroll_sequence_json !== '' ) {
+			$runtime_attrs .= ' data-fb-scroll-sequence="' . $scroll_sequence_json . '"';
 		}
 		if ( $component_id && $this->get_component_definition( $component_id ) ) {
 			$html = '<div class="' . esc_attr( $class . ' fb-component-instance' ) . '" style="' . esc_attr( $layout_inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '" data-fb-component-id="' . esc_attr( $component_id ) . '" data-fb-active-variant="' . esc_attr( sanitize_text_field( $component_instance['variantId'] ?? '' ) ) . '"' . $runtime_attrs . '>';
@@ -840,6 +897,30 @@ class FrameBuilder_Exporter {
 					$html .= '<div class="fb-video-embed" style="' . esc_attr( $embed_layout['wrapper'] ) . '">';
 					$html .= '<iframe src="' . $embed_url . '" title="' . esc_attr( $el['name'] ?? 'Video' ) . '" style="' . esc_attr( $embed_layout['frame'] ) . '" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin"></iframe>';
 					$html .= '</div>';
+				}
+			}
+		}
+
+		if ( ( $el['type'] ?? '' ) === 'scroll-sequence' && $scroll_sequence ) {
+			$object_fit = $this->sanitize_css_value( $scroll_sequence['objectFit'] ?? 'cover' );
+			if ( 'video' === $scroll_sequence['type'] ) {
+				$video_url = esc_url( $scroll_sequence['src'] ?? '' );
+				if ( $video_url ) {
+					$video_style = 'position:absolute;inset:0;width:100%;height:100%;object-fit:' . $object_fit . ';border-radius:inherit;background:#040712;';
+					$html .= '<video data-fb-scroll-sequence-media="video" src="' . $video_url . '" style="' . esc_attr( $video_style ) . '" muted playsinline preload="auto"></video>';
+				}
+			} elseif ( 'image-sequence' === $scroll_sequence['type'] ) {
+				$frames = $scroll_sequence['frames'] ?? [];
+				$first_frame = ! empty( $frames ) ? esc_url( $frames[0] ) : '';
+				if ( $first_frame ) {
+					$img_style = 'position:absolute;inset:0;width:100%;height:100%;object-fit:' . $object_fit . ';border-radius:inherit;';
+					$html .= '<img data-fb-scroll-sequence-media="image-sequence" src="' . $first_frame . '" alt="" style="' . esc_attr( $img_style ) . '" loading="eager">';
+				}
+			} else {
+				$gif_url = esc_url( $scroll_sequence['src'] ?? '' );
+				if ( $gif_url ) {
+					$img_style = 'position:absolute;inset:0;width:100%;height:100%;object-fit:' . $object_fit . ';border-radius:inherit;';
+					$html .= '<img data-fb-scroll-sequence-media="gif" src="' . $gif_url . '" alt="" style="' . esc_attr( $img_style ) . '" loading="eager">';
 				}
 			}
 		}
@@ -1282,6 +1363,120 @@ class FrameBuilder_Exporter {
 			'page'   => $page_map,
 			'global' => $global_map,
 		];
+	}
+
+	private function normalize_flow_config_value( $value ) {
+		if ( is_array( $value ) ) {
+			$normalized = [];
+			foreach ( $value as $key => $entry ) {
+				$normalized[ is_string( $key ) ? $key : (string) $key ] = $this->normalize_flow_config_value( $entry );
+			}
+			return $normalized;
+		}
+		if ( is_bool( $value ) || is_null( $value ) || is_int( $value ) || is_float( $value ) || is_string( $value ) ) {
+			return $value;
+		}
+		if ( is_numeric( $value ) ) return 0 + $value;
+		return null;
+	}
+
+	private function normalize_flow_trigger( $trigger ): array {
+		$type = isset( $trigger['type'] ) ? sanitize_key( (string) $trigger['type'] ) : 'custom';
+		if ( ! in_array( $type, [ 'element-click', 'page-load', 'form-submit', 'custom' ], true ) ) {
+			$type = 'custom';
+		}
+		return [
+			'type' => $type,
+			'elementId' => isset( $trigger['elementId'] ) ? sanitize_text_field( (string) $trigger['elementId'] ) : '',
+			'event' => isset( $trigger['event'] ) ? sanitize_key( (string) $trigger['event'] ) : ( 'element-click' === $type ? 'click' : '' ),
+			'formId' => isset( $trigger['formId'] ) ? sanitize_text_field( (string) $trigger['formId'] ) : '',
+		];
+	}
+
+	private function normalize_flow_node( $node ): ?array {
+		if ( ! is_array( $node ) ) return null;
+		$id = isset( $node['id'] ) ? sanitize_text_field( (string) $node['id'] ) : '';
+		$type = isset( $node['type'] ) ? sanitize_key( (string) $node['type'] ) : '';
+		if ( '' === $id || ! in_array( $type, [ 'trigger', 'condition', 'navigate', 'set-variable', 'delay', 'end' ], true ) ) {
+			return null;
+		}
+		$position = is_array( $node['position'] ?? null ) ? $node['position'] : [];
+		return [
+			'id' => $id,
+			'type' => $type,
+			'label' => isset( $node['label'] ) && is_string( $node['label'] ) && trim( $node['label'] ) !== '' ? sanitize_text_field( $node['label'] ) : $type,
+			'position' => [
+				'x' => isset( $position['x'] ) && is_numeric( $position['x'] ) ? (float) $position['x'] : 0,
+				'y' => isset( $position['y'] ) && is_numeric( $position['y'] ) ? (float) $position['y'] : 0,
+			],
+			'config' => $this->normalize_flow_config_value( is_array( $node['config'] ?? null ) ? $node['config'] : [] ),
+		];
+	}
+
+	private function normalize_flow_edge( $edge, array $node_ids ): ?array {
+		if ( ! is_array( $edge ) ) return null;
+		$source = isset( $edge['source'] ) ? sanitize_text_field( (string) $edge['source'] ) : '';
+		$target = isset( $edge['target'] ) ? sanitize_text_field( (string) $edge['target'] ) : '';
+		if ( '' === $source || '' === $target || ! isset( $node_ids[ $source ] ) || ! isset( $node_ids[ $target ] ) ) {
+			return null;
+		}
+		$source_port = isset( $edge['sourcePort'] ) ? sanitize_key( (string) $edge['sourcePort'] ) : 'next';
+		$target_port = isset( $edge['targetPort'] ) ? sanitize_key( (string) $edge['targetPort'] ) : 'in';
+		return [
+			'id' => isset( $edge['id'] ) ? sanitize_text_field( (string) $edge['id'] ) : uniqid( 'flow-edge-', true ),
+			'source' => $source,
+			'target' => $target,
+			'sourcePort' => in_array( $source_port, [ 'next', 'true', 'false' ], true ) ? $source_port : 'next',
+			'targetPort' => '' !== $target_port ? $target_port : 'in',
+		];
+	}
+
+	private function normalize_flow( $flow ): ?array {
+		if ( ! is_array( $flow ) ) return null;
+		$nodes = [];
+		$node_ids = [];
+		foreach ( $flow['nodes'] ?? [] as $node ) {
+			$normalized_node = $this->normalize_flow_node( $node );
+			if ( ! $normalized_node ) continue;
+			$nodes[] = $normalized_node;
+			$node_ids[ $normalized_node['id'] ] = true;
+		}
+		if ( empty( $nodes ) ) return null;
+		$edges = [];
+		foreach ( $flow['edges'] ?? [] as $edge ) {
+			$normalized_edge = $this->normalize_flow_edge( $edge, $node_ids );
+			if ( $normalized_edge ) $edges[] = $normalized_edge;
+		}
+		return [
+			'id' => isset( $flow['id'] ) ? sanitize_text_field( (string) $flow['id'] ) : uniqid( 'flow-', true ),
+			'name' => isset( $flow['name'] ) && is_string( $flow['name'] ) && trim( $flow['name'] ) !== '' ? sanitize_text_field( $flow['name'] ) : 'Untitled Flow',
+			'trigger' => $this->normalize_flow_trigger( is_array( $flow['trigger'] ?? null ) ? $flow['trigger'] : [] ),
+			'nodes' => $nodes,
+			'edges' => $edges,
+			'legacySourceElementId' => isset( $flow['legacySourceElementId'] ) ? sanitize_text_field( (string) $flow['legacySourceElementId'] ) : '',
+			'isLegacyProxy' => ! empty( $flow['isLegacyProxy'] ),
+		];
+	}
+
+	private function normalize_flow_list( $flows ): array {
+		if ( ! is_array( $flows ) ) return [];
+		$normalized = [];
+		foreach ( $flows as $flow ) {
+			$normalized_flow = $this->normalize_flow( $flow );
+			if ( $normalized_flow ) $normalized[] = $normalized_flow;
+		}
+		return $normalized;
+	}
+
+	private function get_element_flow( string $element_id ): ?array {
+		if ( '' === $element_id ) return null;
+		foreach ( $this->page_flows as $flow ) {
+			$trigger = is_array( $flow['trigger'] ?? null ) ? $flow['trigger'] : [];
+			if ( ( $trigger['type'] ?? '' ) === 'element-click' && ( $trigger['elementId'] ?? '' ) === $element_id ) {
+				return $flow;
+			}
+		}
+		return null;
 	}
 
 	private function normalize_bindings( $bindings ): array {
@@ -1998,8 +2193,120 @@ class FrameBuilder_Exporter {
 		setVariableValue(variable.scope || interaction.variableScope || 'page', variable.id, nextValue);
 		applyAllBindings();
 	};
+	var getFlowNodeMap = function(flow) {
+		return new Map((Array.isArray(flow && flow.nodes) ? flow.nodes : []).map(function(node) {
+			return [String(node.id), node];
+		}));
+	};
+	var getFlowEdgesBySource = function(flow) {
+		var map = new Map();
+		(Array.isArray(flow && flow.edges) ? flow.edges : []).forEach(function(edge) {
+			if (!edge || !edge.source || !edge.target) return;
+			var sourceId = String(edge.source);
+			var sourcePort = edge.sourcePort || 'next';
+			var outgoing = map.get(sourceId) || new Map();
+			outgoing.set(sourcePort, edge);
+			map.set(sourceId, outgoing);
+		});
+		return map;
+	};
+	var normalizeConditionCompareValue = function(type, value) {
+		if (type === 'number') {
+			var numeric = typeof value === 'number' ? value : parseFloat(value);
+			return Number.isFinite(numeric) ? numeric : 0;
+		}
+		if (type === 'boolean') return normalizeVariableValue('boolean', value);
+		if (value && typeof value === 'object') return bindingToText(value);
+		return value == null ? '' : String(value);
+	};
+	var evaluateConditionNode = function(node) {
+		var config = node && typeof node.config === 'object' ? node.config : {};
+		var variable = getVariable(config.variableScope || 'page', config.variableId || '');
+		var operator = config.operator || 'equals';
+		var left = variable ? variable.value : null;
+		var type = variable ? variable.type : 'string';
+		var right = normalizeConditionCompareValue(type, config.compareValue);
+		if (type === 'number') {
+			var leftNumber = typeof left === 'number' ? left : parseFloat(left);
+			left = Number.isFinite(leftNumber) ? leftNumber : 0;
+		} else if (type === 'boolean') {
+			left = normalizeVariableValue('boolean', left);
+		} else {
+			left = normalizeConditionCompareValue(type, left);
+		}
+		if (operator === 'not-equals') return left !== right;
+		if (operator === 'contains') return String(left || '').toLowerCase().indexOf(String(right || '').toLowerCase()) !== -1;
+		if (operator === 'greater-than') return Number(left) > Number(right);
+		if (operator === 'less-than') return Number(left) < Number(right);
+		return left === right;
+	};
+	var executeFlow = function(flow) {
+		if (!flow || typeof flow !== 'object') return;
+		var nodeMap = getFlowNodeMap(flow);
+		if (!nodeMap.size) return;
+		var edgesBySource = getFlowEdgesBySource(flow);
+		var triggerNode = null;
+		nodeMap.forEach(function(node) {
+			if (!triggerNode && node && node.type === 'trigger') triggerNode = node;
+		});
+		var getNextEdge = function(nodeId, port) {
+			var outgoing = edgesBySource.get(String(nodeId));
+			if (!outgoing) return null;
+			return outgoing.get(port || 'next') || null;
+		};
+		var steps = 0;
+		var runNode = function(nodeId) {
+			if (!nodeId || steps > 128) return;
+			steps += 1;
+			var node = nodeMap.get(String(nodeId));
+			if (!node) return;
+			if (node.type === 'trigger') {
+				var triggerEdge = getNextEdge(node.id, 'next');
+				if (triggerEdge) runNode(triggerEdge.target);
+				return;
+			}
+			if (node.type === 'navigate') {
+				if (node.config && node.config.pageUrl) window.location.href = node.config.pageUrl;
+				return;
+			}
+			if (node.type === 'set-variable') {
+				executeInteraction(Object.assign({ type: 'set-variable' }, node.config || {}));
+				var setVariableEdge = getNextEdge(node.id, 'next');
+				if (setVariableEdge) runNode(setVariableEdge.target);
+				return;
+			}
+			if (node.type === 'delay') {
+				var duration = Math.max(0, parseInt(node.config && node.config.durationMs, 10) || 0);
+				var delayEdge = getNextEdge(node.id, 'next');
+				if (delayEdge) window.setTimeout(function() { runNode(delayEdge.target); }, duration);
+				return;
+			}
+			if (node.type === 'condition') {
+				var branchPort = evaluateConditionNode(node) ? 'true' : 'false';
+				var conditionEdge = getNextEdge(node.id, branchPort) || getNextEdge(node.id, 'next');
+				if (conditionEdge) runNode(conditionEdge.target);
+				return;
+			}
+			if (node.type === 'end') return;
+			var fallbackEdge = getNextEdge(node.id, 'next');
+			if (fallbackEdge) runNode(fallbackEdge.target);
+		};
+		if (triggerNode) runNode(triggerNode.id);
+	};
+	var bindFlow = function(node) {
+		if (!node || node.dataset.fbFlowBound === '1') return;
+		var flow = parseJsonAttr(node.dataset.fbFlow, null);
+		if (!flow || !Array.isArray(flow.nodes) || !flow.nodes.length) return;
+		node.dataset.fbFlowBound = '1';
+		node.style.cursor = 'pointer';
+		node.addEventListener('click', function(event) {
+			event.stopPropagation();
+			executeFlow(flow);
+		});
+	};
 	var bindInteractions = function(node) {
 		if (!node || node.dataset.fbInteractionsBound === '1') return;
+		if (node.dataset.fbFlow) return;
 		var interactions = parseJsonAttr(node.dataset.fbInteractions, []);
 		if (!Array.isArray(interactions) || !interactions.length) return;
 		node.dataset.fbInteractionsBound = '1';
@@ -2014,6 +2321,7 @@ class FrameBuilder_Exporter {
 	restorePersistentVariables('page');
 	restorePersistentVariables('global');
 	applyAllBindings();
+	scope.querySelectorAll('[data-fb-flow]').forEach(bindFlow);
 	scope.querySelectorAll('[data-fb-interactions]').forEach(bindInteractions);
 	var bindingResizeFrame = null;
 	window.addEventListener('resize', function() {
@@ -2279,30 +2587,237 @@ class FrameBuilder_Exporter {
 		var rect = node.getBoundingClientRect();
 		return rect.top / getViewportHeight();
 	};
-	var getMarkerViewportDistance = function(node, ratioValue, offsetPxValue, fallback) {
-		if (!node) return Infinity;
+	var getDocumentTop = function(node) {
+		if (!node || !node.getBoundingClientRect) return 0;
 		var rect = node.getBoundingClientRect();
+		return (window.scrollY || window.pageYOffset || 0) + rect.top;
+	};
+	var getNodeMarkerBoard = function(node) {
+		if (!node || !node.closest) return null;
+		return node.closest('.fb-bp') || node.closest('.fb-bp-inner') || node.parentElement || null;
+	};
+	var isStickyNodeElement = function(node) {
+		if (!node) return false;
+		if (node.classList && node.classList.contains('fb-el--sticky')) return true;
+		var computedStyle = window.getComputedStyle(node);
+		var position = computedStyle ? computedStyle.position : '';
+		return position === 'sticky' || position === '-webkit-sticky';
+	};
+	var getCumulativeOffsetTop = function(target) {
+		if (!target) return 0;
+		var offset = 0;
+		var current = target;
+		while (current) {
+			offset += current.offsetTop || 0;
+			current = current.offsetParent;
+		}
+		return offset;
+	};
+	var isOffsetParentAncestor = function(target, ancestor) {
+		var current = target;
+		while (current) {
+			if (current === ancestor) return true;
+			current = current.offsetParent;
+		}
+		return false;
+	};
+	var refreshNaturalMarkerAnchor = function(target, ancestor) {
+		if (!target || !ancestor) return;
+		if (isOffsetParentAncestor(target, ancestor)) {
+			target.__fbNaturalLocalOffsetTop = getCumulativeOffsetTop(target) - getCumulativeOffsetTop(ancestor);
+			return;
+		}
+		var ancestorRect = ancestor.getBoundingClientRect();
+		var targetRect = target.getBoundingClientRect();
+		target.__fbNaturalLocalOffsetTop = targetRect.top - ancestorRect.top;
+	};
+	var cacheNaturalMarkerAnchor = function(target, ancestor) {
+		if (!target || !ancestor) return;
+		if (typeof target.__fbNaturalLocalOffsetTop === 'number') return;
+		refreshNaturalMarkerAnchor(target, ancestor);
+	};
+	var getNaturalMarkerAnchor = function(target, ancestor) {
+		if (!target || !ancestor) return 0;
+		cacheNaturalMarkerAnchor(target, ancestor);
+		return typeof target.__fbNaturalLocalOffsetTop === 'number' ? target.__fbNaturalLocalOffsetTop : 0;
+	};
+	var buildNodeMarkerContext = function(node) {
+		if (!node) return null;
+		var board = getNodeMarkerBoard(node);
+		if (!board) return null;
+		return {
+			board: board,
+			boardHeight: Math.max(1, board.clientHeight || board.offsetHeight || 1),
+			boardDocumentTop: getDocumentTop(board),
+			naturalTop: getNaturalMarkerAnchor(node, board)
+		};
+	};
+	var resolveMarkerOffsetPxFromContext = function(context, ratioValue, offsetPxValue, fallback) {
+		if (!context) return 0;
 		var markerOffsetPx = normalizeAnimationMarkerOffsetPx(offsetPxValue);
 		if (markerOffsetPx != null) {
-			return rect.top + markerOffsetPx;
+			return markerOffsetPx;
 		}
 		var markerRatio = clamp(parseNumber(ratioValue, fallback), 0, 1);
-		return rect.top - (markerRatio * getViewportHeight());
+		return (markerRatio * context.boardHeight) - context.naturalTop;
+	};
+	var resolveMarkerLocalYFromContext = function(context, ratioValue, offsetPxValue, fallback) {
+		if (!context) return 0;
+		return context.naturalTop + resolveMarkerOffsetPxFromContext(context, ratioValue, offsetPxValue, fallback);
+	};
+	var getNodeAnchorDocumentTopFromContext = function(context) {
+		if (!context) return Infinity;
+		return context.boardDocumentTop + context.naturalTop;
+	};
+	var getNodeAnchorViewportTopFromContext = function(context) {
+		if (!context) return Infinity;
+		var scrollTop = window.scrollY || window.pageYOffset || 0;
+		return getNodeAnchorDocumentTopFromContext(context) - scrollTop;
+	};
+	var getNodeAnchorTravelFromContext = function(context) {
+		if (!context) return -Infinity;
+		return -getNodeAnchorViewportTopFromContext(context);
+	};
+	var resolveMarkerDocumentTopFromContext = function(context, ratioValue, offsetPxValue, fallback) {
+		if (!context) return Infinity;
+		return getNodeAnchorDocumentTopFromContext(context) + resolveMarkerOffsetPxFromContext(context, ratioValue, offsetPxValue, fallback);
+	};
+	var buildScrollAnimationMetrics = function(node, start, end, startOffsetPx, endOffsetPx) {
+		var context = buildNodeMarkerContext(node);
+		if (!context) return null;
+		return {
+			context: context,
+			startOffsetPx: resolveMarkerOffsetPxFromContext(context, start, startOffsetPx, 0.2),
+			endOffsetPx: resolveMarkerOffsetPxFromContext(context, end, endOffsetPx, 0.68)
+		};
+	};
+	var getScrollAnimationProgressFromMetrics = function(metrics) {
+		if (!metrics) return 0;
+		var travel = getNodeAnchorTravelFromContext(metrics.context);
+		var range = metrics.endOffsetPx - metrics.startOffsetPx;
+		if (Math.abs(range) < 0.0001) return travel >= metrics.endOffsetPx ? 1 : 0;
+		return clamp((travel - metrics.startOffsetPx) / range, 0, 1);
+	};
+	var getLocalOffsetWithinAncestor = function(target, ancestor) {
+		if (!target || !ancestor) return 0;
+		if (typeof target.__fbNaturalLocalOffsetTop === 'number') {
+			return target.__fbNaturalLocalOffsetTop;
+		}
+		if (isOffsetParentAncestor(target, ancestor)) {
+			return getCumulativeOffsetTop(target) - getCumulativeOffsetTop(ancestor);
+		}
+		cacheNaturalMarkerAnchor(target, ancestor);
+		if (typeof target.__fbNaturalLocalOffsetTop === 'number') {
+			return target.__fbNaturalLocalOffsetTop;
+		}
+		var ancestorRect = ancestor.getBoundingClientRect();
+		var targetRect = target.getBoundingClientRect();
+		return targetRect.top - ancestorRect.top;
+	};
+	var getMarkerLocalY = function(node, ratioValue, offsetPxValue, fallback) {
+		if (!node) return 0;
+		var board = getNodeMarkerBoard(node);
+		var boardHeight = Math.max(1, board ? (board.clientHeight || board.offsetHeight || 1) : 1);
+		var markerOffsetPx = normalizeAnimationMarkerOffsetPx(offsetPxValue);
+		if (markerOffsetPx != null) {
+			return getLocalOffsetWithinAncestor(node, board) + markerOffsetPx;
+		}
+		var markerRatio = clamp(parseNumber(ratioValue, fallback), 0, 1);
+		return markerRatio * boardHeight;
+	};
+	var getMarkerDocumentTop = function(node, ratioValue, offsetPxValue, fallback) {
+		if (!node) return Infinity;
+		var context = buildNodeMarkerContext(node);
+		if (!context) return Infinity;
+		return getNodeAnchorDocumentTopFromContext(context) + resolveMarkerOffsetPxFromContext(context, ratioValue, offsetPxValue, fallback);
+	};
+	var getNodeNaturalViewportTop = function(node) {
+		if (!node) return Infinity;
+		return getNodeAnchorViewportTopFromContext(buildNodeMarkerContext(node));
+	};
+	var getMarkerViewportDistance = function(node, ratioValue, offsetPxValue, fallback) {
+		if (!node) return Infinity;
+		var context = buildNodeMarkerContext(node);
+		if (!context) return Infinity;
+		return resolveMarkerOffsetPxFromContext(context, ratioValue, offsetPxValue, fallback) - getNodeAnchorTravelFromContext(context);
 	};
 	var resolveRelativeMarkerRatio = function(node, ratioValue, offsetValue, offsetPxValue, fallback) {
-		var markerOffsetPx = normalizeAnimationMarkerOffsetPx(offsetPxValue);
-		if (markerOffsetPx != null && node) {
-			var rect = node.getBoundingClientRect();
-			return (rect.top + markerOffsetPx) / getViewportHeight();
-		}
-		return clamp(parseNumber(ratioValue, fallback), 0, 1);
+		if (!node) return clamp(parseNumber(ratioValue, fallback), 0, 1);
+		var board = getNodeMarkerBoard(node);
+		var boardHeight = Math.max(1, board ? (board.clientHeight || board.offsetHeight || 1) : 1);
+		return clamp(getMarkerLocalY(node, ratioValue, offsetPxValue, fallback) / boardHeight, 0, 1);
 	};
 	var getScrollAnimationProgress = function(node, start, end, startOffset, endOffset, startOffsetPx, endOffsetPx) {
-		var startDistance = getMarkerViewportDistance(node, start, startOffsetPx, 0.2);
-		var endDistance = getMarkerViewportDistance(node, end, endOffsetPx, 0.68);
-		var range = startDistance - endDistance;
-		if (Math.abs(range) < 0.0001) return endDistance <= 0 ? 1 : 0;
-		return clamp(startDistance / range, 0, 1);
+		return getScrollAnimationProgressFromMetrics(buildScrollAnimationMetrics(node, start, end, startOffsetPx, endOffsetPx));
+	};
+	var initScrollSequence = function(node) {
+		if (!node || node.dataset.fbScrollSequenceBound === '1') return;
+		var config = parseJsonAttr(node.dataset.fbScrollSequence, null);
+		if (!config || typeof config !== 'object') return;
+		refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
+		var media = node.querySelector('[data-fb-scroll-sequence-media]');
+		if (!media) return;
+		node.dataset.fbScrollSequenceBound = '1';
+		var type = config.type === 'image-sequence' ? 'image-sequence' : (config.type === 'gif' ? 'gif' : 'video');
+		var frames = Array.isArray(config.frames) ? config.frames.filter(function(entry) {
+			return typeof entry === 'string' && entry;
+		}) : [];
+		var preloadedFrames = type === 'image-sequence'
+			? frames.map(function(entry) {
+				var image = new window.Image();
+				image.decoding = 'async';
+				image.src = entry;
+				return image;
+			})
+			: [];
+		var lastFrameIndex = -1;
+		var scrollFrame = null;
+		var metrics = null;
+		var refreshMetrics = function() {
+			metrics = buildScrollAnimationMetrics(node, config.start, config.end, config.startOffsetPx, config.endOffsetPx);
+		};
+		var updateSequence = function() {
+			scrollFrame = null;
+			if (!metrics) refreshMetrics();
+			var progress = getScrollAnimationProgressFromMetrics(metrics);
+			node.style.setProperty('--fb-scroll-sequence-progress', String(progress));
+			if (type === 'video') {
+				var applyVideoProgress = function() {
+					if (!isFinite(media.duration) || media.duration <= 0) return;
+					var nextTime = clamp(progress, 0, 1) * media.duration;
+					if (Math.abs((media.currentTime || 0) - nextTime) > 0.033) media.currentTime = nextTime;
+				};
+				if (media.readyState >= 1) applyVideoProgress();
+				else media.addEventListener('loadedmetadata', applyVideoProgress, { once: true });
+				return;
+			}
+			if (type === 'image-sequence') {
+				if (!frames.length) return;
+				var nextIndex = Math.round(clamp(progress, 0, 1) * Math.max(0, frames.length - 1));
+				if (nextIndex === lastFrameIndex) return;
+				lastFrameIndex = nextIndex;
+				var nextFrameSrc = preloadedFrames[nextIndex] && preloadedFrames[nextIndex].src ? preloadedFrames[nextIndex].src : frames[nextIndex];
+				if (media.src !== nextFrameSrc) media.src = nextFrameSrc;
+				return;
+			}
+			if (type === 'gif' && progress <= 0.001 && typeof config.src === 'string' && config.src) {
+				if (media.getAttribute('src') !== config.src) media.setAttribute('src', config.src);
+			}
+		};
+		var requestUpdate = function() {
+			if (scrollFrame) return;
+			scrollFrame = window.requestAnimationFrame(updateSequence);
+		};
+		var handleResize = function() {
+			refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
+			refreshMetrics();
+			requestUpdate();
+		};
+		refreshMetrics();
+		window.addEventListener('scroll', requestUpdate, { passive: true });
+		window.addEventListener('resize', handleResize);
+		window.addEventListener('load', handleResize);
+		requestUpdate();
 	};
 	var getAnimationBaseState = function(node) {
 		if (node.__fbAnimationBaseState) return node.__fbAnimationBaseState;
@@ -2523,20 +3038,26 @@ class FrameBuilder_Exporter {
 	};
 	var initElementAnimations = function(node) {
 		if (!node || node.dataset.fbAnimationsBound === '1') return;
-		var isStickyNode = function() {
-			if (!node) return false;
-			if (node.classList && node.classList.contains('fb-el--sticky')) return true;
-			var computedStyle = window.getComputedStyle(node);
-			var position = computedStyle ? computedStyle.position : '';
-			return position === 'sticky' || position === '-webkit-sticky';
-		};
 		var readAnimations = function() {
 			return parseJsonAttr(node.dataset.fbAnimations, null);
 		};
 		if (!readAnimations()) return;
+		refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
 		node.dataset.fbAnimationsBound = '1';
 		var enterPlayed = new Set();
 		var scrollPlaybackState = { maxProgress: 0 };
+		var scrollMetrics = null;
+		var scrollMetricsKey = '';
+		var refreshScrollMetrics = function(animation) {
+			if (!animation) {
+				scrollMetrics = null;
+				scrollMetricsKey = '';
+				return;
+			}
+			refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
+			scrollMetrics = buildScrollAnimationMetrics(node, animation.start, animation.end, animation.startOffsetPx, animation.endOffsetPx);
+			scrollMetricsKey = [getCurrentBreakpoint(), animation.id, animation.startOffsetPx, animation.endOffsetPx, animation.start, animation.end].join(':');
+		};
 		var runEnterAnimations = function() {
 			var animations = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).filter(function(animation) {
 				return animation && animation.type === 'enter';
@@ -2564,20 +3085,20 @@ class FrameBuilder_Exporter {
 		var scrollFrame = null;
 		var updateScrollAnimations = function() {
 			scrollFrame = null;
-			if (isStickyNode()) {
-				scrollPlaybackState.maxProgress = 0;
-				restoreAnimationBaseState(node);
-				return;
-			}
 			var animation = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
 				return entry && entry.type === 'scroll';
 			}) || null;
 			if (!animation) {
+				refreshScrollMetrics(null);
 				scrollPlaybackState.maxProgress = 0;
 				restoreAnimationBaseState(node);
 				return;
 			}
-			var progress = getScrollAnimationProgress(node, animation.start, animation.end, animation.startOffset, animation.endOffset, animation.startOffsetPx, animation.endOffsetPx);
+			var nextMetricsKey = [getCurrentBreakpoint(), animation.id, animation.startOffsetPx, animation.endOffsetPx, animation.start, animation.end].join(':');
+			if (!scrollMetrics || scrollMetricsKey !== nextMetricsKey) {
+				refreshScrollMetrics(animation);
+			}
+			var progress = getScrollAnimationProgressFromMetrics(scrollMetrics);
 			if (animation.playback === 'once') {
 				scrollPlaybackState.maxProgress = Math.max(scrollPlaybackState.maxProgress, progress);
 				progress = scrollPlaybackState.maxProgress;
@@ -2590,8 +3111,16 @@ class FrameBuilder_Exporter {
 			if (scrollFrame) return;
 			scrollFrame = window.requestAnimationFrame(updateScrollAnimations);
 		};
+		var handleScrollResize = function() {
+			var animation = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
+				return entry && entry.type === 'scroll';
+			}) || null;
+			refreshScrollMetrics(animation);
+			requestScrollUpdate();
+		};
 		window.addEventListener('scroll', requestScrollUpdate, { passive: true });
-		window.addEventListener('resize', requestScrollUpdate);
+		window.addEventListener('resize', handleScrollResize);
+		window.addEventListener('load', handleScrollResize);
 		requestScrollUpdate();
 	};
 	var getRealisticOvershoot = function(transition) {
@@ -2873,6 +3402,7 @@ class FrameBuilder_Exporter {
 		});
 	};
 	scope.querySelectorAll('[data-fb-animations]').forEach(initElementAnimations);
+	scope.querySelectorAll('[data-fb-scroll-sequence]').forEach(initScrollSequence);
 
 	instances.forEach(function(instance) {
 		var timer = null;
@@ -2996,20 +3526,22 @@ class FrameBuilder_Exporter {
 				return animation && animation.type === 'scroll-variant';
 			});
 			if (!animations.length) return;
-			var ratio = getNodeViewportRatio(instance);
+			var context = buildNodeMarkerContext(instance);
 			var timelineTargets = animations.reduce(function(list, animation) {
 				normalizeScrollVariantTargets(animation).forEach(function(target) {
 					if (!target.targetVariantId) return;
+					var markerOffsetPx = resolveMarkerOffsetPxFromContext(context, target.marker, target.markerOffsetPx, 0.5);
 					list.push({
 						key: animation.id + ':' + target.id,
 						animation: animation,
 						targetVariantId: target.targetVariantId,
-						markerDistance: getMarkerViewportDistance(instance, target.marker, target.markerOffsetPx, 0.5)
+						markerOffsetPx: markerOffsetPx,
+						markerDistance: markerOffsetPx - getNodeAnchorTravelFromContext(context)
 					});
 				});
 				return list;
 			}, []).sort(function(left, right) {
-				return left.markerDistance - right.markerDistance;
+				return left.markerOffsetPx - right.markerOffsetPx;
 			});
 			if (!timelineTargets.length) return;
 			var desiredTarget = timelineTargets.reduce(function(selected, candidate) {
@@ -3063,9 +3595,13 @@ class FrameBuilder_Exporter {
 		scrollVariantBaseId = baseVariantId;
 		instance.dataset.fbActiveVariant = activeVariantId;
 		instance.dataset.fbBaseVariant = baseVariantId;
+		refreshNaturalMarkerAnchor(instance, getNodeMarkerBoard(instance));
 		queueAppear();
 		window.addEventListener('scroll', requestScrollVariantUpdate, { passive: true });
-		window.addEventListener('resize', requestScrollVariantUpdate);
+		window.addEventListener('resize', function() {
+			refreshNaturalMarkerAnchor(instance, getNodeMarkerBoard(instance));
+			requestScrollVariantUpdate();
+		});
 		requestScrollVariantUpdate();
 	});
 })();

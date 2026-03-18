@@ -6,6 +6,7 @@ import PropertiesPanel from './panels/PropertiesPanel';
 import CommentsPanel from './panels/CommentsPanel';
 import ComponentEditorOverlay from './components/ComponentEditorOverlay';
 import IconLibraryModal from './components/IconLibraryModal';
+import FlowEditorModal from './components/FlowEditorModal';
 import VariablesModal from './components/VariablesModal';
 import BottomToolbar from './components/BottomToolbar';
 import { ICON_PACK_MANIFEST, warmIconPackPreviewCache } from './components/iconCatalog';
@@ -16,6 +17,7 @@ export default function App() {
   const loadComponents = useEditorStore(s => s.loadComponents);
   const loadGlobalVariables = useEditorStore(s => s.loadGlobalVariables);
   const loadVariableSources = useEditorStore(s => s.loadVariableSources);
+  const repairComponentEditorState = useEditorStore(s => s.repairComponentEditorState);
   const acquireDocumentLock = useEditorStore(s => s.acquireDocumentLock);
   const refreshDocumentLock = useEditorStore(s => s.refreshDocumentLock);
   const releaseDocumentLock = useEditorStore(s => s.releaseDocumentLock);
@@ -30,6 +32,7 @@ export default function App() {
   const componentEditor = useEditorStore(s => s.componentEditor);
   const components = useEditorStore(s => s.components);
   const variablesModalOpen = useEditorStore(s => s.variablesModalOpen);
+  const flowEditorState = useEditorStore(s => s.flowEditorState);
   const iconLibraryModal = useEditorStore(s => s.iconLibraryModal);
   const closeIconLibraryModal = useEditorStore(s => s.closeIconLibraryModal);
   const applyIconLibrarySelection = useEditorStore(s => s.applyIconLibrarySelection);
@@ -51,11 +54,16 @@ export default function App() {
         loadVariableSources(),
       ]);
       await acquireDocumentLock();
+      repairComponentEditorState();
       pushHistory();
       autoSaveReadyRef.current = true;
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    repairComponentEditorState();
+  }, [repairComponentEditorState, activeSurface, componentEditor, components]);
 
   useEffect(() => () => {
     if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
@@ -200,6 +208,7 @@ export default function App() {
         ) : null}
       </div>
       {isReadOnly ? null : <BottomToolbar />}
+      {flowEditorState.open ? <FlowEditorModal /> : null}
       {variablesModalOpen ? <VariablesModal /> : null}
       {iconLibraryModal ? (
         <IconLibraryModal

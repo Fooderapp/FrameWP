@@ -34,6 +34,21 @@ export const ELEMENT_TYPES = [
     label: 'Video',
   },
   {
+    type: 'scroll-sequence',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="1.5" y="2" width="13" height="11" rx="1.8"/>
+        <path d="M4 5.5h5" />
+        <path d="M4 8h8" />
+        <path d="M4 10.5h4" />
+        <path d="M11.5 4.75v5.5" />
+        <path d="M10 6.25l1.5-1.5 1.5 1.5" />
+        <path d="M10 8.75l1.5 1.5 1.5-1.5" />
+      </svg>
+    ),
+    label: 'Scroll Sequence',
+  },
+  {
     type: 'text',
     icon: (
       <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

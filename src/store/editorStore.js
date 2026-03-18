@@ -376,6 +376,151 @@ function normalizeElementInteractions(interactions) {
   return interactions.map(normalizeElementInteraction).filter(Boolean);
 }
 
+const FLOW_TRIGGER_TYPES = new Set(['element-click', 'page-load', 'form-submit', 'custom']);
+const FLOW_NODE_TYPES = new Set([
+  'trigger',
+  'condition',
+  'navigate',
+  'set-variable',
+  'delay',
+  'end',
+]);
+
+function getDefaultFlowName(flow) {
+  if (typeof flow?.name === 'string' && flow.name.trim()) return flow.name.trim();
+  return 'Untitled Flow';
+}
+
+function normalizeFlowTrigger(trigger) {
+  const type = FLOW_TRIGGER_TYPES.has(trigger?.type) ? trigger.type : 'custom';
+  return {
+    type,
+    elementId: typeof trigger?.elementId === 'string' && trigger.elementId ? trigger.elementId : '',
+    event: typeof trigger?.event === 'string' && trigger.event ? trigger.event : (type === 'element-click' ? 'click' : ''),
+    formId: typeof trigger?.formId === 'string' && trigger.formId ? trigger.formId : '',
+  };
+}
+
+function normalizeFlowNode(node) {
+  if (!node || typeof node !== 'object') return null;
+  const type = FLOW_NODE_TYPES.has(node.type) ? node.type : null;
+  if (!type) return null;
+  const position = node.position && typeof node.position === 'object' ? node.position : {};
+  return {
+    id: typeof node.id === 'string' && node.id ? node.id : makeId('flow-node'),
+    type,
+    label: typeof node.label === 'string' && node.label.trim() ? node.label.trim() : type,
+    position: {
+      x: Number.isFinite(Number(position.x)) ? Number(position.x) : 0,
+      y: Number.isFinite(Number(position.y)) ? Number(position.y) : 0,
+    },
+    config: node.config && typeof node.config === 'object' ? deepClone(node.config) : {},
+  };
+}
+
+function normalizeFlowEdge(edge, nodeIds) {
+  if (!edge || typeof edge !== 'object') return null;
+  const source = typeof edge.source === 'string' ? edge.source : '';
+  const target = typeof edge.target === 'string' ? edge.target : '';
+  if (!source || !target || !nodeIds.has(source) || !nodeIds.has(target)) return null;
+  return {
+    id: typeof edge.id === 'string' && edge.id ? edge.id : makeId('flow-edge'),
+    source,
+    target,
+    sourcePort: typeof edge.sourcePort === 'string' && edge.sourcePort ? edge.sourcePort : 'next',
+    targetPort: typeof edge.targetPort === 'string' && edge.targetPort ? edge.targetPort : 'in',
+  };
+}
+
+function normalizePageFlow(flow) {
+  if (!flow || typeof flow !== 'object') return null;
+  const nodes = Array.isArray(flow.nodes) ? flow.nodes.map(normalizeFlowNode).filter(Boolean) : [];
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  return {
+    id: typeof flow.id === 'string' && flow.id ? flow.id : makeId('flow'),
+    name: getDefaultFlowName(flow),
+    trigger: normalizeFlowTrigger(flow.trigger),
+    nodes,
+    edges: Array.isArray(flow.edges) ? flow.edges.map((edge) => normalizeFlowEdge(edge, nodeIds)).filter(Boolean) : [],
+    legacySourceElementId: typeof flow.legacySourceElementId === 'string' && flow.legacySourceElementId ? flow.legacySourceElementId : '',
+    isLegacyProxy: flow.isLegacyProxy === true,
+  };
+}
+
+function normalizePageFlowList(flows) {
+  if (!Array.isArray(flows)) return [];
+  return flows.map(normalizePageFlow).filter(Boolean);
+}
+
+function buildLegacyFlowFromElement(element) {
+  const interactions = normalizeElementInteractions(element?.interactions);
+  if (!element?.id || !interactions.length) return null;
+
+  const triggerNodeId = `flow-node-trigger-${element.id}`;
+  const nodes = [{
+    id: triggerNodeId,
+    type: 'trigger',
+    label: 'Trigger',
+    position: { x: 0, y: 0 },
+    config: { triggerType: 'element-click', elementId: element.id, event: 'click' },
+  }];
+  const edges = [];
+  let previousNodeId = triggerNodeId;
+
+  interactions.forEach((interaction, index) => {
+    const nodeId = `flow-node-${element.id}-${index + 1}`;
+    nodes.push({
+      id: nodeId,
+      type: interaction.type,
+      label: interaction.type === 'navigate' ? 'Navigate' : 'Set Variable',
+      position: { x: 240 * (index + 1), y: 0 },
+      config: { ...deepClone(interaction) },
+    });
+    edges.push({
+      id: `flow-edge-${element.id}-${index + 1}`,
+      source: previousNodeId,
+      target: nodeId,
+      sourcePort: 'next',
+      targetPort: 'in',
+    });
+    previousNodeId = nodeId;
+  });
+
+  return normalizePageFlow({
+    id: `legacy-flow-${element.id}`,
+    name: `${element.name || 'Element'} click flow`,
+    trigger: { type: 'element-click', elementId: element.id, event: 'click' },
+    nodes,
+    edges,
+    legacySourceElementId: element.id,
+    isLegacyProxy: true,
+  });
+}
+
+function getLegacyElementFlowsForPage(page) {
+  const elements = Array.isArray(page?.elements) ? page.elements : [];
+  return elements.map(buildLegacyFlowFromElement).filter(Boolean);
+}
+
+function removeVariableReferencesFromFlow(flow, variableScope, variableId) {
+  const normalizedFlow = normalizePageFlow(flow);
+  if (!normalizedFlow) return null;
+  return {
+    ...normalizedFlow,
+    nodes: normalizedFlow.nodes.map((node) => {
+      if (node.type !== 'set-variable') return node;
+      if (node.config?.variableScope !== variableScope || node.config?.variableId !== variableId) return node;
+      return {
+        ...node,
+        config: {
+          ...node.config,
+          variableId: '',
+        },
+      };
+    }),
+  };
+}
+
 const ELEMENT_ANIMATION_TYPES = new Set(['enter', 'scroll', 'scroll-variant']);
 const ELEMENT_ANIMATION_PLAYBACK = new Set(['once', 'replay']);
 
@@ -598,6 +743,7 @@ function getElementIdPrefix(type) {
   if (type === 'image') return 'img';
   if (type === 'icon') return 'ico';
   if (type === 'video') return 'vid';
+  if (type === 'scroll-sequence') return 'seq';
   return 'fr';
 }
 
@@ -641,6 +787,30 @@ function normalizeVideoFields(source = {}) {
     videoMuted: source?.videoMuted === true,
     videoAutoplay: source?.videoAutoplay === true,
     videoDisableAutoplayInBuilder: source?.videoDisableAutoplayInBuilder === true,
+  };
+}
+
+function normalizeScrollSequenceFrameList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => getMediaUrl(entry))
+    .filter(Boolean);
+}
+
+function normalizeScrollSequenceFields(source = {}) {
+  const scrollSequenceType = ['video', 'image-sequence', 'gif'].includes(source?.scrollSequenceType)
+    ? source.scrollSequenceType
+    : 'video';
+  const scrollSequenceSourceMode = source?.scrollSequenceSourceMode === 'url' ? 'url' : 'library';
+  return {
+    scrollSequenceType,
+    scrollSequenceSourceMode,
+    scrollSequenceSrc: getMediaUrl(source?.scrollSequenceSrc ?? ''),
+    scrollSequenceFrames: normalizeScrollSequenceFrameList(source?.scrollSequenceFrames),
+    scrollSequenceStart: clampFinite(source?.scrollSequenceStart, 0.2, 0, 1),
+    scrollSequenceEnd: clampFinite(source?.scrollSequenceEnd, 0.68, 0, 1),
+    scrollSequenceStartOffsetPx: normalizeAnimationMarkerOffsetPx(source?.scrollSequenceStartOffsetPx),
+    scrollSequenceEndOffsetPx: normalizeAnimationMarkerOffsetPx(source?.scrollSequenceEndOffsetPx),
   };
 }
 
@@ -795,8 +965,45 @@ function normalizeVideoElementFields(element) {
   };
 }
 
+function normalizeScrollSequenceElementFields(element) {
+  if (!element || element.type !== 'scroll-sequence') return element;
+
+  const normalizedBase = {
+    ...(element.base ?? {}),
+    ...normalizeScrollSequenceFields(element.base ?? {}),
+  };
+  const normalizedOverrides = { ...(element.overrides ?? {}) };
+
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const bpOverride = normalizedOverrides[bpId];
+    if (!bpOverride) return;
+    const hasSequenceField = bpOverride.scrollSequenceType != null
+      || bpOverride.scrollSequenceSourceMode != null
+      || bpOverride.scrollSequenceSrc != null
+      || bpOverride.scrollSequenceFrames != null
+      || bpOverride.scrollSequenceStart != null
+      || bpOverride.scrollSequenceEnd != null
+      || bpOverride.scrollSequenceStartOffsetPx != null
+      || bpOverride.scrollSequenceEndOffsetPx != null;
+    if (!hasSequenceField) return;
+    normalizedOverrides[bpId] = {
+      ...bpOverride,
+      ...normalizeScrollSequenceFields({
+        ...normalizedBase,
+        ...bpOverride,
+      }),
+    };
+  });
+
+  return {
+    ...element,
+    base: normalizedBase,
+    overrides: normalizedOverrides,
+  };
+}
+
 function normalizeElementDynamicFields(element) {
-  const normalizedElement = normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element)));
+  const normalizedElement = normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element))));
   return {
     ...normalizedElement,
     animations: normalizeElementAnimations(element?.animations),
@@ -858,6 +1065,24 @@ const BREAKPOINTS = {
 const COMPONENT_EDITOR_BREAKPOINTS = {
   desktop: { id: 'desktop', name: 'Component', icon: '⬢', width: 820, height: 560, x: 120, y: 120, viewportFoldH: null },
 };
+
+function isComponentEditorBreakpointDefs(defs) {
+  if (!defs || typeof defs !== 'object') return false;
+  const keys = Object.keys(defs);
+  if (keys.length !== 1 || !defs.desktop) return false;
+  return defs.desktop.name === 'Component';
+}
+
+function normalizePageBreakpointDefs(defs) {
+  if (!defs || typeof defs !== 'object' || isComponentEditorBreakpointDefs(defs)) {
+    return deepClone(BREAKPOINTS);
+  }
+  return {
+    desktop: { ...BREAKPOINTS.desktop, ...(defs.desktop ?? {}) },
+    tablet: { ...BREAKPOINTS.tablet, ...(defs.tablet ?? {}) },
+    mobile: { ...BREAKPOINTS.mobile, ...(defs.mobile ?? {}) },
+  };
+}
 
 const COMPONENT_EDITOR_VARIANT_GAP = 140;
 const COMPONENT_EDITOR_VARIANT_TOP = 100;
@@ -1482,6 +1707,7 @@ const makeDefaultPage = () => ({
   // layout: null per bp = inherit; object = { flexDirection, alignItems, justifyContent, flexWrap, gap }
   layout: { desktop: null, tablet: null, mobile: null },
   variables: [],
+  flows: [],
   comments: [],
   elements: [],
 });
@@ -1505,15 +1731,35 @@ function makeEmptyComponentEditor() {
   };
 }
 
+function buildComponentEditorResetState(componentEditor, fallbackBreakpointDefs = BREAKPOINTS) {
+  return {
+    activeSurface: 'page',
+    selection: normalizeSelection(componentEditor?.uiRestore?.selection),
+    artboardSel: componentEditor?.uiRestore?.artboardSel ?? null,
+    hoveredId: componentEditor?.uiRestore?.hoveredId ?? null,
+    drilledContainerId: componentEditor?.uiRestore?.drilledContainerId ?? null,
+    pendingDraw: componentEditor?.uiRestore?.pendingDraw ?? null,
+    leftTab: componentEditor?.uiRestore?.leftTab ?? 'layers',
+    breakpointDefs: normalizePageBreakpointDefs(componentEditor?.uiRestore?.breakpointDefs ?? fallbackBreakpointDefs),
+    componentEditor: makeEmptyComponentEditor(),
+    componentHistory: [],
+    componentHistoryIndex: -1,
+  };
+}
+
 
 function buildPersistableLayoutPayload(state) {
   const page = state.pages.find((item) => item.id === state.currentPageId);
   const components = buildComponentLibraryForPersistence(state);
+  const persistedBreakpointDefs = state.activeSurface === 'component' && state.componentEditor?.isOpen
+    ? normalizePageBreakpointDefs(state.componentEditor?.uiRestore?.breakpointDefs)
+    : normalizePageBreakpointDefs(state.breakpointDefs);
 
   return {
     ...page,
     variables: normalizeVariableList(page?.variables, 'page'),
-    _breakpointDefs: state.breakpointDefs,
+    flows: normalizePageFlowList(page?.flows),
+    _breakpointDefs: persistedBreakpointDefs,
     _componentLibrary: components,
   };
 }
@@ -1527,6 +1773,7 @@ function normalizePageData(page) {
     padding: { ...fallback.padding, ...(page?.padding ?? {}) },
     layout: { ...fallback.layout, ...(page?.layout ?? {}) },
     variables: normalizeVariableList(page?.variables, 'page'),
+    flows: normalizePageFlowList(page?.flows),
     comments: normalizeCommentThreads(page?.comments),
     elements: Array.isArray(page?.elements) ? page.elements.map(normalizeElementDynamicFields) : [],
   };
@@ -1608,6 +1855,38 @@ export function createVideo(x = 80, y = 80, name) {
         backgroundColor: 'transparent',
         borderRadius: 0, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
         opacity: 1, objectFit: 'cover', boxShadow: '', zIndex: 1,
+      },
+    },
+    animations: makeDefaultElementAnimations(),
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
+export function createScrollSequence(x = 80, y = 80, name) {
+  return {
+    id: `seq-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'scroll-sequence',
+    name: name || 'Scroll Sequence',
+    parentId: null,
+    children: [],
+    base: {
+      x, y, width: 360, height: 240, rotation: 0, locked: false, hidden: false,
+      widthMode: 'fixed', heightMode: 'fixed',
+      lockAspectRatio: false,
+      minW: null, maxW: null, minH: null, maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      scrollSequenceType: 'video',
+      scrollSequenceSourceMode: 'library',
+      scrollSequenceSrc: '',
+      scrollSequenceFrames: [],
+      scrollSequenceStart: 0.2,
+      scrollSequenceEnd: 0.68,
+      scrollSequenceStartOffsetPx: null,
+      scrollSequenceEndOffsetPx: null,
+      styles: {
+        backgroundColor: '#050816',
+        borderRadius: 16, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
+        opacity: 1, objectFit: 'cover', overflow: 'hidden', boxShadow: '', zIndex: 1,
       },
     },
     animations: makeDefaultElementAnimations(),
@@ -2774,9 +3053,26 @@ export const useEditorStore = create((set, get) => {
     }),
     variablesModalOpen: false,
     setVariablesModalOpen: (open) => set({ variablesModalOpen: !!open }),
+    flowEditorState: { open: false, elementId: '', flowId: '' },
+    openFlowEditor: (context = {}) => set({
+      flowEditorState: {
+        open: true,
+        elementId: typeof context.elementId === 'string' ? context.elementId : '',
+        flowId: typeof context.flowId === 'string' ? context.flowId : '',
+      },
+    }),
+    closeFlowEditor: () => set({ flowEditorState: { open: false, elementId: '', flowId: '' } }),
 
     getCurrentPageVariables() {
       return normalizeVariableList(getActivePage()?.variables, 'page');
+    },
+
+    getCurrentPageFlows(options = {}) {
+      const includeLegacy = options.includeLegacy !== false;
+      const page = getActivePage();
+      const explicitFlows = normalizePageFlowList(page?.flows);
+      if (!includeLegacy) return explicitFlows;
+      return [...explicitFlows, ...getLegacyElementFlowsForPage(page)];
     },
 
     getAllVariables() {
@@ -2870,6 +3166,7 @@ export const useEditorStore = create((set, get) => {
             : {
                 ...page,
                 variables: normalizeVariableList(page.variables, 'page').filter((variable) => variable.id !== variableId),
+                flows: normalizePageFlowList(page.flows).map((flow) => removeVariableReferencesFromFlow(flow, 'page', variableId)).filter(Boolean),
                 elements: (page.elements ?? []).map((element) => ({
                   ...element,
                   bindings: normalizeElementBindings(
@@ -2899,6 +3196,7 @@ export const useEditorStore = create((set, get) => {
       set((state) => ({
         pages: state.pages.map((page) => ({
           ...page,
+          flows: normalizePageFlowList(page.flows).map((flow) => removeVariableReferencesFromFlow(flow, 'global', variableId)).filter(Boolean),
           elements: (page.elements ?? []).map((element) => ({
             ...element,
             bindings: normalizeElementBindings(
@@ -2940,6 +3238,75 @@ export const useEditorStore = create((set, get) => {
           ? { ...el, interactions: normalizeElementInteractions(interactions) }
           : el
       )));
+    },
+
+    upsertPageFlow(flow) {
+      const normalizedFlow = normalizePageFlow(flow);
+      if (!normalizedFlow) return;
+      get().updateCurrentPage((page) => {
+        const flows = normalizePageFlowList(page?.flows);
+        const existingIndex = flows.findIndex((entry) => entry.id === normalizedFlow.id);
+        return {
+          ...page,
+          flows: existingIndex === -1
+            ? [...flows, normalizedFlow]
+            : flows.map((entry, index) => (index === existingIndex ? normalizedFlow : entry)),
+        };
+      });
+    },
+
+    removePageFlow(flowId) {
+      if (!flowId) return;
+      get().updateCurrentPage((page) => ({
+        ...page,
+        flows: normalizePageFlowList(page?.flows).filter((flow) => flow.id !== flowId),
+      }));
+    },
+
+    ensureElementFlow(elementId, options = {}) {
+      if (!elementId) return null;
+      const page = getActivePage();
+      const existing = normalizePageFlowList(page?.flows).find((flow) => flow.trigger?.type === 'element-click' && flow.trigger?.elementId === elementId) || null;
+      if (existing) return existing.id;
+      const element = (page?.elements ?? []).find((entry) => entry.id === elementId) || null;
+      const triggerNodeId = makeId('flow-node');
+      const flow = normalizePageFlow({
+        id: makeId('flow'),
+        name: typeof options.name === 'string' && options.name.trim() ? options.name.trim() : `${element?.name || 'Element'} interaction`,
+        trigger: { type: 'element-click', elementId, event: 'click' },
+        nodes: [{
+          id: triggerNodeId,
+          type: 'trigger',
+          label: 'Trigger',
+          position: { x: 0, y: 0 },
+          config: { triggerType: 'element-click', elementId, event: 'click' },
+        }],
+        edges: [],
+      });
+      if (!flow) return null;
+      get().updateCurrentPage((currentPage) => ({
+        ...currentPage,
+        flows: [...normalizePageFlowList(currentPage?.flows), flow],
+      }));
+      return flow.id;
+    },
+
+    migrateLegacyElementInteractionsToFlow(elementId) {
+      if (!elementId) return null;
+      const page = getActivePage();
+      const element = (page?.elements ?? []).find((entry) => entry.id === elementId) ?? null;
+      const legacyFlow = buildLegacyFlowFromElement(element);
+      if (!legacyFlow) return null;
+      get().updateCurrentPage((currentPage) => ({
+        ...currentPage,
+        flows: [...normalizePageFlowList(currentPage?.flows), legacyFlow],
+        elements: (currentPage?.elements ?? []).map((entry) => (
+          entry.id === elementId
+            ? { ...entry, interactions: [] }
+            : entry
+        )),
+      }));
+      return legacyFlow.id;
     },
 
     // ── Components (site-wide) ─────────────────────────────
@@ -3381,6 +3748,76 @@ export const useEditorStore = create((set, get) => {
       get().applyComponentToInstances(current.componentId);
     },
 
+    repairComponentEditorState() {
+      const state = get();
+      if (state.activeSurface !== 'component') {
+        if (state.componentEditor?.isOpen) {
+          set({ componentEditor: makeEmptyComponentEditor(), componentHistory: [], componentHistoryIndex: -1 });
+        }
+        return false;
+      }
+
+      const editor = state.componentEditor;
+      if (!editor?.isOpen || !editor.componentId) {
+        set(buildComponentEditorResetState(editor, state.breakpointDefs));
+        return true;
+      }
+
+      const component = state.components.find((entry) => entry.id === editor.componentId) ?? null;
+      if (!component) {
+        set(buildComponentEditorResetState(editor, state.breakpointDefs));
+        return true;
+      }
+
+      const syncedVariants = syncComponentEditorVariants(editor);
+      const activeVariantExists = syncedVariants.some((variant) => variant.id === editor.activeVariantId);
+      const nextActiveVariantId = activeVariantExists
+        ? editor.activeVariantId
+        : (getPrimaryComponentVariant({ variants: syncedVariants })?.id ?? null);
+      const hasEditorRoots = (editor.page?.elements ?? []).some((el) => !el.parentId && el.componentRoot);
+
+      if (!hasEditorRoots) {
+        const normalizedComponent = normalizeStoredComponent({
+          ...component,
+          variants: syncedVariants,
+          defaultVariantId: component.defaultVariantId ?? syncedVariants[0]?.id ?? null,
+        });
+        const editorCanvas = buildComponentEditorElements(normalizedComponent);
+        const componentBreakpoints = makeComponentEditorBreakpoints(editorCanvas.elements);
+        const nextRoot = nextActiveVariantId ? getEditorVariantRoot(editorCanvas.elements, nextActiveVariantId) : null;
+        set({
+          breakpointDefs: deepClone(componentBreakpoints),
+          selection: nextRoot ? buildSelection([nextRoot.id], 'desktop', nextRoot.id) : normalizeSelection(state.selection),
+          componentEditor: {
+            ...editor,
+            isOpen: true,
+            activeVariantId: nextActiveVariantId,
+            variants: deepClone(normalizedComponent.variants ?? []),
+            page: {
+              ...editor.page,
+              title: normalizedComponent.name,
+              elements: editorCanvas.elements,
+            },
+            breakpointDefs: deepClone(componentBreakpoints),
+          },
+        });
+        return true;
+      }
+
+      if (!activeVariantExists) {
+        set({
+          componentEditor: {
+            ...editor,
+            activeVariantId: nextActiveVariantId,
+            variants: syncedVariants,
+          },
+        });
+        return true;
+      }
+
+      return false;
+    },
+
     async loadColorStyles() {
       try {
         if (window.fbData?.restUrl) {
@@ -3603,6 +4040,16 @@ export const useEditorStore = create((set, get) => {
         : null,
     }),
     closeAnimationEditor: () => set({ animationEditor: null }),
+    scrollSequenceRangeEditor: null,
+    openScrollSequenceRangeEditor: (payload) => set({
+      scrollSequenceRangeEditor: payload && payload.elementId
+        ? {
+            elementId: payload.elementId,
+            bpId: payload.bpId ?? 'desktop',
+          }
+        : null,
+    }),
+    closeScrollSequenceRangeEditor: () => set({ scrollSequenceRangeEditor: null }),
     iconLibraryModal: null,
     openIconLibraryModal: (payload) => set((state) => {
       const fallbackSelection = normalizeSelection(state.selection);
@@ -4410,7 +4857,7 @@ export const useEditorStore = create((set, get) => {
                   : p
               ),
               ...(Array.isArray(_componentLibrary) ? { components: _componentLibrary.map(normalizeStoredComponent) } : {}),
-              ...(_breakpointDefs ? { breakpointDefs: _breakpointDefs } : {}),
+              ...(_breakpointDefs ? { breakpointDefs: normalizePageBreakpointDefs(_breakpointDefs) } : {}),
             }));
             return { hasStoredComponentLibrary: Array.isArray(_componentLibrary) };
           }
@@ -4423,7 +4870,7 @@ export const useEditorStore = create((set, get) => {
                 p.id === state.currentPageId ? normalizePageData({ ...cleanLayout, id: state.currentPageId }) : p
               ),
               ...(Array.isArray(_componentLibrary) ? { components: _componentLibrary.map(normalizeStoredComponent) } : {}),
-              ...(_breakpointDefs ? { breakpointDefs: _breakpointDefs } : {}),
+              ...(_breakpointDefs ? { breakpointDefs: normalizePageBreakpointDefs(_breakpointDefs) } : {}),
             }));
             return { hasStoredComponentLibrary: Array.isArray(_componentLibrary) };
           }
