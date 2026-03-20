@@ -65,45 +65,52 @@ export default function TopBar() {
 
   return (
     <header className="fb-topbar">
-      {/* Branding */}
-      <span className="fb-topbar__brand">⬡ FrameBuilder</span>
-
-      <div className="fb-topbar__sep" />
-
-      {/* Undo / Redo */}
-      <IconButton icon={UIIcons.undo} title="Undo (⌘Z)" onClick={undo} disabled={isReadOnly} />
-      <IconButton icon={UIIcons.redo} title="Redo (⌘⇧Z)" onClick={redo} disabled={isReadOnly} />
-      <button type="button" className="fb-secondary-btn fb-topbar__back" onClick={handleBackToWordPress}>
-        {UIIcons.arrowLeft}
-        <span>Back to WordPress</span>
-      </button>
-
-      <div className="fb-topbar__sep" />
-
-      {/* Zoom controls (center) */}
-      <div className="fb-topbar__center">
-        <IconButton icon={UIIcons.zoomOut} onClick={zoomOut} title="Zoom out" />
-        <div
-          className="fb-zoom-display"
-          title="Click to reset zoom"
-          onClick={zoomFit}
-          style={{ cursor: 'pointer' }}
-        >
-          {pct}%
+      <div className="fb-topbar__left">
+        <button type="button" className="fb-secondary-btn fb-topbar__back" onClick={handleBackToWordPress}>
+          {UIIcons.arrowLeft}
+          <span>WordPress</span>
+        </button>
+        <div className="fb-topbar__project">
+          <div className="fb-topbar__project-stack">
+            <span className="fb-topbar__eyebrow">Builder</span>
+            <span className="fb-topbar__brand">FrameBuilder</span>
+          </div>
+          <span className="fb-topbar__project-meta">Canvas editor</span>
         </div>
-        <IconButton icon={UIIcons.zoomIn} onClick={zoomIn} title="Zoom in" />
-        <IconButton icon={UIIcons.fit} onClick={zoomFit} title="Fit all artboards" className="fb-btn--sm" />
       </div>
 
-      {/* Status + actions (right) */}
-      <div className="fb-topbar__right">
-        <div className={`fb-topbar__lock-pill${isReadOnly ? ' fb-topbar__lock-pill--locked' : documentLock.isOwner ? ' fb-topbar__lock-pill--owned' : ''}`}>
-          {lockAvatar ? <img src={lockAvatar} alt="" className="fb-topbar__lock-avatar" /> : null}
-          <span>{lockLabel}</span>
+      <div className="fb-topbar__center">
+        <div className="fb-topbar__group">
+          <IconButton icon={UIIcons.zoomOut} onClick={zoomOut} title="Zoom out" />
+          <div
+            className="fb-zoom-display"
+            title="Click to reset zoom"
+            onClick={zoomFit}
+            style={{ cursor: 'pointer' }}
+          >
+            {pct}%
+          </div>
+          <IconButton icon={UIIcons.zoomIn} onClick={zoomIn} title="Zoom in" />
+          <IconButton icon={UIIcons.fit} onClick={zoomFit} title="Fit all artboards" className="fb-btn--sm" />
         </div>
-        <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span>
-        <IconButton icon={UIIcons.variables} title="Edit variables" onClick={() => setVariablesModalOpen(true)} disabled={isReadOnly} />
-        <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-btn--accent" onClick={publishLayout} disabled={isReadOnly || saveStatus === 'saving'} />
+        <div className="fb-topbar__group">
+          <IconButton icon={UIIcons.undo} title="Undo (⌘Z)" onClick={undo} disabled={isReadOnly} />
+          <IconButton icon={UIIcons.redo} title="Redo (⌘⇧Z)" onClick={redo} disabled={isReadOnly} />
+        </div>
+      </div>
+
+      <div className="fb-topbar__right">
+        <div className="fb-topbar__status">
+          <div className={`fb-topbar__lock-pill${isReadOnly ? ' fb-topbar__lock-pill--locked' : documentLock.isOwner ? ' fb-topbar__lock-pill--owned' : ''}`}>
+            {lockAvatar ? <img src={lockAvatar} alt="" className="fb-topbar__lock-avatar" /> : null}
+            <span>{lockLabel}</span>
+          </div>
+          <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span>
+        </div>
+        <div className="fb-topbar__actions">
+          <IconButton icon={UIIcons.variables} title="Edit variables" className="fb-topbar__action-btn" onClick={() => setVariablesModalOpen(true)} disabled={isReadOnly} />
+          <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-topbar__action-btn fb-topbar__action-btn--primary fb-topbar__publish" onClick={publishLayout} disabled={isReadOnly || saveStatus === 'saving'} />
+        </div>
       </div>
     </header>
   );

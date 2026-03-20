@@ -6,7 +6,7 @@ import GoogleFontPicker from '../components/GoogleFontPicker';
 import CustomSelect from '../components/CustomSelect';
 import { IconButton, UIIcons } from '../components/UIIcons';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
-import { getRichTextInlineStyleValues } from '../components/richText';
+import { getRichTextInlineStyleValues, plainTextToRichTextHtml } from '../components/richText';
 import VariantTransitionModal from '../components/VariantTransitionModal';
 import ElementAnimationModal from '../components/ElementAnimationModal';
 
@@ -145,6 +145,22 @@ function MixedNumberInput({ value, onCommit, placeholder = 'Mixed', min, max, st
       }}
       onChange={(e) => setDraft(e.target.value)}
     />
+  );
+}
+
+function MixedLabeledNumberInput({ label, value, onCommit, placeholder = 'Mixed', min, max, step = 1 }) {
+  return (
+    <div className="fb-prop-mini">
+      <MixedNumberInput
+        value={value}
+        onCommit={onCommit}
+        placeholder={placeholder}
+        min={min}
+        max={max}
+        step={step}
+      />
+      {label ? <label>{label}</label> : null}
+    </div>
   );
 }
 
@@ -686,6 +702,46 @@ function PosInput({ value, label, onChange }) {
   );
 }
 
+function MixedPosInput({ value, label, onCommit, placeholder = 'Mixed' }) {
+  const [draft, setDraft] = React.useState(value == null ? '' : formatNumericInputValue(value));
+  const [focused, setFocused] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!focused) setDraft(value == null ? '' : formatNumericInputValue(value));
+  }, [focused, value]);
+
+  return (
+    <div className="fb-pos-input">
+      <input
+        className="fb-pos-input__val"
+        type="number"
+        value={draft}
+        step={1}
+        placeholder={placeholder}
+        onFocus={(event) => {
+          setFocused(true);
+          event.target.select();
+        }}
+        onBlur={() => {
+          setFocused(false);
+          if (draft === '' || draft === '-') {
+            setDraft(value == null ? '' : formatNumericInputValue(value));
+            return;
+          }
+          const numericValue = parseFloat(draft);
+          if (!Number.isFinite(numericValue)) {
+            setDraft(value == null ? '' : formatNumericInputValue(value));
+            return;
+          }
+          onCommit(numericValue);
+        }}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+      <span className="fb-pos-input__label">{label}</span>
+    </div>
+  );
+}
+
 /** Visual constraint selector — placed in center of TLRB cross; lines = toggleable pins */
 function ConstraintWidget({ constraints, onChange }) {
   const c = { top: true, left: true, right: false, bottom: false, ...constraints };
@@ -728,6 +784,15 @@ function MinMaxRow({ resolved, upd, commit }) {
       )}
     </div>
   );
+}
+
+function getResolvedSelectionPositionMode(selected, resolved, pageLayout) {
+  const positionType = resolved.positionType ?? 'absolute';
+  const isFixed = positionType === 'fixed';
+  if (!selected?.parentId && pageLayout !== null && !resolved.absoluteInLayout && !isFixed) {
+    return positionType === 'sticky' ? 'sticky' : 'relative';
+  }
+  return positionType;
 }
 
 // ── rgba ↔ hex helpers ────────────────────────────────────────
@@ -1327,6 +1392,7 @@ export default function PropertiesPanel() {
       element: selected,
       resolved: resolveElementWithVariables(selected, bpId, pageVariables, globalVariables),
     }));
+    const pageLayout = resolvePageLayout(page?.layout, bpId);
     const bp = bpDefs?.[bpId];
     const autoFoldH = bp
       ? (bp.id === 'desktop' ? Math.round(bp.width * 9 / 16) : Math.round(bp.width * 16 / 9))
@@ -1394,6 +1460,26 @@ export default function PropertiesPanel() {
     const zIndexValue = getSharedValue(({ resolved }) => resolved.styles?.zIndex ?? 1);
     const rotationValue = getSharedValue(({ resolved }) => resolved.rotation ?? 0);
     const lockedValue = getSharedValue(({ element }) => !!element.base?.locked);
+    const aspectRatioLockedValue = getSharedValue(({ resolved }) => resolved.lockAspectRatio === true);
+    const positionTypeValue = getSharedValue(({ element: selected, resolved }) => getResolvedSelectionPositionMode(selected, resolved, pageLayout));
+    const xValue = getSharedValue(({ resolved }) => Math.round((resolved.x ?? 0) * 10) / 10);
+    const yValue = getSharedValue(({ resolved }) => Math.round((resolved.y ?? 0) * 10) / 10);
+    const widthValue = getSharedValue(({ resolved }) => Math.round((resolved.width ?? 0) * 10) / 10);
+    const heightValue = getSharedValue(({ resolved }) => Math.round((resolved.height ?? 0) * 10) / 10);
+    const widthModeValue = getSharedValue(({ resolved }) => resolved.widthMode ?? 'fixed');
+    const heightModeValue = getSharedValue(({ resolved }) => resolved.heightMode ?? 'fixed');
+    const widthPctValue = getSharedValue(({ resolved }) => Math.round((resolved.widthPct ?? resolved.width ?? 100) * 10) / 10);
+    const heightPctValue = getSharedValue(({ resolved }) => Math.round((resolved.heightPct ?? resolved.height ?? 100) * 10) / 10);
+    const widthFrValue = getSharedValue(({ resolved }) => Math.round((resolved.widthFr ?? 1) * 10) / 10);
+    const heightFrValue = getSharedValue(({ resolved }) => Math.round((resolved.heightFr ?? 1) * 10) / 10);
+    const constraintsValueRaw = getSharedValue(({ resolved }) => JSON.stringify({ top: true, left: true, right: false, bottom: false, ...(resolved.constraints ?? {}) }));
+    const constraintsValue = constraintsValueRaw ? JSON.parse(constraintsValueRaw) : { top: true, left: true, right: false, bottom: false };
+    const rightValue = xValue == null || widthValue == null ? null : Math.max(0, alignContainerW - xValue - widthValue);
+    const bottomValue = yValue == null || heightValue == null ? null : Math.max(0, alignContainerH - yValue - heightValue);
+    const hasFlowSelection = resolvedSelections.some(({ element: selected, resolved }) => {
+      const positionMode = getResolvedSelectionPositionMode(selected, resolved, pageLayout);
+      return positionMode === 'relative' || positionMode === 'sticky';
+    });
     const allFrames = selectedElements.every((selected) => selected.type === 'frame' && !selected.componentInstance && !selected.componentRoot);
     const allTexts = selectedElements.every((selected) => selected.type === 'text');
     const frameFillValue = allFrames ? getSharedValue(({ resolved }) => resolved.styles?.backgroundColor ?? 'rgba(180,180,200,0.18)') : null;
@@ -1426,6 +1512,61 @@ export default function PropertiesPanel() {
     };
     const applyStyles = (updates) => {
       updateElementsStyles(selectionIds, bpId, updates);
+      pushHistory();
+    };
+    const applyPositionType = (nextValue) => {
+      resolvedSelections.forEach(({ element: selected, resolved }) => {
+        const isAutoLayoutRoot = !selected.parentId && pageLayout !== null;
+        if (isAutoLayoutRoot) {
+          if (nextValue === 'relative' || nextValue === 'sticky') {
+            updateElementLayout(selected.id, bpId, {
+              absoluteInLayout: false,
+              positionType: nextValue,
+              ...(nextValue === 'sticky' ? { x: 0, y: Math.max(0, resolved.y ?? 0) } : {}),
+            });
+            return;
+          }
+          updateElementLayout(selected.id, bpId, { absoluteInLayout: true, positionType: nextValue });
+          return;
+        }
+        updateElementLayout(selected.id, bpId, { positionType: nextValue });
+      });
+      pushHistory();
+    };
+    const applyMultiSize = (dimension, value) => {
+      const safeValue = Math.max(1, normalizeFiniteNumber(value, 1));
+      updateElementsLayout(selectionIds, bpId, {
+        [dimension]: safeValue,
+        [dimension === 'width' ? 'widthMode' : 'heightMode']: 'fixed',
+      });
+      pushHistory();
+    };
+    const applyMultiPosition = (axis, value) => {
+      updateElementsLayout(selectionIds, bpId, { [axis]: normalizeFiniteNumber(value, 0) });
+      pushHistory();
+    };
+    const applyMultiConstraints = (constraints) => {
+      updateElementsLayout(selectionIds, bpId, { constraints });
+      pushHistory();
+    };
+    const applyMultiSizeMode = (dimension, mode) => {
+      updateElementsLayout(selectionIds, bpId, { [dimension === 'width' ? 'widthMode' : 'heightMode']: mode });
+      pushHistory();
+    };
+    const applyMultiSizeValueForMode = (dimension, mode, value) => {
+      const safeValue = normalizeFiniteNumber(value, mode === 'fill' ? 1 : 100);
+      if (mode === 'fill') {
+        updateElementsLayout(selectionIds, bpId, { [dimension === 'width' ? 'widthFr' : 'heightFr']: Math.max(0.1, safeValue), [dimension === 'width' ? 'widthMode' : 'heightMode']: 'fill' });
+      } else if (mode === 'relative') {
+        updateElementsLayout(selectionIds, bpId, { [dimension === 'width' ? 'widthPct' : 'heightPct']: Math.max(0, safeValue), [dimension === 'width' ? 'widthMode' : 'heightMode']: 'relative' });
+      } else {
+        applyMultiSize(dimension, safeValue);
+        return;
+      }
+      pushHistory();
+    };
+    const toggleMultiAspectLock = () => {
+      updateElementsLayout(selectionIds, bpId, { lockAspectRatio: !(aspectRatioLockedValue === true) });
       pushHistory();
     };
     const alignSelection = (action) => {
@@ -1475,6 +1616,106 @@ export default function PropertiesPanel() {
               Only batch-safe controls are shown here. Mixed values stay untouched until you set a replacement.
             </div>
             {!canAlignSelection ? <div className="fb-artboard-bp-note">Align is available when all selected elements share the same parent and use absolute or fixed positioning.</div> : null}
+          </Section>
+
+          <Section title="Position">
+            <div className="fb-prop-row" style={{ marginTop: 6 }}>
+              <span className="fb-prop-label">Type</span>
+              <select
+                className="fb-prop-input"
+                value={positionTypeValue ?? ''}
+                onChange={(event) => applyPositionType(event.target.value)}
+              >
+                <option value="" disabled>Mixed</option>
+                <option value="absolute">Absolute</option>
+                <option value="fixed">Fixed</option>
+                <option value="relative">Relative</option>
+                <option value="sticky">Sticky</option>
+              </select>
+            </div>
+            <div className="fb-pos-widget">
+              <div className="fb-pos-widget__row">
+                <MixedPosInput value={yValue} label="T" onCommit={(value) => applyMultiPosition('y', Math.max(0, value))} />
+              </div>
+              <div className="fb-pos-widget__row">
+                <MixedPosInput value={xValue} label="L" onCommit={(value) => applyMultiPosition('x', value)} />
+                <ConstraintWidget constraints={constraintsValue} onChange={applyMultiConstraints} />
+                <MixedPosInput value={rightValue} label="R" onCommit={(value) => {
+                  if (widthValue == null) return;
+                  applyMultiPosition('x', Math.max(0, alignContainerW - value - widthValue));
+                }} />
+              </div>
+              <div className="fb-pos-widget__row">
+                <MixedPosInput value={bottomValue} label="B" onCommit={(value) => {
+                  if (heightValue == null) return;
+                  applyMultiPosition('y', Math.max(0, alignContainerH - value - heightValue));
+                }} />
+              </div>
+            </div>
+            {hasFlowSelection ? (
+              <div className="fb-artboard-bp-note">Relative or sticky items can still show mixed offsets here, but x and y are most useful after switching the selection to absolute or fixed positioning.</div>
+            ) : null}
+          </Section>
+
+          <Section title="Size">
+            <div className="fb-size-section">
+              <div className="fb-size-section__rows">
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Width</span>
+                  <div className="fb-size-row">
+                    {(() => {
+                      const mode = widthModeValue ?? 'fixed';
+                      if (mode === 'hug') return <div className="fb-prop-mini" style={{ flex: 1 }} />;
+                      if (mode === 'fill') return <MixedLabeledNumberInput value={widthFrValue} min={0.1} step={0.1} label="fr" onCommit={(value) => applyMultiSizeValueForMode('width', 'fill', value)} />;
+                      if (mode === 'relative') return <MixedLabeledNumberInput value={widthPctValue} min={0} max={100} step={1} label="%" onCommit={(value) => applyMultiSizeValueForMode('width', 'relative', value)} />;
+                      return <MixedLabeledNumberInput value={widthValue} min={1} step={1} label="px" onCommit={(value) => applyMultiSize('width', value)} />;
+                    })()}
+                    <select
+                      className="fb-prop-input fb-size-mode"
+                      value={widthModeValue ?? ''}
+                      onChange={(event) => applyMultiSizeMode('width', event.target.value)}
+                    >
+                      <option value="" disabled>Mixed</option>
+                      <option value="fixed">Fixed px</option>
+                      <option value="fill">Fill fr</option>
+                      <option value="relative">Relative %</option>
+                      <option value="hug">Hug</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Height</span>
+                  <div className="fb-size-row">
+                    {(() => {
+                      const mode = heightModeValue ?? 'fixed';
+                      if (mode === 'hug') return <div className="fb-prop-mini" style={{ flex: 1 }} />;
+                      if (mode === 'fill') return <MixedLabeledNumberInput value={heightFrValue} min={0.1} step={0.1} label="fr" onCommit={(value) => applyMultiSizeValueForMode('height', 'fill', value)} />;
+                      if (mode === 'relative') return <MixedLabeledNumberInput value={heightPctValue} min={0} max={100} step={1} label="%" onCommit={(value) => applyMultiSizeValueForMode('height', 'relative', value)} />;
+                      return <MixedLabeledNumberInput value={heightValue} min={1} step={1} label="px" onCommit={(value) => applyMultiSize('height', value)} />;
+                    })()}
+                    <select
+                      className="fb-prop-input fb-size-mode"
+                      value={heightModeValue ?? ''}
+                      onChange={(event) => applyMultiSizeMode('height', event.target.value)}
+                    >
+                      <option value="" disabled>Mixed</option>
+                      <option value="fixed">Fixed px</option>
+                      <option value="fill">Fill fr</option>
+                      <option value="relative">Relative %</option>
+                      <option value="hug">Hug</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <IconButton
+                icon={UIIcons.link}
+                title="Lock aspect ratio"
+                active={aspectRatioLockedValue === true}
+                className="fb-btn--sm fb-size-lock-btn"
+                onClick={toggleMultiAspectLock}
+              />
+            </div>
+            <div className="fb-artboard-bp-note">Entering a size applies a fixed pixel width or height to every selected element. Different current values show as Mixed until you replace them.</div>
           </Section>
 
           <Section title="Visibility">
@@ -1650,6 +1891,12 @@ export default function PropertiesPanel() {
 
   const upd = (key, val) => {
     updateElementLayout(element.id, bpId, { [key]: val });
+  };
+  const updText = (val) => {
+    updateElementLayout(element.id, bpId, {
+      text: val,
+      richTextHtml: plainTextToRichTextHtml(val || 'Text'),
+    });
   };
   const updS = (key, val) => {
     updateStyles(element.id, bpId, { [key]: val });
@@ -2290,7 +2537,7 @@ export default function PropertiesPanel() {
                   <VariableBindingButton
                     variables={getCompatibleBindingVariables('text')}
                     binding={textBinding}
-                    onSelect={(binding) => commitBinding('text', binding, (value) => updateElementLayout(element.id, bpId, { text: `${value ?? ''}` }))}
+                    onSelect={(binding) => commitBinding('text', binding, (value) => updText(`${value ?? ''}`))}
                     onRemove={() => commitBinding('text', null)}
                   />
                 ) : null}
@@ -2302,7 +2549,7 @@ export default function PropertiesPanel() {
                 <textarea
                   className="fb-prop-input"
                   value={resolved.text ?? 'Text'}
-                  onChange={e => upd('text', e.target.value)}
+                  onChange={e => updText(e.target.value)}
                   onBlur={commit}
                   rows={4}
                   style={{ width: '100%', resize: 'vertical', minHeight: 92, lineHeight: 1.4 }}

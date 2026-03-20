@@ -1090,7 +1090,7 @@ const COMPONENT_EDITOR_VARIANT_SIDE_PAD = 120;
 
 const COMPONENT_ROOT_LAYOUT_KEYS = [
   'width', 'height', 'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
-  'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints', 'lockAspectRatio',
+  'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints', 'lockAspectRatio', 'rotation',
 ];
 
 function makeComponentPrimaryRoot(config = {}) {
@@ -1106,7 +1106,7 @@ function makeComponentPrimaryRoot(config = {}) {
       y: config.y ?? 0,
       width: config.width ?? 240,
       height: config.height ?? 160,
-      rotation: 0,
+      rotation: config.rotation ?? 0,
       locked: config.locked ?? false,
       hidden: false,
       widthMode: config.widthMode ?? 'fixed',
@@ -1183,7 +1183,14 @@ function ensureComponentPrimaryRoot(snapshot = []) {
 
   wrapper.children = [root.id];
   root.parentId = wrapper.id;
-  root.base = { ...root.base, x: 0, y: 0 };
+  root.base = {
+    ...root.base,
+    x: 0,
+    y: 0,
+    rotation: 0,
+    positionType: 'relative',
+    absoluteInLayout: false,
+  };
   ['tablet', 'mobile'].forEach((bpId) => {
     const override = root.overrides?.[bpId];
     if (!override) return;
@@ -1191,6 +1198,9 @@ function ensureComponentPrimaryRoot(snapshot = []) {
       ...override,
       ...(override.x != null ? { x: 0 } : {}),
       ...(override.y != null ? { y: 0 } : {}),
+      ...(override.rotation != null ? { rotation: 0 } : {}),
+      ...(override.positionType != null ? { positionType: 'relative' } : {}),
+      ...(override.absoluteInLayout != null ? { absoluteInLayout: false } : {}),
     };
   });
 
@@ -3332,7 +3342,10 @@ export const useEditorStore = create((set, get) => {
     async saveComponents(components, options = {}) {
       const { throwOnError = false } = options;
       const normalizedComponents = components.map(normalizeStoredComponent);
-      set({ components: normalizedComponents });
+      const currentComponents = get().components ?? [];
+      if (JSON.stringify(currentComponents) !== JSON.stringify(normalizedComponents)) {
+        set({ components: normalizedComponents });
+      }
       try {
         if (window.fbData?.restUrl) {
           await requestWordPressEndpoint('components', 'framebuilder_save_components', {

@@ -298,6 +298,12 @@ function getResizeHandlePoint(startBounds, handle) {
   };
 }
 
+function normalizeResizeHandle(handle) {
+  const value = String(handle || '').replace(/^rotate-/, '');
+  if (OVERLAY_HANDLES.includes(value)) return value;
+  return 'se';
+}
+
 function isDefaultVariant(variant) {
   return (variant?.mode ?? 'default') === 'default';
 }
@@ -917,41 +923,133 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
   const scale = Math.max(MIN_SCALE, Number.isFinite(viewport.scale) ? viewport.scale : 1);
   const boardDom = document.querySelector(`.fb-artboard[data-bp="${bp.id}"]`);
   const selectedDomNode = boardDom?.querySelector(`[data-id="${el.id}"]`) ?? null;
-  if (selectionIds.length > 1 && boardDom) {
-    const boardRect = boardDom.getBoundingClientRect();
-    const rects = selectionIds
-      .map((id) => boardDom.querySelector(`[data-id="${id}"]`)?.getBoundingClientRect() ?? null)
-      .filter(Boolean);
-    if (!rects.length) return null;
-    const union = rects.reduce((acc, rect) => ({
-      left: Math.min(acc.left, rect.left),
-      top: Math.min(acc.top, rect.top),
-      right: Math.max(acc.right, rect.right),
-      bottom: Math.max(acc.bottom, rect.bottom),
+  if (selectionIds.length > 1) {
+    const groupItems = selectionIds
+      .map((id) => allElements.find((candidate) => candidate.id === id))
+      .filter(Boolean)
+      .map((selected) => {
+        const resolvedSelected = resolveElement(selected, selection.bpId);
+        const metrics = getElementWorldMetrics({ el: selected, bpId: selection.bpId, bp, page, boardDom, scale });
+        const isFlow = ['relative', 'sticky'].includes(resolvedSelected.positionType ?? 'absolute')
+          || (!selected.parentId && page?.layout?.[selection.bpId] != null && !resolvedSelected.absoluteInLayout && resolvedSelected.positionType !== 'fixed');
+        return {
+          el: selected,
+          resolved: resolvedSelected,
+          metrics,
+          canResize: !selected.locked && !isFlow && Math.abs(parseFloat(resolvedSelected.rotation) || 0) <= 0.01,
+        };
+      })
+      .filter((item) => item.metrics);
+    const metricsList = groupItems.map((item) => item.metrics).filter(Boolean);
+    if (!metricsList.length) return null;
+    const union = metricsList.reduce((acc, metrics) => ({
+      left: Math.min(acc.left, metrics.domWorldX),
+      top: Math.min(acc.top, metrics.domWorldY),
+      right: Math.max(acc.right, metrics.domWorldX + metrics.domWidth),
+      bottom: Math.max(acc.bottom, metrics.domWorldY + metrics.domHeight),
     }), {
-      left: rects[0].left,
-      top: rects[0].top,
-      right: rects[0].right,
-      bottom: rects[0].bottom,
+      left: metricsList[0].domWorldX,
+      top: metricsList[0].domWorldY,
+      right: metricsList[0].domWorldX + metricsList[0].domWidth,
+      bottom: metricsList[0].domWorldY + metricsList[0].domHeight,
     });
-    const left = bp.x + (union.left - boardRect.left) / scale;
-    const top = bp.y + (union.top - boardRect.top) / scale;
-    const width = (union.right - union.left) / scale;
-    const height = (union.bottom - union.top) / scale;
+    const left = union.left;
+    const top = union.top;
+    const width = Math.max(1 / scale, union.right - union.left);
+    const height = Math.max(1 / scale, union.bottom - union.top);
+    const center = { x: left + width / 2, y: top + height / 2 };
+    const tl = { x: left, y: top };
+    const tr = { x: left + width, y: top };
+    const br = { x: left + width, y: top + height };
+    const bl = { x: left, y: top + height };
+    const handlePoints = {
+      nw: tl,
+      n: midpoint(tl, tr),
+      ne: tr,
+      e: midpoint(tr, br),
+      se: br,
+      s: midpoint(bl, br),
+      sw: bl,
+      w: midpoint(tl, bl),
+    };
+    const canGroupResize = groupItems.length > 1 && groupItems.every((item) => item.canResize);
+    const handleSize = 8 / scale;
+    const svgWidth = Math.max(...Object.values(bpDefs).map((entry) => entry.x + entry.width), left + width) + 400;
+    const svgHeight = Math.max(...Object.values(bpDefs).map((entry) => entry.y + entry.height), top + height) + 400;
+    const useComponentSelectionAccent = activeSurface === 'component';
+    const outlineColor = useComponentSelectionAccent ? 'var(--component-accent)' : 'var(--accent-light)';
+    const outlineShadow = useComponentSelectionAccent ? 'var(--component-accent-strong)' : 'transparent';
+    const polygonPoints = [tl, tr, br, bl].map((point) => `${point.x},${point.y}`).join(' ');
+    const groupResizePayload = {
+      groupBounds: { minX: left, minY: top, width, height },
+      items: groupItems.map((item) => ({
+        id: item.el.id,
+        startX: item.resolved.x ?? item.el.base?.x ?? 0,
+        startY: item.resolved.y ?? item.el.base?.y ?? 0,
+        startW: item.resolved.width ?? item.el.base?.width ?? 100,
+        startH: item.resolved.height ?? item.el.base?.height ?? 40,
+        domWorldX: item.metrics.domWorldX,
+        domWorldY: item.metrics.domWorldY,
+        domWidth: item.metrics.domWidth,
+        domHeight: item.metrics.domHeight,
+      })),
+    };
     return (
-      <div
-        className="fb-sel-overlay fb-sel-overlay--group"
-        style={{
-          left,
-          top,
-          width,
-          height,
-          pointerEvents: 'none',
-          borderColor: activeSurface === 'component' ? 'var(--component-accent)' : 'var(--accent-light)',
-          boxShadow: 'none',
-          background: 'transparent',
-        }}
-      />
+      <>
+        <div
+          className="fb-sel-overlay fb-sel-overlay--group"
+          style={{
+            left,
+            top,
+            width,
+            height,
+            pointerEvents: 'none',
+            border: `${2 / scale}px solid ${outlineColor}`,
+            boxShadow: `0 0 0 ${1 / scale}px ${activeSurface === 'component' ? 'rgba(154, 108, 255, 0.18)' : 'rgba(132, 210, 108, 0.18)'}`,
+            background: activeSurface === 'component' ? 'rgba(154, 108, 255, 0.04)' : 'rgba(132, 210, 108, 0.04)',
+          }}
+        />
+        <svg
+          className="fb-sel-overlay-svg"
+          width={svgWidth}
+          height={svgHeight}
+          style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 10000 }}
+        >
+          <polygon
+            points={polygonPoints}
+            fill="none"
+            stroke={outlineColor}
+            strokeWidth={2 / scale}
+            vectorEffect="non-scaling-stroke"
+            style={{ filter: outlineShadow !== 'transparent' ? `drop-shadow(0 0 ${1 / scale}px ${outlineShadow})` : undefined }}
+          />
+          {canGroupResize ? OVERLAY_HANDLES.map((handle) => {
+            const point = handlePoints[handle];
+            return (
+              <rect
+                key={`group-${handle}`}
+                x={point.x - handleSize / 2}
+                y={point.y - handleSize / 2}
+                width={handleSize}
+                height={handleSize}
+                rx={2 / scale}
+                ry={2 / scale}
+                fill={useComponentSelectionAccent ? 'var(--component-accent)' : '#fff'}
+                stroke={outlineColor}
+                strokeWidth={1.5 / scale}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="all"
+                style={{ cursor: `${handle}-resize` }}
+                onMouseDown={(event) => {
+                  event.stopPropagation();
+                  event.preventDefault();
+                  onStartResize(event, selection.bpId, el, `group-${handle}`, groupResizePayload);
+                }}
+              />
+            );
+          }) : null}
+        </svg>
+      </>
     );
   }
   const metrics = getElementWorldMetrics({ el, bpId: selection.bpId, bp, page, boardDom, scale });
@@ -1889,11 +1987,13 @@ export default function InfiniteCanvas() {
             targetVariantId,
             trigger: sourceVariant.interaction.trigger,
             delay: sourceVariant.interaction.delay ?? 0,
+            transition: sourceVariant.interaction.transition ?? null,
           }
         : {
             targetVariantId,
             trigger: sourceVariant.interaction?.trigger ?? 'click',
             delay: sourceVariant.interaction?.targetVariantId ? (sourceVariant.interaction.delay ?? 0) : 0,
+            transition: sourceVariant.interaction?.transition ?? null,
           },
     });
   }, [componentEditor.variants]);
@@ -3033,6 +3133,37 @@ export default function InfiniteCanvas() {
           y: item.startY + dyWorld,
         });
       });
+    } else if (type === 'multi-resize') {
+      const session = drag.current;
+      const hasMoved = Math.abs(e.clientX - session.startMX) > 4 || Math.abs(e.clientY - session.startMY) > 4;
+      if (hasMoved) session.hasMoved = true;
+      const nextBounds = resolveResizedBounds({
+        startBounds: session.groupBounds,
+        handle: session.handle,
+        pointer: {
+          x: (session.startHandleX ?? (session.groupBounds.minX + session.groupBounds.width)) + dxWorld,
+          y: (session.startHandleY ?? (session.groupBounds.minY + session.groupBounds.height)) + dyWorld,
+        },
+        minSize: 20,
+        keepAspectRatio: session.lockAspectRatio || e.shiftKey,
+      });
+      const startBounds = session.groupBounds;
+      const scaleX = nextBounds.width / Math.max(startBounds.width, 1);
+      const scaleY = nextBounds.height / Math.max(startBounds.height, 1);
+      session.items.forEach((item) => {
+        const relativeLeft = item.domWorldX - startBounds.minX;
+        const relativeTop = item.domWorldY - startBounds.minY;
+        const nextWorldX = nextBounds.minX + (relativeLeft * scaleX);
+        const nextWorldY = nextBounds.minY + (relativeTop * scaleY);
+        const nextWidth = Math.max(1, item.domWidth * scaleX);
+        const nextHeight = Math.max(1, item.domHeight * scaleY);
+        useEditorStore.getState().updateElementLayout(item.id, bpId, {
+          x: item.startX + (nextWorldX - item.domWorldX),
+          y: item.startY + (nextWorldY - item.domWorldY),
+          width: nextWidth,
+          height: nextHeight,
+        });
+      });
     } else if (type === 'artboard-move') {
       useEditorStore.getState().updateBreakpointDef(bpId, {
         x: drag.current.startBpX + dxWorld,
@@ -3406,6 +3537,9 @@ export default function InfiniteCanvas() {
       if (drag.current.type === 'multi-element-drag') {
         shouldPushHistory = !!drag.current.hasMoved;
       }
+      if (drag.current.type === 'multi-resize') {
+        shouldPushHistory = !!drag.current.hasMoved;
+      }
       if (drag.current.type === 'element-drag') {
         const session = drag.current;
         shouldPushHistory = !!session.hasMoved;
@@ -3522,6 +3656,12 @@ export default function InfiniteCanvas() {
         setAlignmentGuides([]);
       }
       if (drag.current.type === 'multi-element-drag') {
+        setDragHint(null);
+        setReorderGhost(null);
+        setDragOverlay(null);
+        setAlignmentGuides([]);
+      }
+      if (drag.current.type === 'multi-resize') {
         setDragHint(null);
         setReorderGhost(null);
         setDragOverlay(null);
@@ -4139,8 +4279,8 @@ export default function InfiniteCanvas() {
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
     const resolved = resolveElement ? resolveElement(el, bpId) : el;
     const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
-    setSelection({ elementId: el.id, bpId });
     if ((shapeKind === 'path' || shapeKind === 'pen') && (String(handle).startsWith('rotate-') || ['nw','n','ne','e','se','s','sw','w'].includes(handle))) {
+      setSelection({ elementId: el.id, bpId });
       const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
       const domRect = boardDom?.querySelector(`[data-id="${el.id}"]`)?.getBoundingClientRect() ?? null;
       startVectorResize(
@@ -4158,6 +4298,7 @@ export default function InfiniteCanvas() {
       return;
     }
     if (String(handle).startsWith('rotate-')) {
+      setSelection({ elementId: el.id, bpId });
       const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
       const domEl = boardDom?.querySelector(`[data-id="${el.id}"]`);
       const rect = domEl?.getBoundingClientRect();
@@ -4178,6 +4319,7 @@ export default function InfiniteCanvas() {
       return;
     }
     if (handle === 'se' && isFontResizeTextElement(el, resolved)) {
+      setSelection({ elementId: el.id, bpId });
       drag.current = {
         type: 'text-font-size', bpId, elementId: el.id, handle,
         startMX: e.clientX, startMY: e.clientY,
@@ -4195,6 +4337,34 @@ export default function InfiniteCanvas() {
       setInteracting(true);
       return;
     }
+    if (String(handle).startsWith('group-')) {
+      const groupHandle = normalizeResizeHandle(handle.slice(6));
+      const groupBounds = payload?.groupBounds;
+      const groupItems = Array.isArray(payload?.items) ? payload.items : [];
+      if (!groupBounds || groupItems.length < 2) return;
+      const startHandlePoint = getResizeHandlePoint(groupBounds, groupHandle);
+      const lockAspectRatio = groupItems.every((item) => {
+        const candidate = getAllElements().find((entry) => entry.id === item.id);
+        const candidateResolved = candidate ? (resolveElement ? resolveElement(candidate, bpId) : candidate) : null;
+        return candidateResolved?.lockAspectRatio === true;
+      });
+      drag.current = {
+        type: 'multi-resize',
+        bpId,
+        elementIds: groupItems.map((item) => item.id),
+        handle: groupHandle,
+        startMX: e.clientX,
+        startMY: e.clientY,
+        startHandleX: startHandlePoint.x,
+        startHandleY: startHandlePoint.y,
+        groupBounds,
+        items: groupItems,
+        lockAspectRatio,
+      };
+      setInteracting(true);
+      return;
+    }
+    setSelection({ elementId: el.id, bpId });
     const startBounds = {
       minX: resolved.x ?? el.base?.x ?? 0,
       minY: resolved.y ?? el.base?.y ?? 0,
@@ -4417,13 +4587,15 @@ export default function InfiniteCanvas() {
   const penDraftPath = penDraft?.points?.length ? getVectorShapePathD({ kind: 'path', points: penDraft.points, closed: penDraft.closed === true }) : '';
   const saveVariantInteraction = useCallback((nextInteraction) => {
     if (!variantInteractionModal?.sourceVariantId || !variantInteractionModal?.targetVariantId) return;
+    const sourceVariant = (componentEditor.variants ?? []).find((variant) => variant.id === variantInteractionModal.sourceVariantId) ?? null;
     updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, {
       targetVariantId: variantInteractionModal.targetVariantId,
       trigger: nextInteraction.trigger,
       delay: nextInteraction.delay,
+      transition: nextInteraction.transition ?? sourceVariant?.interaction?.transition ?? null,
     });
     setVariantInteractionModal(null);
-  }, [updateComponentEditorVariantInteraction, variantInteractionModal]);
+  }, [componentEditor.variants, updateComponentEditorVariantInteraction, variantInteractionModal]);
   const disconnectVariantInteraction = useCallback(() => {
     if (!variantInteractionModal?.sourceVariantId) return;
     updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, null);

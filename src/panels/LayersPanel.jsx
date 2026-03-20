@@ -1,35 +1,33 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
 import { UIIcons } from '../components/UIIcons';
 
 const Icons = {
   frame: (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
       <rect x="2" y="2" width="12" height="12" rx="1.5"/>
     </svg>
   ),
   frameAutoHorizontal: (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
       <rect x="3" y="2.5" width="10" height="4" rx="1"/>
-      <rect x="3" y="9.5" width="10" height="4" rx="1"/>
+      <rect x="3" y="9.5" width="10" height="4" rx="1" opacity="0.62"/>
     </svg>
   ),
   frameAutoVertical: (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
       <rect x="2.5" y="3" width="4" height="10" rx="1"/>
-      <rect x="9.5" y="3" width="4" height="10" rx="1"/>
+      <rect x="9.5" y="3" width="4" height="10" rx="1" opacity="0.62"/>
     </svg>
   ),
   text: (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-      <path d="M3 4h10M8 4v8M6 12h4"/>
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+      <path d="M3 3.5h10v2H9v7h2.5v1.5h-7v-1.5H7v-7H3z"/>
     </svg>
   ),
   image: (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="1" y="2" width="14" height="12" rx="1.5"/>
-      <circle cx="5.5" cy="6.5" r="1.2" fill="currentColor" stroke="none"/>
-      <path d="M1 12l4-3.5 3 2.5 2.5-2 4.5 4"/>
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+      <path d="M2.5 2h11A1.5 1.5 0 0 1 15 3.5v9A1.5 1.5 0 0 1 13.5 14h-11A1.5 1.5 0 0 1 1 12.5v-9A1.5 1.5 0 0 1 2.5 2Zm.3 10h10.4L10 8.5 8 10.6 5.6 8.2 2.8 12ZM5.5 5a1.2 1.2 0 1 0 0 2.4A1.2 1.2 0 0 0 5.5 5Z"/>
     </svg>
   ),
   icon: (
@@ -38,21 +36,18 @@ const Icons = {
     </svg>
   ),
   desktop: (
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="1" y="2" width="14" height="9" rx="1"/>
-      <path d="M5 14h6M8 11v3"/>
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+      <path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H9v2h3v1H4v-1h3v-2H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z"/>
     </svg>
   ),
   tablet: (
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="1" width="10" height="14" rx="1.5"/>
-      <circle cx="8" cy="12.5" r="0.8" fill="currentColor" stroke="none"/>
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+      <path d="M4.5 1h7A1.5 1.5 0 0 1 13 2.5v11A1.5 1.5 0 0 1 11.5 15h-7A1.5 1.5 0 0 1 3 13.5v-11A1.5 1.5 0 0 1 4.5 1ZM8 12.2a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z"/>
     </svg>
   ),
   mobile: (
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="4.5" y="1" width="7" height="14" rx="1.5"/>
-      <circle cx="8" cy="12.5" r="0.75" fill="currentColor" stroke="none"/>
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+      <path d="M5.25 1h5.5A1.25 1.25 0 0 1 12 2.25v11.5A1.25 1.25 0 0 1 10.75 15h-5.5A1.25 1.25 0 0 1 4 13.75V2.25A1.25 1.25 0 0 1 5.25 1ZM8 12.35a.7.7 0 1 0 0 1.4.7.7 0 0 0 0-1.4Z"/>
     </svg>
   ),
   eye: (
@@ -82,6 +77,12 @@ function getIconForElement(el, bpId) {
   return Icons.frame;
 }
 
+function getLayerChildren(el, allElements) {
+  return el?.children?.length
+    ? el.children.map((childId) => allElements.find((candidate) => candidate.id === childId)).filter(Boolean)
+    : allElements.filter((candidate) => candidate.parentId === el.id);
+}
+
 // Is a root element off-canvas for a given bp?
 function checkOffCanvas(el, bpId, bpDef) {
   if (!bpDef || el.parentId) return false;
@@ -105,10 +106,8 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
   const globalVariables     = useEditorStore(s => s.globalVariables);
   const allElements         = useEditorStore(s => s.getAllElements());
   const [expanded, setExpanded] = useState(true);
-    const pageVariables = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
-    const children = el?.children?.length
-      ? el.children.map((childId) => allElements.find((candidate) => candidate.id === childId)).filter(Boolean)
-      : allElements.filter((candidate) => candidate.parentId === el.id);
+  const pageVariables = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
+  const children = useMemo(() => getLayerChildren(el, allElements), [el, allElements]);
 
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState('');
@@ -126,6 +125,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
     ? (el.componentVariantName || 'Primary')
     : (isMainSurfaceComponent ? (componentMeta?.name || el.base?.name || el.type) : (el.base?.name || el.type));
   const visibleChildren = isMainSurfaceComponent ? [] : children;
+  const hasChildren = visibleChildren.length > 0;
 
   useEffect(() => {
     if (isSel && itemRef.current) {
@@ -178,11 +178,12 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
   };
 
   return (
-    <>
+    <div className={`fb-layer-node${hasChildren ? ' fb-layer-node--parent' : ''}${el.componentInstance ? ' fb-layer-node--component' : ''}`}>
       <div
         ref={itemRef}
-        className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${isHov && !isSel ? ' fb-layer-item--hovered' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}${el.componentInstance ? ' fb-layer-item--component' : ''}${dragOverPart === 'before' ? ' fb-layer-item--drag-before' : ''}${dragOverPart === 'after' ? ' fb-layer-item--drag-after' : ''}${dragOverPart === 'into' ? ' fb-layer-item--drag-into' : ''}`}
-        style={{ paddingLeft: 12 + depth * 16 }}
+        className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${isHov && !isSel ? ' fb-layer-item--hovered' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}${el.componentInstance ? ' fb-layer-item--component' : ''}${hasChildren ? ' fb-layer-item--parent' : ''}${dragOverPart === 'before' ? ' fb-layer-item--drag-before' : ''}${dragOverPart === 'after' ? ' fb-layer-item--drag-after' : ''}${dragOverPart === 'into' ? ' fb-layer-item--drag-into' : ''}`}
+        style={{ paddingLeft: 10 + depth * 14 }}
+        data-depth={depth}
         draggable
         onClick={(e) => {
           const nextSelection = { elementId: el.id, bpId: bpId || 'desktop' };
@@ -203,15 +204,15 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {visibleChildren.length > 0 ? (
+        {hasChildren ? (
           <span
-            style={{ cursor: 'pointer', marginRight: 4, fontSize: 9, color: 'var(--text-muted)' }}
+            className={`fb-layer-caret${expanded ? ' fb-layer-caret--open' : ''}`}
             onClick={(e) => { e.stopPropagation(); setExpanded(v => !v); }}
           >
             {expanded ? '▾' : '▸'}
           </span>
         ) : (
-          <span style={{ display: 'inline-block', width: 13 }} />
+          <span className="fb-layer-caret fb-layer-caret--placeholder" />
         )}
         <span
           className="fb-layer-icon"
@@ -257,17 +258,21 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
           {resolved.hidden ? Icons.eyeOff : Icons.eye}
         </span>
       </div>
-      {expanded && visibleChildren.map(child => (
-        <LayerItem
-          key={child.id}
-          el={child}
-          depth={depth + 1}
-          bpId={bpId}
-          onReparent={onReparent}
-          onReorder={onReorder}
-        />
-      ))}
-    </>
+      {expanded && hasChildren ? (
+        <div className={`fb-layer-children${el.componentInstance ? ' fb-layer-children--component' : ''}`}>
+          {visibleChildren.map(child => (
+            <LayerItem
+              key={child.id}
+              el={child}
+              depth={depth + 1}
+              bpId={bpId}
+              onReparent={onReparent}
+              onReorder={onReorder}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -340,6 +345,7 @@ export default function LayersPanel() {
 
   return (
     <div
+      className="fb-layers-tree"
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleRootDrop}
       style={{ minHeight: '100%' }}

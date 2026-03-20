@@ -366,6 +366,109 @@ function getExitTweenVars(transition) {
   };
 }
 
+function getVariantWrapperDirection(current, next) {
+  const parent = current?.parentElement;
+  if (!parent || parent !== next?.parentElement) return 1;
+  const variants = Array.from(parent.children);
+  const currentIndex = variants.indexOf(current);
+  const nextIndex = variants.indexOf(next);
+  if (currentIndex === -1 || nextIndex === -1) return 1;
+  return nextIndex >= currentIndex ? 1 : -1;
+}
+
+function getVariantWrapperTravel(current, next) {
+  const width = Math.max(current?.offsetWidth || 0, next?.offsetWidth || 0, 24);
+  return Math.min(42, Math.max(14, width * 0.14));
+}
+
+function animateVariantWrappers(current, next, transition) {
+  if (!gsap || !current || !next) return null;
+  const direction = getVariantWrapperDirection(current, next);
+  const travel = getVariantWrapperTravel(current, next);
+
+  if (transition.type === 'realistic' && transition.springMode === 'physics') {
+    const spring = getPhysicsSpringConfig(transition);
+    const timeline = gsap.timeline({ defaults: { overwrite: true } });
+    gsap.set(current, { opacity: 1, x: 0, scaleX: 1, scaleY: 1, transformOrigin: 'top left' });
+    gsap.set(next, { opacity: 0, transformOrigin: 'top left' });
+    timeline.to(current, {
+      opacity: 0,
+      x: travel * 0.22 * direction,
+      scaleX: 0.985,
+      scaleY: 0.985,
+      duration: spring.duration,
+      ease: 'none',
+      clearProps: 'opacity,transform',
+    }, 0);
+    timeline.to(next, {
+      opacity: 1,
+      duration: spring.duration,
+      ease: 'none',
+      clearProps: 'opacity',
+    }, 0);
+    addPhysicsSpringSequence(timeline, next, {
+      x: -travel * 0.82 * direction,
+      y: 0,
+      scaleX: 0.94,
+      scaleY: 0.94,
+      rotation: 0,
+    }, spring, 0);
+    return timeline;
+  }
+
+  if (transition.type === 'realistic') {
+    const profile = getRealisticProfile(transition);
+    const timeline = gsap.timeline({ defaults: { overwrite: true } });
+    gsap.set(current, { opacity: 1, x: 0, scale: 1, transformOrigin: 'top left' });
+    gsap.set(next, { opacity: 0, x: -travel * 0.82 * direction, scale: 0.94, transformOrigin: 'top left' });
+    timeline.to(current, {
+      opacity: 0,
+      x: travel * 0.2 * direction,
+      scale: 0.985,
+      duration: profile.pushDuration,
+      ease: profile.pushEase,
+    }, 0);
+    timeline.to(next, {
+      opacity: 1,
+      x: travel * profile.travelOvershoot * direction,
+      scale: 1 + profile.scaleOvershoot,
+      duration: profile.pushDuration,
+      ease: profile.pushEase,
+    }, 0);
+    timeline.to(next, {
+      x: 0,
+      scale: 1,
+      duration: profile.settleDuration,
+      ease: profile.settleEase,
+      clearProps: 'opacity,transform',
+    }, profile.pushDuration);
+    return timeline;
+  }
+
+  const duration = getTransitionDurationMs(transition) / 1000;
+  const ease = getTransitionEasing(transition);
+  const timeline = gsap.timeline({ defaults: { overwrite: true } });
+  gsap.set(current, { opacity: 1, x: 0, scale: 1, transformOrigin: 'top left' });
+  gsap.set(next, { opacity: 0, x: -travel * 0.72 * direction, scale: 0.992, transformOrigin: 'top left' });
+  timeline.to(current, {
+    opacity: 0,
+    x: travel * 0.18 * direction,
+    scale: 0.992,
+    duration,
+    ease,
+    clearProps: 'opacity,transform',
+  }, 0);
+  timeline.to(next, {
+    opacity: 1,
+    x: 0,
+    scale: 1,
+    duration,
+    ease,
+    clearProps: 'opacity,transform',
+  }, 0);
+  return timeline;
+}
+
 function collectSharedElementPairs(container, currentVariant, nextVariant) {
   if (!container || !currentVariant || !nextVariant) return [];
   const containerRect = container.getBoundingClientRect();
@@ -808,7 +911,13 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
         ? `elastic.out(1, ${Math.max(0.2, transition.mass * 0.45)})`
         : `back.out(${1 + transition.bounce * 1.2})`)
       : getTransitionEasing(transition);
+    const animatedPairs = prepareAnimatedPairs(collectSharedElementPairs(stage, current, next));
+    const matchedIds = new Set(animatedPairs.map((entry) => entry.pair.nextNode.dataset.fbNodeId).filter(Boolean));
+    const shouldCrossfadeVariants = animatedPairs.some((entry) => entry.changes.needsCrossfade)
+      || collectTopLevelUnmatchedNodes(current, matchedIds).length > 0
+      || collectTopLevelUnmatchedNodes(next, matchedIds).length > 0;
 
+    current.style.opacity = '1';
     current.classList.remove('is-active');
     current.classList.add('is-present');
     next.classList.add('is-present');
@@ -816,6 +925,11 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
     next.style.visibility = 'visible';
     next.style.pointerEvents = 'none';
     current.style.pointerEvents = 'none';
+    next.style.opacity = shouldCrossfadeVariants ? '0' : '1';
+
+    if (shouldCrossfadeVariants) {
+      animateVariantWrappers(current, next, transition);
+    }
 
     Flip.from(state, {
       targets: [...current.querySelectorAll('[data-flip-id]'), ...next.querySelectorAll('[data-flip-id]')],

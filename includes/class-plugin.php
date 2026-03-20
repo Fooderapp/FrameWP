@@ -2,6 +2,18 @@
 defined( 'ABSPATH' ) || exit;
 
 class FrameBuilder_Plugin {
+	/** @var array<int,array{html:string,css:string}> */
+	private static array $frontend_render_cache = [];
+
+	private static function asset_version( string $absolute_path ): string {
+		if ( file_exists( $absolute_path ) ) {
+			$mtime = filemtime( $absolute_path );
+			if ( false !== $mtime ) {
+				return FB_VERSION . '.' . (string) $mtime;
+			}
+		}
+		return FB_VERSION;
+	}
 
 	public static function init() {
 		add_action( 'admin_menu',             [ __CLASS__, 'add_menu' ] );
@@ -135,13 +147,15 @@ class FrameBuilder_Plugin {
 
 		$assets_dir = FB_DIR . 'assets/';
 		$assets_url = FB_URL . 'assets/';
+		$builder_css_version = self::asset_version( $assets_dir . 'builder.css' );
+		$builder_js_version = self::asset_version( $assets_dir . 'builder.js' );
 
 		if ( file_exists( $assets_dir . 'builder.css' ) ) {
-			wp_enqueue_style( 'framebuilder', $assets_url . 'builder.css', [], FB_VERSION );
+			wp_enqueue_style( 'framebuilder', $assets_url . 'builder.css', [], $builder_css_version );
 		}
 
 		if ( file_exists( $assets_dir . 'builder.js' ) ) {
-			wp_enqueue_script( 'framebuilder', $assets_url . 'builder.js', [], FB_VERSION, true );
+			wp_enqueue_script( 'framebuilder', $assets_url . 'builder.js', [], $builder_js_version, true );
 			wp_script_add_data( 'framebuilder', 'type', 'module' );
 		}
 
@@ -246,19 +260,57 @@ class FrameBuilder_Plugin {
 
 	// ── Frontend: inject published CSS + HTML ─────────────────
 
+	private static function get_frontend_render_assets( int $post_id ): ?array {
+		if ( $post_id <= 0 ) {
+			return null;
+		}
+
+		if ( isset( self::$frontend_render_cache[ $post_id ] ) ) {
+			return self::$frontend_render_cache[ $post_id ];
+		}
+
+		$layout_raw = get_post_meta( $post_id, '_fb_layout', true );
+		if ( is_string( $layout_raw ) && '' !== trim( $layout_raw ) ) {
+			$layout = json_decode( wp_unslash( $layout_raw ), true );
+			if ( is_array( $layout ) ) {
+				$exporter = new FrameBuilder_Exporter( $layout );
+				self::$frontend_render_cache[ $post_id ] = [
+					'html' => $exporter->generate_html(),
+					'css'  => $exporter->generate_css(),
+				];
+				return self::$frontend_render_cache[ $post_id ];
+			}
+		}
+
+		$html = get_post_meta( $post_id, '_fb_published_html', true );
+		$css  = get_post_meta( $post_id, '_fb_published_css', true );
+		if ( ! is_string( $html ) || '' === trim( $html ) ) {
+			return null;
+		}
+
+		self::$frontend_render_cache[ $post_id ] = [
+			'html' => $html,
+			'css'  => is_string( $css ) ? $css : '',
+		];
+		return self::$frontend_render_cache[ $post_id ];
+	}
+
 	public static function enqueue_frontend() {
 		if ( ! is_singular() ) return;
 		global $post;
-		$css = get_post_meta( $post->ID, '_fb_published_css', true );
-		if ( ! $css ) return;
+		$assets = self::get_frontend_render_assets( (int) $post->ID );
+		$css = is_array( $assets ) ? ( $assets['css'] ?? '' ) : '';
+		if ( ! is_string( $css ) || '' === trim( $css ) ) return;
 
 		$assets_url = FB_URL . 'assets/';
 		$assets_dir = FB_DIR . 'assets/';
+		$gsap_version = self::asset_version( $assets_dir . 'gsap.min.js' );
+		$flip_version = self::asset_version( $assets_dir . 'Flip.min.js' );
 		if ( file_exists( $assets_dir . 'gsap.min.js' ) ) {
-			wp_enqueue_script( 'framebuilder-gsap', $assets_url . 'gsap.min.js', [], FB_VERSION, false );
+			wp_enqueue_script( 'framebuilder-gsap', $assets_url . 'gsap.min.js', [], $gsap_version, false );
 		}
 		if ( file_exists( $assets_dir . 'Flip.min.js' ) ) {
-			wp_enqueue_script( 'framebuilder-gsap-flip', $assets_url . 'Flip.min.js', [ 'framebuilder-gsap' ], FB_VERSION, false );
+			wp_enqueue_script( 'framebuilder-gsap-flip', $assets_url . 'Flip.min.js', [ 'framebuilder-gsap' ], $flip_version, false );
 		}
 
 		// Register a dedicated handle so inline style is always output,
@@ -276,7 +328,7 @@ class FrameBuilder_Plugin {
 	public static function dequeue_canvas_scripts() {
 		if ( ! is_singular() ) return;
 		$post_id = get_the_ID();
-		if ( ! $post_id || ! get_post_meta( $post_id, '_fb_published_html', true ) ) return;
+		if ( ! $post_id || ! self::get_frontend_render_assets( (int) $post_id ) ) return;
 		// Deregister completely so no downstream re-enqueueing can restore them.
 		wp_deregister_script( 'heartbeat' );
 		wp_deregister_script( 'svg-painter' );
@@ -300,9 +352,9 @@ class FrameBuilder_Plugin {
 			return $content;
 		}
 		global $post;
-		$built = get_post_meta( $post->ID, '_fb_published_html', true );
-		if ( $built ) {
-			return $built;
+		$assets = self::get_frontend_render_assets( (int) $post->ID );
+		if ( is_array( $assets ) && ! empty( $assets['html'] ) ) {
+			return $assets['html'];
 		}
 		return $content;
 	}
@@ -317,8 +369,8 @@ class FrameBuilder_Plugin {
 			return $template;
 		}
 		global $post;
-		$html = get_post_meta( $post->ID, '_fb_published_html', true );
-		if ( ! $html ) {
+		$assets = self::get_frontend_render_assets( (int) $post->ID );
+		if ( ! is_array( $assets ) || empty( $assets['html'] ) ) {
 			return $template;
 		}
 		$canvas = FB_DIR . 'templates/canvas.php';

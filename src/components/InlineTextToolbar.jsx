@@ -10,6 +10,15 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function toolbarStyleChanged(current, next) {
+  if (current === next) return false;
+  if (!current || !next) return current !== next;
+  return current.position !== next.position
+    || current.left !== next.left
+    || current.top !== next.top
+    || current.zIndex !== next.zIndex;
+}
+
 function ToolbarButton({ active = false, title, children, onClick }) {
   return (
     <button
@@ -50,7 +59,7 @@ export default function InlineTextToolbar({
 
   useLayoutEffect(() => {
     if (!anchorRect) {
-      setToolbarStyle(null);
+      setToolbarStyle((current) => (current == null ? current : null));
       return undefined;
     }
 
@@ -67,12 +76,13 @@ export default function InlineTextToolbar({
         ? anchorRect.top - toolbarHeight - offset
         : clamp(anchorRect.top + anchorRect.height + offset, viewportPadding, Math.max(viewportPadding, window.innerHeight - toolbarHeight - viewportPadding));
 
-      setToolbarStyle({
+      const nextStyle = {
         position: 'fixed',
         left,
         top,
         zIndex: 120300,
-      });
+      };
+      setToolbarStyle((current) => (toolbarStyleChanged(current, nextStyle) ? nextStyle : current));
     };
 
     updatePosition();

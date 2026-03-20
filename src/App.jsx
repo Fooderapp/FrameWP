@@ -29,8 +29,12 @@ export default function App() {
   const currentPageId = useEditorStore(s => s.currentPageId);
   const breakpointDefs = useEditorStore(s => s.breakpointDefs);
   const activeSurface = useEditorStore(s => s.activeSurface);
-  const componentEditor = useEditorStore(s => s.componentEditor);
   const components = useEditorStore(s => s.components);
+  const componentEditorComponentId = useEditorStore(s => s.componentEditor.componentId);
+  const componentEditorActiveVariantId = useEditorStore(s => s.componentEditor.activeVariantId);
+  const componentEditorVariantCount = useEditorStore(s => s.componentEditor.variants?.length ?? 0);
+  const componentEditorPageElementCount = useEditorStore(s => s.componentEditor.page?.elements?.length ?? 0);
+  const componentHistoryIndex = useEditorStore(s => s.componentHistoryIndex);
   const variablesModalOpen = useEditorStore(s => s.variablesModalOpen);
   const flowEditorState = useEditorStore(s => s.flowEditorState);
   const iconLibraryModal = useEditorStore(s => s.iconLibraryModal);
@@ -39,7 +43,7 @@ export default function App() {
   const getAllElements = useEditorStore(s => s.getAllElements);
   const activeCanvasTool = useEditorStore(s => s.activeCanvasTool);
   const activeCommentId = useEditorStore(s => s.activeCommentId);
-  const [leftWidth, setLeftWidth] = useState(240);
+  const [leftWidth, setLeftWidth] = useState(244);
   const [rightWidth, setRightWidth] = useState(312);
   const resizeStateRef = useRef(null);
   const autoSaveReadyRef = useRef(false);
@@ -63,7 +67,15 @@ export default function App() {
 
   useEffect(() => {
     repairComponentEditorState();
-  }, [repairComponentEditorState, activeSurface, componentEditor, components]);
+  }, [
+    repairComponentEditorState,
+    activeSurface,
+    componentEditorOpen,
+    componentEditorComponentId,
+    componentEditorActiveVariantId,
+    componentEditorVariantCount,
+    components,
+  ]);
 
   useEffect(() => () => {
     if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
@@ -121,18 +133,28 @@ export default function App() {
     return () => {
       if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
     };
-  }, [saveLayout, documentLock.isLockedByOther, pages, currentPageId, breakpointDefs, activeSurface, componentEditor, components]);
+  }, [
+    saveLayout,
+    documentLock.isLockedByOther,
+    pages,
+    currentPageId,
+    breakpointDefs,
+    activeSurface,
+    componentEditorOpen,
+    componentEditorComponentId,
+    componentHistoryIndex,
+  ]);
 
   useEffect(() => {
     const handlePointerMove = (event) => {
       const state = resizeStateRef.current;
       if (!state) return;
       if (state.side === 'left') {
-        const nextWidth = Math.min(420, Math.max(180, event.clientX - state.containerLeft));
+        const nextWidth = Math.min(320, Math.max(220, event.clientX - state.containerLeft));
         setLeftWidth(nextWidth);
         return;
       }
-      const nextWidth = Math.min(420, Math.max(260, state.containerRight - event.clientX));
+      const nextWidth = Math.min(360, Math.max(280, state.containerRight - event.clientX));
       setRightWidth(nextWidth);
     };
 

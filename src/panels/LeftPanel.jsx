@@ -13,6 +13,9 @@ export default function LeftPanel() {
 
   return (
     <aside className="fb-left">
+      <div className="fb-left__head">
+        <span className="fb-left__label">Navigate</span>
+      </div>
       <div className="fb-tabs">
         <IconTab active={effectiveTab === 'layers'} title="Layers" icon={UIIcons.layers} onClick={() => setTab('layers')} />
         {showComponentsTab ? <IconTab active={effectiveTab === 'components'} title="Components" icon={UIIcons.component} onClick={() => setTab('components')} /> : null}

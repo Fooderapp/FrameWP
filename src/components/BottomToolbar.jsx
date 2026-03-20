@@ -36,7 +36,7 @@ function ToolButton({ active = false, icon, title, openable = false, badge = nul
   );
 }
 
-function ShapePickerGrid({ onPick, onDragStart }) {
+function ShapePickerGrid({ onPick, onDragStart, onDragEnd }) {
   const activeCanvasTool = useEditorStore((state) => state.activeCanvasTool);
 
   return (
@@ -49,6 +49,7 @@ function ShapePickerGrid({ onPick, onDragStart }) {
             className={`fb-element-card${active ? ' fb-element-card--active' : ''}`}
             draggable
             onDragStart={(event) => onDragStart(event, option.type)}
+            onDragEnd={() => onDragEnd?.()}
             onClick={() => onPick(option.type)}
             title={option.label}
           >
@@ -90,9 +91,11 @@ export default function BottomToolbar() {
 
   const handleShapeDragStart = (event, type) => {
     setPendingDraw(null);
+    event.dataTransfer.effectAllowed = 'copy';
     event.dataTransfer.setData('fb-element-type', type === 'pen' ? 'path' : type);
-    setOpenMenu(null);
   };
+
+  const handleDragEnd = () => setOpenMenu(null);
 
   return (
     <div className="fb-bottom-toolbar-wrap">
@@ -118,7 +121,8 @@ export default function BottomToolbar() {
           {openMenu === 'elements' ? (
             <div className="fb-bottom-toolbar__modal">
               <div className="fb-bottom-toolbar__modal-title">Elements</div>
-              <ElementPickerGrid compact onItemChosen={() => setOpenMenu(null)} onItemDragStart={() => setOpenMenu(null)} />
+              <div className="fb-bottom-toolbar__modal-hint">Click to draw or drag directly onto the canvas.</div>
+              <ElementPickerGrid compact onItemChosen={() => setOpenMenu(null)} onItemDragEnd={handleDragEnd} />
             </div>
           ) : null}
         </div>
@@ -134,7 +138,8 @@ export default function BottomToolbar() {
           {openMenu === 'shapes' ? (
             <div className="fb-bottom-toolbar__modal">
               <div className="fb-bottom-toolbar__modal-title">Shapes</div>
-              <ShapePickerGrid onPick={handleShapePick} onDragStart={handleShapeDragStart} />
+              <div className="fb-bottom-toolbar__modal-hint">Draw with one click or drag to place a default shape.</div>
+              <ShapePickerGrid onPick={handleShapePick} onDragStart={handleShapeDragStart} onDragEnd={handleDragEnd} />
             </div>
           ) : null}
         </div>

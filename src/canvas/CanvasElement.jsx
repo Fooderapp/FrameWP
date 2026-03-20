@@ -6,6 +6,27 @@ import { sanitizeSvgMarkup } from '../components/iconLibrary';
 import { getResolvedRichTextHtml, plainTextToRichTextHtml, richTextHtmlToPlainText, sanitizeRichTextHtml } from '../components/richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from '../components/videoUtils';
 
+function rectStateChanged(current, next) {
+  if (current === next) return false;
+  if (!current || !next) return current !== next;
+  return current.left !== next.left
+    || current.top !== next.top
+    || current.width !== next.width
+    || current.height !== next.height;
+}
+
+function selectionStyleStateChanged(current, next) {
+  if (current === next) return false;
+  if (!current || !next) return current !== next;
+  return current.bold !== next.bold
+    || current.italic !== next.italic
+    || current.underline !== next.underline
+    || current.fontSize !== next.fontSize
+    || current.fontWeight !== next.fontWeight
+    || current.color !== next.color
+    || current.fontFamily !== next.fontFamily;
+}
+
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
   return typeof value === 'string' ? value.trim() : '';
@@ -154,7 +175,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const elementRef = useRef(null);
   const textEditorRef = useRef(null);
   const [isEditingText, setIsEditingText] = useState(false);
-  const [draftText, setDraftText] = useState('');
   const [toolbarRect, setToolbarRect] = useState(null);
   const [textSelectionStyles, setTextSelectionStyles] = useState({
     bold: false,
@@ -170,6 +190,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const expandedSelectionRangeRef = useRef(null);
   const expandedSelectionOffsetsRef = useRef(null);
   const toolbarInteractingRef = useRef(false);
+  const selectionSyncFrameRef = useRef(0);
   const inlineEditorInteractionRef = useRef({
     pointerDownInsideUi: false,
     suppressBlurUntil: 0,
@@ -198,7 +219,12 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const setComponentEditorActiveVariant = useEditorStore(s => s.setComponentEditorActiveVariant);
   const viewport               = useEditorStore(s => s.viewport);
   const animationEditor        = useEditorStore(s => s.animationEditor);
-  const currentPage            = useEditorStore(s => s.pages.find((page) => page.id === s.currentPageId) ?? null);
+  const currentPage            = useEditorStore((s) => {
+    if (s.activeSurface === 'component' && s.componentEditor?.isOpen) {
+      return s.componentEditor.page ?? null;
+    }
+    return s.pages.find((page) => page.id === s.currentPageId) ?? null;
+  });
   const globalVariables        = useEditorStore(s => s.globalVariables);
   const pageVariables          = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
   const children               = el?.children?.length
@@ -347,13 +373,16 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     if (!node || !selection) return;
     let anchorNode = selection.anchorNode;
     if (!anchorNode || !node.contains(anchorNode)) {
-      setTextSelectionStyles((current) => ({
-        ...current,
-        fontSize: styles?.fontSize ?? 42,
-        fontWeight: `${styles?.fontWeight ?? 400}`,
-        color: styles?.color ?? '#000000',
-        fontFamily: fallbackFontFamily,
-      }));
+      setTextSelectionStyles((current) => {
+        const nextStyles = {
+          ...current,
+          fontSize: styles?.fontSize ?? 42,
+          fontWeight: `${styles?.fontWeight ?? 400}`,
+          color: styles?.color ?? '#000000',
+          fontFamily: fallbackFontFamily,
+        };
+        return selectionStyleStateChanged(current, nextStyles) ? nextStyles : current;
+      });
       return;
     }
     if (anchorNode.nodeType === Node.TEXT_NODE) anchorNode = anchorNode.parentElement;
@@ -362,14 +391,26 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     const nextColor = colorMatch
       ? `#${colorMatch.slice(1, 4).map((channel) => Number(channel).toString(16).padStart(2, '0')).join('')}`
       : (styles?.color ?? '#000000');
-    setTextSelectionStyles({
-      bold: typeof document.queryCommandState === 'function' ? document.queryCommandState('bold') : parseInt(computed.fontWeight, 10) >= 600,
-      italic: typeof document.queryCommandState === 'function' ? document.queryCommandState('italic') : computed.fontStyle === 'italic',
-      underline: typeof document.queryCommandState === 'function' ? document.queryCommandState('underline') : computed.textDecorationLine.includes('underline'),
-      fontSize: Math.round(parseFloat(computed.fontSize) || styles?.fontSize || 42),
-      fontWeight: `${computed.fontWeight || styles?.fontWeight || 400}`,
-      color: nextColor,
-      fontFamily: normalizeFontFamilySelection(computed.fontFamily, fallbackFontFamily),
+    setTextSelectionStyles((current) => {
+      const nextStyles = {
+        bold: typeof document.queryCommandState === 'function' ? document.queryCommandState('bold') : parseInt(computed.fontWeight, 10) >= 600,
+        italic: typeof document.queryCommandState === 'function' ? document.queryCommandState('italic') : computed.fontStyle === 'italic',
+        underline: typeof document.queryCommandState === 'function' ? document.queryCommandState('underline') : computed.textDecorationLine.includes('underline'),
+        fontSize: Math.round(parseFloat(computed.fontSize) || styles?.fontSize || 42),
+        fontWeight: `${computed.fontWeight || styles?.fontWeight || 400}`,
+        color: nextColor,
+        fontFamily: normalizeFontFamilySelection(computed.fontFamily, fallbackFontFamily),
+      };
+      return selectionStyleStateChanged(current, nextStyles) ? nextStyles : current;
+    });
+  };
+
+  const scheduleSelectionSync = () => {
+    if (selectionSyncFrameRef.current) return;
+    selectionSyncFrameRef.current = window.requestAnimationFrame(() => {
+      selectionSyncFrameRef.current = 0;
+      captureTextSelection();
+      syncSelectionStyles();
     });
   };
 
@@ -501,16 +542,16 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   const syncTextDraftFromDom = (sourceHtml) => {
     if (el?.type !== 'text') {
+      const fallbackText = syncedTextDraftRef.current.text || 'Text';
       return {
-        nextText: draftText || 'Text',
-        nextRichTextHtml: plainTextToRichTextHtml(draftText || 'Text'),
+        nextText: fallbackText,
+        nextRichTextHtml: plainTextToRichTextHtml(fallbackText),
       };
     }
     const nextSourceHtml = sourceHtml ?? textEditorRef.current?.innerHTML ?? '';
     const derivedPlainText = richTextHtmlToPlainText(nextSourceHtml).trim();
     const nextRichTextHtml = sanitizeRichTextHtml(nextSourceHtml) || plainTextToRichTextHtml(derivedPlainText || 'Text');
     const nextText = richTextHtmlToPlainText(nextRichTextHtml) || 'Text';
-    setDraftText(nextText);
     if (
       nextText !== syncedTextDraftRef.current.text
       || nextRichTextHtml !== syncedTextDraftRef.current.richTextHtml
@@ -663,8 +704,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   useEffect(() => {
     if (!el || el.type !== 'text') return;
-    if (!isEditingText) setDraftText(resolved?.text || 'Text');
-  }, [el?.type, isEditingText, resolved?.text]);
+    if (isEditingText) return;
+    const nextText = resolved?.text || 'Text';
+    const nextRichTextHtml = resolvedRichTextHtml || plainTextToRichTextHtml(nextText);
+    syncedTextDraftRef.current = { text: nextText, richTextHtml: nextRichTextHtml };
+  }, [el?.type, isEditingText, resolved?.text, resolvedRichTextHtml]);
 
   useEffect(() => {
     if (!el || !isEditingText || el.type !== 'text') return;
@@ -674,7 +718,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     const initialRichTextHtml = resolvedRichTextHtml || plainTextToRichTextHtml(initialText);
     textEditInitialRef.current = { text: initialText, richTextHtml: initialRichTextHtml };
     syncedTextDraftRef.current = { text: initialText, richTextHtml: initialRichTextHtml };
-    setDraftText(initialText);
     node.innerHTML = initialRichTextHtml;
     node.focus({ preventScroll: true });
     const selection = window.getSelection();
@@ -704,11 +747,14 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       if ((toolbarInteractingRef.current || fontPreviewSnapshotRef.current) && !isSelectionInsideNode(editorNode, liveSelection)) {
         return;
       }
-      captureTextSelection();
-      syncSelectionStyles();
+      scheduleSelectionSync();
     };
     document.addEventListener('selectionchange', handleSelectionChange);
     return () => {
+      if (selectionSyncFrameRef.current) {
+        window.cancelAnimationFrame(selectionSyncFrameRef.current);
+        selectionSyncFrameRef.current = 0;
+      }
       fontPreviewSnapshotRef.current = null;
       expandedSelectionRangeRef.current = null;
       expandedSelectionOffsetsRef.current = null;
@@ -788,6 +834,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   useEffect(() => {
     if (!el) return undefined;
+    if (isEditingText && el.type === 'text') return undefined;
     if (widthMode !== 'hug' && heightMode !== 'hug') return undefined;
     const node = elementRef.current;
     if (!node || typeof ResizeObserver === 'undefined') return undefined;
@@ -805,7 +852,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     const observer = new ResizeObserver(syncSize);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [bpId, el, heightMode, id, resolved?.height, resolved?.width, resolvedRichTextHtml, styles?.fontFamily, styles?.fontSize, styles?.fontWeight, styles?.letterSpacing, styles?.lineHeight, updateElementLayout, widthMode]);
+  }, [bpId, el, heightMode, id, isEditingText, resolved?.height, resolved?.width, resolvedRichTextHtml, styles?.fontFamily, styles?.fontSize, styles?.fontWeight, styles?.letterSpacing, styles?.lineHeight, updateElementLayout, widthMode]);
 
   if (!el || hidden) return null;
 
@@ -880,7 +927,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         e.stopPropagation();
         restoreFontPreviewSnapshot(true);
         const initialState = textEditInitialRef.current;
-        setDraftText(initialState.text);
         syncedTextDraftRef.current = initialState;
         updateElementLayout(id, bpId, { text: initialState.text, richTextHtml: initialState.richTextHtml });
         if (textEditorRef.current) textEditorRef.current.innerHTML = initialState.richTextHtml;
@@ -1174,14 +1220,15 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   useLayoutEffect(() => {
     if (!isEditingText || el?.type !== 'text') {
-      setToolbarRect(null);
+      setToolbarRect((current) => (current == null ? current : null));
       return undefined;
     }
 
     const measure = () => {
       const rect = elementRef.current?.getBoundingClientRect();
       if (!rect) return;
-      setToolbarRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+      const nextRect = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+      setToolbarRect((current) => (rectStateChanged(current, nextRect) ? nextRect : current));
     };
 
     measure();
@@ -1504,8 +1551,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
             }}
             onInput={(e) => {
               syncTextDraftFromDom(e.currentTarget.innerHTML ?? '');
-              captureTextSelection();
-              syncSelectionStyles();
+              scheduleSelectionSync();
             }}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {

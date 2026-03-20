@@ -6,7 +6,7 @@ export const ELEMENT_TYPES = [
   {
     type: 'frame',
     icon: (
-      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" stroke="none">
         <rect x="2" y="2" width="12" height="12" rx="1.5"/>
       </svg>
     ),
@@ -15,10 +15,8 @@ export const ELEMENT_TYPES = [
   {
     type: 'image',
     icon: (
-      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="1" y="2" width="14" height="12" rx="1.5"/>
-        <circle cx="5.5" cy="6.5" r="1.2" fill="currentColor" stroke="none"/>
-        <path d="M1 12l4-3.5 3 2.5 2.5-2 4.5 4"/>
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+        <path d="M2.5 2h11A1.5 1.5 0 0 1 15 3.5v9A1.5 1.5 0 0 1 13.5 14h-11A1.5 1.5 0 0 1 1 12.5v-9A1.5 1.5 0 0 1 2.5 2Zm.3 10h10.4L10 8.5 8 10.6 5.6 8.2 2.8 12ZM5.5 5a1.2 1.2 0 1 0 0 2.4A1.2 1.2 0 0 0 5.5 5Z"/>
       </svg>
     ),
     label: 'Image',
@@ -26,9 +24,8 @@ export const ELEMENT_TYPES = [
   {
     type: 'video',
     icon: (
-      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="1.5" y="2" width="13" height="12" rx="1.5"/>
-        <path d="M6 5.5v5l4-2.5-4-2.5z" fill="currentColor" stroke="none"/>
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+        <path d="M3 2h9.5A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12.5v-9A1.5 1.5 0 0 1 3 2Zm3 2.7v6.6L11.2 8 6 4.7Z"/>
       </svg>
     ),
     label: 'Video',
@@ -36,14 +33,8 @@ export const ELEMENT_TYPES = [
   {
     type: 'scroll-sequence',
     icon: (
-      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="1.5" y="2" width="13" height="11" rx="1.8"/>
-        <path d="M4 5.5h5" />
-        <path d="M4 8h8" />
-        <path d="M4 10.5h4" />
-        <path d="M11.5 4.75v5.5" />
-        <path d="M10 6.25l1.5-1.5 1.5 1.5" />
-        <path d="M10 8.75l1.5 1.5 1.5-1.5" />
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+        <path d="M3 2h10a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 13 13H3A1.5 1.5 0 0 1 1.5 11.5v-8A1.5 1.5 0 0 1 3 2Zm2 3h4v1H5V5Zm0 2.5h5.5v1H5v-1Zm0 2.5h3v1H5v-1Zm7-4.5-.9.9-.9-.9-.7.7L11.25 8l1.65-1.8-.7-.7Zm0 5 .9-.9.7.7L11.25 12l-1.65-1.8.7-.7.9.9.8-.9.7.7-.8.9Z"/>
       </svg>
     ),
     label: 'Scroll Sequence',
@@ -51,10 +42,8 @@ export const ELEMENT_TYPES = [
   {
     type: 'text',
     icon: (
-      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 3h10" />
-        <path d="M8 3v10" />
-        <path d="M5.5 13h5" />
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" stroke="none">
+        <path d="M3 3h10v2H9v7h2.5v1.5h-7V12H7V5H3V3Z" />
       </svg>
     ),
     label: 'Text',
@@ -68,14 +57,15 @@ export const ELEMENT_TYPES = [
   },
 ];
 
-export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null, compact = false }) {
+export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null, onItemDragEnd = null, compact = false }) {
   const pendingDraw = useEditorStore(s => s.pendingDraw);
   const setPendingDraw = useEditorStore(s => s.setPendingDraw);
 
   const handleDragStart = (e, type) => {
     setPendingDraw(null);
+    e.dataTransfer.effectAllowed = 'copy';
     e.dataTransfer.setData('fb-element-type', type);
-    onItemDragStart?.(type);
+    onItemDragStart?.(e, type);
   };
 
   const handleClick = (type) => {
@@ -92,6 +82,7 @@ export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null,
           className={`fb-element-card${pendingDraw === type ? ' fb-element-card--active' : ''}`}
           draggable
           onDragStart={(e) => handleDragStart(e, type)}
+          onDragEnd={() => onItemDragEnd?.(type)}
           onClick={() => handleClick(type)}
           title={pendingDraw === type ? `Click on canvas to draw ${label} — Esc to cancel` : `Click to draw ${label}, or drag to place`}
         >
