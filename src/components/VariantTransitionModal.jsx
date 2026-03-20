@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
+const TRANSITION_CLIPBOARD_KEY = 'fb:transition-clipboard';
+
 const EASE_OPTIONS = [
   { value: 'easeInOut', label: 'Ease In Out', bezier: { x1: 0.44, y1: 0, x2: 0.56, y2: 1 } },
   { value: 'easeOut', label: 'Ease Out', bezier: { x1: 0.22, y1: 1, x2: 0.36, y2: 1 } },
@@ -231,9 +233,33 @@ function getPreviewTiming(transition) {
   };
 }
 
+function readStoredTransitionClipboard() {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(TRANSITION_CLIPBOARD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.transition) return null;
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeStoredTransitionClipboard(payload) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(TRANSITION_CLIPBOARD_KEY, JSON.stringify(payload));
+  } catch (error) {
+    return;
+  }
+}
+
 export default function VariantTransitionModal({ sourceName, targetName, initialTransition, initialDelay = 0, onCancel, onSave }) {
   const [transition, setTransition] = useState(() => normalizeTransition(initialTransition));
   const [delay, setDelay] = useState(() => clamp(initialDelay, 0, 0, 60));
+  const [contextMenu, setContextMenu] = useState(null);
+  const [hasStoredClipboard, setHasStoredClipboard] = useState(() => !!readStoredTransitionClipboard());
   const previewDotRef = useRef(null);
 
   useEffect(() => {
@@ -247,6 +273,20 @@ export default function VariantTransitionModal({ sourceName, targetName, initial
     const animation = previewDot.animate(getPreviewKeyframes(transition), getPreviewTiming(transition));
     return () => animation.cancel();
   }, [transition]);
+
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+    const handleDismiss = () => setContextMenu(null);
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('pointerdown', handleDismiss);
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('pointerdown', handleDismiss);
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu]);
 
   const bezierLabel = useMemo(() => formatBezier(transition.bezier), [transition.bezier]);
   const curvePath = useMemo(() => getCurvePath(transition), [transition]);
@@ -265,6 +305,53 @@ export default function VariantTransitionModal({ sourceName, targetName, initial
       easePreset: option.value,
       bezier: option.bezier ? { ...option.bezier } : current.bezier,
     }));
+  };
+
+  const handleContextMenu = (event) => {
+    event.preventDefault();
+    setHasStoredClipboard(!!readStoredTransitionClipboard());
+    setContextMenu({
+      x: Math.min(event.clientX, Math.max(12, window.innerWidth - 188)),
+      y: Math.min(event.clientY, Math.max(12, window.innerHeight - 112)),
+    });
+  };
+
+  const handleCopyTransition = async () => {
+    const payload = {
+      transition: normalizeTransition(transition),
+      delay: clamp(delay, 0, 0, 60),
+    };
+    writeStoredTransitionClipboard(payload);
+    setHasStoredClipboard(true);
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(payload));
+      } catch (error) {
+        // Ignore clipboard permission failures and keep local storage copy.
+      }
+    }
+    setContextMenu(null);
+  };
+
+  const handlePasteTransition = async () => {
+    let payload = readStoredTransitionClipboard();
+    if (!payload && navigator.clipboard?.readText) {
+      try {
+        const raw = await navigator.clipboard.readText();
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && parsed.transition) payload = parsed;
+      } catch (error) {
+        payload = null;
+      }
+    }
+    if (!payload) {
+      setContextMenu(null);
+      return;
+    }
+    setTransition(normalizeTransition(payload.transition));
+    setDelay(clamp(payload.delay, delay, 0, 60));
+    setHasStoredClipboard(true);
+    setContextMenu(null);
   };
 
   const startHandleDrag = (handle, event) => {
@@ -297,7 +384,7 @@ export default function VariantTransitionModal({ sourceName, targetName, initial
 
   return (
     <div className="fb-overlay-modal" onMouseDown={onCancel}>
-      <div className="fb-overlay-modal__card fb-variant-transition-modal" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="fb-overlay-modal__card fb-variant-transition-modal" onMouseDown={(e) => e.stopPropagation()} onContextMenu={handleContextMenu}>
         <button type="button" className="fb-variant-transition-modal__close" onClick={onCancel} aria-label="Close transition modal">
           ×
         </button>
@@ -462,6 +549,12 @@ export default function VariantTransitionModal({ sourceName, targetName, initial
           </button>
         </div>
       </div>
+      {contextMenu ? (
+        <div className="fb-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+          <button type="button" className="fb-context-menu__item" onClick={handleCopyTransition}>Copy transition</button>
+          <button type="button" className="fb-context-menu__item" onClick={handlePasteTransition} disabled={!hasStoredClipboard}>Paste transition</button>
+        </div>
+      ) : null}
     </div>
   );
 }

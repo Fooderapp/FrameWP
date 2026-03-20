@@ -12,7 +12,6 @@ export default function TopBar() {
   const bpDefs         = useEditorStore(s => s.breakpointDefs);
   const documentLock   = useEditorStore(s => s.documentLock);
   const setVariablesModalOpen = useEditorStore(s => s.setVariablesModalOpen);
-
   const pct = Math.round(viewport.scale * 100);
   const postId = parseInt(window.fbData?.postId, 10) || 0;
   const backToWordPressUrl = postId > 0
@@ -41,10 +40,9 @@ export default function TopBar() {
     setViewport({ x: (width - worldW) / 2, y: (height - worldH) / 2 + 20, scale });
   };
 
-  const statusLabel = saveStatus === 'saving' ? 'Auto-saving…'
-    : saveStatus === 'ok'       ? 'All changes saved'
-    : saveStatus === 'error'    ? 'Auto-save failed'
-    : 'Auto-save on';
+  const statusLabel = saveStatus === 'saving' ? 'Saving…'
+    : saveStatus === 'error'    ? 'Save failed'
+    : null;
   const statusClass = saveStatus === 'ok' ? 'fb-save-status--ok'
     : saveStatus === 'error' ? 'fb-save-status--err'
     : '';
@@ -71,11 +69,7 @@ export default function TopBar() {
           <span>WordPress</span>
         </button>
         <div className="fb-topbar__project">
-          <div className="fb-topbar__project-stack">
-            <span className="fb-topbar__eyebrow">Builder</span>
-            <span className="fb-topbar__brand">FrameBuilder</span>
-          </div>
-          <span className="fb-topbar__project-meta">Canvas editor</span>
+          <span className="fb-topbar__brand">Atom</span>
         </div>
       </div>
 
@@ -105,11 +99,15 @@ export default function TopBar() {
             {lockAvatar ? <img src={lockAvatar} alt="" className="fb-topbar__lock-avatar" /> : null}
             <span>{lockLabel}</span>
           </div>
-          <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span>
+          {statusLabel ? <span className={`fb-save-status ${statusClass}`}>{statusLabel}</span> : null}
         </div>
         <div className="fb-topbar__actions">
-          <IconButton icon={UIIcons.variables} title="Edit variables" className="fb-topbar__action-btn" onClick={() => setVariablesModalOpen(true)} disabled={isReadOnly} />
-          <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-topbar__action-btn fb-topbar__action-btn--primary fb-topbar__publish" onClick={publishLayout} disabled={isReadOnly || saveStatus === 'saving'} />
+          <IconButton icon={UIIcons.variables} title="Variables" className="fb-topbar__action-btn fb-topbar__variables" onClick={() => setVariablesModalOpen(true)} disabled={isReadOnly}>
+            <span className="fb-topbar__publish-label">Variables</span>
+          </IconButton>
+          <IconButton icon={UIIcons.publish} title="Publish layout" className="fb-topbar__action-btn fb-topbar__action-btn--primary fb-topbar__publish" onClick={publishLayout} disabled={isReadOnly || saveStatus === 'saving'}>
+            <span className="fb-topbar__publish-label">Publish</span>
+          </IconButton>
         </div>
       </div>
     </header>

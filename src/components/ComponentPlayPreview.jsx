@@ -381,8 +381,9 @@ function getVariantWrapperTravel(current, next) {
   return Math.min(42, Math.max(14, width * 0.14));
 }
 
-function animateVariantWrappers(current, next, transition) {
+function animateVariantWrappers(current, next, transition, options = {}) {
   if (!gsap || !current || !next) return null;
+  const { crossfadeVariants = true } = options;
   const direction = getVariantWrapperDirection(current, next);
   const travel = getVariantWrapperTravel(current, next);
 
@@ -390,22 +391,27 @@ function animateVariantWrappers(current, next, transition) {
     const spring = getPhysicsSpringConfig(transition);
     const timeline = gsap.timeline({ defaults: { overwrite: true } });
     gsap.set(current, { opacity: 1, x: 0, scaleX: 1, scaleY: 1, transformOrigin: 'top left' });
-    gsap.set(next, { opacity: 0, transformOrigin: 'top left' });
+    gsap.set(next, {
+      opacity: crossfadeVariants ? 0 : 1,
+      transformOrigin: 'top left',
+    });
     timeline.to(current, {
-      opacity: 0,
+      ...(crossfadeVariants ? { opacity: 0 } : null),
       x: travel * 0.22 * direction,
       scaleX: 0.985,
       scaleY: 0.985,
       duration: spring.duration,
       ease: 'none',
-      clearProps: 'opacity,transform',
+      clearProps: crossfadeVariants ? 'opacity,transform' : 'transform',
     }, 0);
-    timeline.to(next, {
-      opacity: 1,
-      duration: spring.duration,
-      ease: 'none',
-      clearProps: 'opacity',
-    }, 0);
+    if (crossfadeVariants) {
+      timeline.to(next, {
+        opacity: 1,
+        duration: spring.duration,
+        ease: 'none',
+        clearProps: 'opacity',
+      }, 0);
+    }
     addPhysicsSpringSequence(timeline, next, {
       x: -travel * 0.82 * direction,
       y: 0,
@@ -420,16 +426,21 @@ function animateVariantWrappers(current, next, transition) {
     const profile = getRealisticProfile(transition);
     const timeline = gsap.timeline({ defaults: { overwrite: true } });
     gsap.set(current, { opacity: 1, x: 0, scale: 1, transformOrigin: 'top left' });
-    gsap.set(next, { opacity: 0, x: -travel * 0.82 * direction, scale: 0.94, transformOrigin: 'top left' });
+    gsap.set(next, {
+      opacity: crossfadeVariants ? 0 : 1,
+      x: -travel * 0.82 * direction,
+      scale: 0.94,
+      transformOrigin: 'top left',
+    });
     timeline.to(current, {
-      opacity: 0,
+      ...(crossfadeVariants ? { opacity: 0 } : null),
       x: travel * 0.2 * direction,
       scale: 0.985,
       duration: profile.pushDuration,
       ease: profile.pushEase,
     }, 0);
     timeline.to(next, {
-      opacity: 1,
+      ...(crossfadeVariants ? { opacity: 1 } : null),
       x: travel * profile.travelOvershoot * direction,
       scale: 1 + profile.scaleOvershoot,
       duration: profile.pushDuration,
@@ -440,7 +451,7 @@ function animateVariantWrappers(current, next, transition) {
       scale: 1,
       duration: profile.settleDuration,
       ease: profile.settleEase,
-      clearProps: 'opacity,transform',
+      clearProps: crossfadeVariants ? 'opacity,transform' : 'transform',
     }, profile.pushDuration);
     return timeline;
   }
@@ -632,6 +643,45 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const positionType = resolved?.positionType ?? 'absolute';
   const isRelative = positionType === 'relative';
   const isSticky = positionType === 'sticky';
+  const effectiveFlowPosition = isRelative || isSticky;
+  const parentElement = element.parentId ? indexById.get(element.parentId) ?? null : null;
+  const parentResolved = parentElement ? resolveElement(parentElement, bpId) : null;
+  const parentDir = (() => {
+    if (!effectiveFlowPosition) return 'block';
+    if (parentResolved?.styles?.display === 'flex') return parentResolved.styles.flexDirection ?? 'row';
+    return 'block';
+  })();
+  const parentCrossAlign = (() => {
+    if (!effectiveFlowPosition) return undefined;
+    if (parentResolved?.styles?.display === 'flex') return parentResolved.styles.alignItems ?? 'stretch';
+    return undefined;
+  })();
+  const wFill = effectiveFlowPosition && widthMode === 'fill';
+  const hFill = effectiveFlowPosition && heightMode === 'fill';
+  const fillW = wFill ? (parentDir === 'row' ? undefined : '100%') : undefined;
+  const fillH = hFill ? (parentDir === 'column' ? undefined : '100%') : undefined;
+  const fillFlexGrow = (wFill && parentDir === 'row') ? (resolved?.widthFr ?? 1)
+    : (hFill && parentDir === 'column') ? (resolved?.heightFr ?? 1)
+    : undefined;
+  const fillFlexBasis = fillFlexGrow != null ? '0%' : undefined;
+  const fillFlexShrink = fillFlexGrow != null ? 1 : undefined;
+  const stickyAlignSelf = isSticky && parentCrossAlign ? parentCrossAlign : undefined;
+  const stickyFlowMargins = (() => {
+    if (!isSticky || !parentCrossAlign) return null;
+    if (parentDir === 'column') {
+      if (parentCrossAlign === 'center') return { marginLeft: 'auto', marginRight: 'auto' };
+      if (parentCrossAlign === 'flex-end') return { marginLeft: 'auto', marginRight: 0 };
+      if (parentCrossAlign === 'flex-start') return { marginLeft: 0, marginRight: 'auto' };
+    }
+    if (parentDir === 'row') {
+      if (parentCrossAlign === 'center') return { marginTop: 'auto', marginBottom: 'auto' };
+      if (parentCrossAlign === 'flex-end') return { marginTop: 'auto', marginBottom: 0 };
+      if (parentCrossAlign === 'flex-start') return { marginTop: 0, marginBottom: 'auto' };
+    }
+    return null;
+  })();
+  const flowMinWidth = wFill && parentDir === 'row' && resolved?.minW == null ? 0 : (resolved?.minW ?? undefined);
+  const flowMinHeight = hFill && parentDir === 'column' && resolved?.minH == null ? 0 : (resolved?.minH ?? undefined);
   const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
   const hasGradientFrameStroke = typeof styles?.borderColor === 'string' && styles.borderColor.includes('gradient(');
   const strokeWidth = Math.max(0, parseFloat(styles?.strokeWidth) || 0);
@@ -666,11 +716,16 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     '--fb-sticky-top': isSticky ? `${stickyTop}px` : undefined,
     left: (isRelative || isSticky) ? undefined : resolved?.x ?? 0,
     top: isSticky ? stickyTop : ((isRelative && !isSticky) ? undefined : resolved?.y ?? 0),
-    width: widthMode === 'hug' ? 'fit-content' : widthMode === 'relative' ? `${widthPct}%` : width,
-    height: heightMode === 'hug' ? 'fit-content' : heightMode === 'relative' ? `${heightPct}%` : height,
-    minWidth: resolved?.minW ?? undefined,
+    width: wFill ? fillW : (widthMode === 'hug' ? 'fit-content' : widthMode === 'relative' ? `${widthPct}%` : width),
+    height: hFill ? fillH : (heightMode === 'hug' ? 'fit-content' : heightMode === 'relative' ? `${heightPct}%` : height),
+    flexGrow: fillFlexGrow,
+    flexShrink: fillFlexShrink,
+    flexBasis: fillFlexBasis,
+    alignSelf: stickyAlignSelf,
+    ...(stickyFlowMargins ?? {}),
+    minWidth: effectiveFlowPosition ? flowMinWidth : (resolved?.minW ?? undefined),
     maxWidth: resolved?.maxW ?? undefined,
-    minHeight: resolved?.minH ?? undefined,
+    minHeight: effectiveFlowPosition ? flowMinHeight : (resolved?.minH ?? undefined),
     maxHeight: resolved?.maxH ?? undefined,
     transform: resolved?.rotation ? `rotate(${resolved.rotation}deg)` : undefined,
     backgroundColor,
@@ -911,8 +966,9 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
         ? `elastic.out(1, ${Math.max(0.2, transition.mass * 0.45)})`
         : `back.out(${1 + transition.bounce * 1.2})`)
       : getTransitionEasing(transition);
-    const animatedPairs = prepareAnimatedPairs(collectSharedElementPairs(stage, current, next));
-    const matchedIds = new Set(animatedPairs.map((entry) => entry.pair.nextNode.dataset.fbNodeId).filter(Boolean));
+    const sharedPairs = collectSharedElementPairs(stage, current, next);
+    const animatedPairs = prepareAnimatedPairs(sharedPairs);
+    const matchedIds = new Set(sharedPairs.map((entry) => entry.nextNode.dataset.fbNodeId).filter(Boolean));
     const shouldCrossfadeVariants = animatedPairs.some((entry) => entry.changes.needsCrossfade)
       || collectTopLevelUnmatchedNodes(current, matchedIds).length > 0
       || collectTopLevelUnmatchedNodes(next, matchedIds).length > 0;
@@ -927,9 +983,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
     current.style.pointerEvents = 'none';
     next.style.opacity = shouldCrossfadeVariants ? '0' : '1';
 
-    if (shouldCrossfadeVariants) {
-      animateVariantWrappers(current, next, transition);
-    }
+    animateVariantWrappers(current, next, transition, { crossfadeVariants: shouldCrossfadeVariants });
 
     Flip.from(state, {
       targets: [...current.querySelectorAll('[data-flip-id]'), ...next.querySelectorAll('[data-flip-id]')],

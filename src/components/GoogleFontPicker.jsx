@@ -51,6 +51,20 @@ export default function GoogleFontPicker({
     event.preventDefault();
   };
 
+  const handlePointerDown = (event) => {
+    if (!preserveFocus) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handlePopoverPointerDown = (event) => {
+    const interactiveInput = event.target?.closest('input, textarea, [contenteditable="true"]');
+    if (!interactiveInput) {
+      event.preventDefault();
+    }
+    event.stopPropagation();
+  };
+
   const handlePopoverMouseDown = (event) => {
     event.stopPropagation();
   };
@@ -147,7 +161,7 @@ export default function GoogleFontPicker({
   };
 
   const popoverContent = open ? (
-    <div ref={popoverRef} className="fb-font-picker__popover" data-inline-editor-ui="true" style={portal ? popoverStyle ?? undefined : undefined} onMouseDown={handlePopoverMouseDown}>
+    <div ref={popoverRef} className="fb-font-picker__popover" data-inline-editor-ui="true" style={portal ? popoverStyle ?? undefined : undefined} onPointerDown={handlePopoverPointerDown} onMouseDown={handlePopoverMouseDown}>
       {showSearch ? (
         <input
           className="fb-prop-input fb-font-picker__search"
@@ -166,6 +180,7 @@ export default function GoogleFontPicker({
             key={family}
             type="button"
             className={`fb-font-picker__option${family === value ? ' fb-font-picker__option--active' : ''}`}
+            onPointerDown={handlePointerDown}
             onMouseDown={handlePointerMouseDown}
             onClick={() => {
               ensureGoogleFontLoaded(family, { text: previewText });
@@ -195,6 +210,7 @@ export default function GoogleFontPicker({
         type="button"
         ref={triggerRef}
         className="fb-font-picker__trigger"
+        onPointerDown={handlePointerDown}
         onMouseDown={handlePointerMouseDown}
         onClick={() => setOpen((current) => {
           const next = !current;

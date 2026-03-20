@@ -129,12 +129,15 @@ export default function CommentsPanel() {
                   <span className="fb-comments-panel__thread-avatar-wrap">
                     <CommentAvatar author={comment.author} avatarUrl={comment.avatarUrl} />
                   </span>
+                  {externalReplyCount > 0 ? <span className="fb-comments-panel__thread-badge">{externalReplyCount}</span> : null}
                   <span className="fb-comments-panel__thread-copy">
-                    <strong>{comment.resolved ? 'Resolved' : 'Open'} comment</strong>
+                    <strong>
+                      <span className={`fb-comments-panel__thread-status${comment.resolved ? ' is-resolved' : ''}`} aria-hidden="true" />
+                      {comment.resolved ? 'Resolved' : 'Open'} comment
+                    </strong>
                     <small>{preview}</small>
                   </span>
                   <span className="fb-comments-panel__thread-time-wrap">
-                    {externalReplyCount > 0 ? <span className="fb-comments-panel__reply-badge">{externalReplyCount}</span> : null}
                     <span className="fb-comments-panel__thread-time">{formatTimestamp(comment.updatedAt ?? comment.createdAt)}</span>
                   </span>
                 </button>

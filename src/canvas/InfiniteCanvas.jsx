@@ -8,7 +8,7 @@ import { extractSvgMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
 const SNAP_THRESHOLD_PX = 6;
-const COMMENT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2728%27 height=%2728%27 viewBox=%270 0 28 28%27%3E%3Cpath fill=%27%23f4b400%27 d=%27M6 5h12a4 4 0 0 1 4 4v7a4 4 0 0 1-4 4H11l-5 5v-5H6a4 4 0 0 1-4-4V9a4 4 0 0 1 4-4Z%27/%3E%3Cpath fill=%27none%27 stroke=%27%2319150a%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27 d=%27M6 5h12a4 4 0 0 1 4 4v7a4 4 0 0 1-4 4H11l-5 5v-5H6a4 4 0 0 1-4-4V9a4 4 0 0 1 4-4Z%27/%3E%3Ccircle cx=%2710%27 cy=%2712%27 r=%271.4%27 fill=%27%2319150a%27/%3E%3Ccircle cx=%2714%27 cy=%2712%27 r=%271.4%27 fill=%27%2319150a%27/%3E%3Ccircle cx=%2718%27 cy=%2712%27 r=%271.4%27 fill=%27%2319150a%27/%3E%3C/svg%3E") 6 6, crosshair';
+const COMMENT_CURSOR = "url(\"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M6 4h10a4 4 0 0 1 4 4v8H6a2 2 0 0 0-2 2V6a2 2 0 0 1 2-2Z%27 fill=%27%237BE300%27/%3E%3Cpath d=%27M4 18V8%27 stroke=%27%237BE300%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3C/svg%3E\") 6 6, crosshair";
 const PEN_CLOSE_SNAP_PX = 16;
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
@@ -136,6 +136,23 @@ function getExternalReplyCount(comment, currentUserName) {
     const author = typeof message?.author === 'string' ? message.author.trim() : '';
     return author && author !== currentUserName ? count + 1 : count;
   }, 0);
+}
+
+function clampCommentPositionToArtboard(bp, padding, x, y) {
+  if (!bp) {
+    return {
+      x: Math.max(0, Math.round(Number.isFinite(x) ? x : 0)),
+      y: Math.max(0, Math.round(Number.isFinite(y) ? y : 0)),
+    };
+  }
+
+  const contentWidth = Math.max(0, bp.width - (padding?.left ?? 0) - (padding?.right ?? 0));
+  const contentHeight = Math.max(0, bp.height - (padding?.top ?? 0) - (padding?.bottom ?? 0));
+
+  return {
+    x: Math.max(0, Math.min(contentWidth, Math.round(Number.isFinite(x) ? x : 0))),
+    y: Math.max(0, Math.min(contentHeight, Math.round(Number.isFinite(y) ? y : 0))),
+  };
 }
 
 function CommentAvatar({ author, avatarUrl, className = '' }) {
@@ -682,11 +699,12 @@ function CommentOverlay({ commentDraft, onStartCommentDrag }) {
         const bp = breakpointDefs[comment.bpId];
         if (!bp) return null;
         const pad = resolvePagePadding(page?.padding, comment.bpId);
-        const left = bp.x + (pad?.left ?? 0) + (comment.x ?? 0);
-        const top = bp.y + (pad?.top ?? 0) + (comment.y ?? 0);
+        const position = clampCommentPositionToArtboard(bp, pad, comment.x, comment.y);
+        const left = bp.x + (pad?.left ?? 0) + position.x;
+        const top = bp.y + (pad?.top ?? 0) + position.y;
         const preview = comment.messages?.[comment.messages.length - 1]?.text ?? 'Comment';
         const isActive = comment.id === activeCommentId;
-        const externalReplyCount = getExternalReplyCount(comment, currentUserName);
+        const pinCount = Math.max(1, (comment.messages ?? []).length || getExternalReplyCount(comment, currentUserName));
         return (
           <button
             key={comment.id}
@@ -701,32 +719,39 @@ function CommentOverlay({ commentDraft, onStartCommentDrag }) {
             }}
             title={preview}
           >
-            <span className="fb-comment-pin__dot">
-              <CommentAvatar author={comment.author} avatarUrl={comment.avatarUrl} className="fb-comment-pin__avatar" />
-              {externalReplyCount > 0 ? <span className="fb-comment-pin__badge">{externalReplyCount}</span> : null}
+            <span className="fb-comment-pin__dot fb-comment-pin__dot--count">
+              <span className="fb-comment-pin__count">{pinCount}</span>
             </span>
           </button>
         );
       })}
       {commentDraft ? (
-        <button
-          type="button"
-          className="fb-comment-pin is-draft is-active"
-          style={{
-            left: commentDraft.left,
-            top: commentDraft.top,
-            transform: `translate(-50%, -50%) scale(${1 / Math.max(viewportScale || 1, MIN_SCALE)})`,
-          }}
-          onMouseDown={(event) => {
-            event.stopPropagation();
-            onStartCommentDrag?.(event, commentDraft);
-          }}
-          title="Draft comment"
-        >
-          <span className="fb-comment-pin__dot fb-comment-pin__dot--draft">
-            <span className="fb-comment-pin__plus">+</span>
-          </span>
-        </button>
+        (() => {
+          const bp = breakpointDefs[commentDraft.bpId];
+          if (!bp) return null;
+          const pad = resolvePagePadding(page?.padding, commentDraft.bpId);
+          const position = clampCommentPositionToArtboard(bp, pad, commentDraft.x, commentDraft.y);
+          return (
+            <button
+              type="button"
+              className="fb-comment-pin is-draft is-active"
+              style={{
+                left: bp.x + (pad?.left ?? 0) + position.x,
+                top: bp.y + (pad?.top ?? 0) + position.y,
+                transform: `translate(-50%, -50%) scale(${1 / Math.max(viewportScale || 1, MIN_SCALE)})`,
+              }}
+              onMouseDown={(event) => {
+                event.stopPropagation();
+                onStartCommentDrag?.(event, commentDraft);
+              }}
+              title="Draft comment"
+            >
+              <span className="fb-comment-pin__dot fb-comment-pin__dot--draft">
+                <span className="fb-comment-pin__plus">+</span>
+              </span>
+            </button>
+          );
+        })()
       ) : null}
     </>
   );
@@ -755,8 +780,9 @@ function CommentCanvasCard({ containerRef, viewport, commentDraft, onSubmitDraft
     const bp = breakpointDefs[cardComment.bpId];
     if (!bp) return null;
     const pad = resolvePagePadding(page?.padding, cardComment.bpId);
-    const anchorX = (bp.x + (pad?.left ?? 0) + (cardComment.x ?? 0)) * viewport.scale + viewport.x;
-    const anchorY = (bp.y + (pad?.top ?? 0) + (cardComment.y ?? 0)) * viewport.scale + viewport.y;
+    const position = clampCommentPositionToArtboard(bp, pad, cardComment.x, cardComment.y);
+    const anchorX = (bp.x + (pad?.left ?? 0) + position.x) * viewport.scale + viewport.x;
+    const anchorY = (bp.y + (pad?.top ?? 0) + position.y) * viewport.scale + viewport.y;
     const containerRect = containerRef.current?.getBoundingClientRect();
     const width = 320;
     const minLeft = 12;
@@ -1833,6 +1859,7 @@ export default function InfiniteCanvas() {
   const [gradientDragOverlay, setGradientDragOverlay] = useState(null);
   const [alignmentGuides,  setAlignmentGuides]  = useState([]); // [{ orientation, x?, y?, start, end }]
   const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
+  const [draggingElementBpId, setDraggingElementBpId] = useState(null);
   const [variantRootLayout, setVariantRootLayout] = useState({});
   const [variantConnectionDraft, setVariantConnectionDraft] = useState(null); // { sourceVariantId, clientX, clientY }
   const [variantInteractionModal, setVariantInteractionModal] = useState(null); // { sourceVariantId, targetVariantId, initialInteraction }
@@ -2905,12 +2932,11 @@ export default function InfiniteCanvas() {
       const bp = state.breakpointDefs[session.bpId];
       if (!bp) return;
       const pad = resolvePagePadding(state.getCurrentPage?.()?.padding, session.bpId);
-      const contentWidth = Math.max(0, bp.width - (pad?.left ?? 0) - (pad?.right ?? 0));
-      const contentHeight = Math.max(0, bp.height - (pad?.top ?? 0) - (pad?.bottom ?? 0));
       const dxWorld = (e.clientX - session.startClientX) / Math.max(state.viewport.scale, MIN_SCALE);
       const dyWorld = (e.clientY - session.startClientY) / Math.max(state.viewport.scale, MIN_SCALE);
-      const nextX = Math.max(0, Math.min(contentWidth, Math.round(session.startX + dxWorld)));
-      const nextY = Math.max(0, Math.min(contentHeight, Math.round(session.startY + dyWorld)));
+      const nextPosition = clampCommentPositionToArtboard(bp, pad, session.startX + dxWorld, session.startY + dyWorld);
+      const nextX = nextPosition.x;
+      const nextY = nextPosition.y;
       if (nextX !== session.startX || nextY !== session.startY) session.moved = true;
       if (session.isDraft) {
         setCommentDraft((current) => current ? { ...current, x: nextX, y: nextY, updatedAt: Date.now() } : current);
@@ -3677,6 +3703,7 @@ export default function InfiniteCanvas() {
         setDragHint(null);
       }
       setDraggingElementId(null);
+      setDraggingElementBpId(null);
       if (shouldPushHistory) pushHistory();
       drag.current = null;
       setInteracting(false);
@@ -3736,15 +3763,19 @@ export default function InfiniteCanvas() {
         }
         if (!targetBp) return;
         const pad = resolvePagePadding(state.getCurrentPage()?.padding, targetBp.id);
-        const localX = Math.max(0, Math.round(worldX - targetBp.x - (pad?.left ?? 0)));
-        const localY = Math.max(0, Math.round(worldY - targetBp.y - (pad?.top ?? 0)));
+        const localPosition = clampCommentPositionToArtboard(
+          targetBp,
+          pad,
+          worldX - targetBp.x - (pad?.left ?? 0),
+          worldY - targetBp.y - (pad?.top ?? 0),
+        );
         state.clearActiveComment();
         setCommentDraft({
           id: 'draft-comment',
           isDraft: true,
           bpId: targetBp.id,
-          x: localX,
-          y: localY,
+          x: localPosition.x,
+          y: localPosition.y,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           messages: [],
@@ -3871,8 +3902,9 @@ export default function InfiniteCanvas() {
       grabOffsetWorldY: grabOffsetClientY / scale,
     };
     setDraggingElementId(el.id);
+    setDraggingElementBpId(bpId);
     setInteracting(true);
-  }, [getProjectedWorldPoint, setInteracting, setDraggingElementId]);
+  }, [getProjectedWorldPoint, setInteracting, setDraggingElementBpId, setDraggingElementId]);
   // ── Start artboard drag (called from Artboard header) ───────
   const startArtboardDrag = useCallback((e, bpId) => {
     const bp = useEditorStore.getState().breakpointDefs[bpId];
@@ -4268,8 +4300,9 @@ export default function InfiniteCanvas() {
       grabOffsetWorldY: grabOffsetClientY / scale0,
     };
     setDraggingElementId(dragElementId);
+    setDraggingElementBpId(bpId);
     setInteracting(true);
-  }, [getProjectedWorldPoint, setSelection, setArtboardSel, setInteracting, setDraggingElementId]);
+  }, [getProjectedWorldPoint, setSelection, setArtboardSel, setInteracting, setDraggingElementBpId, setDraggingElementId]);
 
   // ── Start resize (called from child) ──────────────────────
   const startResize = useCallback((e, bpId, element, handle, payload = null) => {
@@ -4526,6 +4559,7 @@ export default function InfiniteCanvas() {
   const activeDragPreview = dragOverlay && drag.current?.type === 'element-drag'
     ? {
         elementId: dragOverlay.elementId,
+        bpId: drag.current?.bpId ?? null,
         dx: dragOverlay.worldX - (drag.current?.previewStartWorldX ?? drag.current?.startWorldX ?? dragOverlay.worldX),
         dy: dragOverlay.worldY - (drag.current?.previewStartWorldY ?? drag.current?.startWorldY ?? dragOverlay.worldY),
       }
@@ -4642,6 +4676,7 @@ export default function InfiniteCanvas() {
             dropTargetId={dropTargetId}
             dragPreview={activeDragPreview}
             draggingElementId={draggingElementId}
+            draggingElementBpId={draggingElementBpId}
             skipNextBoardClickRef={skipNextArtboardClickRef}
           />
         ))}

@@ -11,6 +11,8 @@ export const ELEMENT_TYPES = [
       </svg>
     ),
     label: 'Frame',
+    hint: 'Container for layout and nesting',
+    meta: 'Layout',
   },
   {
     type: 'image',
@@ -20,6 +22,8 @@ export const ELEMENT_TYPES = [
       </svg>
     ),
     label: 'Image',
+    hint: 'Single image block with fills and fit',
+    meta: 'Media',
   },
   {
     type: 'video',
@@ -29,6 +33,8 @@ export const ELEMENT_TYPES = [
       </svg>
     ),
     label: 'Video',
+    hint: 'Embed clips with poster and playback',
+    meta: 'Media',
   },
   {
     type: 'scroll-sequence',
@@ -38,6 +44,8 @@ export const ELEMENT_TYPES = [
       </svg>
     ),
     label: 'Scroll Sequence',
+    hint: 'Frame-by-frame sequence on scroll',
+    meta: 'Interactive',
   },
   {
     type: 'text',
@@ -47,6 +55,8 @@ export const ELEMENT_TYPES = [
       </svg>
     ),
     label: 'Text',
+    hint: 'Rich text, typography, and inline styles',
+    meta: 'Content',
   },
   {
     type: 'icon',
@@ -54,10 +64,12 @@ export const ELEMENT_TYPES = [
       <div style={{ width: 22, height: 22, display: 'grid', placeItems: 'center' }} dangerouslySetInnerHTML={{ __html: getIconPresetMarkup('star') }} />
     ),
     label: 'Icon / SVG',
+    hint: 'Scalable icons and custom SVG marks',
+    meta: 'Vector',
   },
 ];
 
-export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null, onItemDragEnd = null, compact = false }) {
+export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null, onItemDragEnd = null, compact = false, toolbarPalette = false }) {
   const pendingDraw = useEditorStore(s => s.pendingDraw);
   const setPendingDraw = useEditorStore(s => s.setPendingDraw);
 
@@ -75,19 +87,25 @@ export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null,
   };
 
   return (
-    <div className={`fb-elements-grid${compact ? ' fb-elements-grid--compact' : ''}`}>
-      {ELEMENT_TYPES.map(({ type, icon, label }) => (
+    <div className={`fb-elements-grid${compact ? ' fb-elements-grid--compact' : ''}${toolbarPalette ? ' fb-elements-grid--toolbar' : ''}`}>
+      {ELEMENT_TYPES.map(({ type, icon, label, hint, meta }) => (
         <div
           key={type}
-          className={`fb-element-card${pendingDraw === type ? ' fb-element-card--active' : ''}`}
+          className={`fb-element-card${pendingDraw === type ? ' fb-element-card--active' : ''}${toolbarPalette ? ' fb-element-card--toolbar' : ''}`}
           draggable
           onDragStart={(e) => handleDragStart(e, type)}
           onDragEnd={() => onItemDragEnd?.(type)}
           onClick={() => handleClick(type)}
           title={pendingDraw === type ? `Click on canvas to draw ${label} — Esc to cancel` : `Click to draw ${label}, or drag to place`}
         >
-          <div className="fb-element-card__icon">{icon}</div>
-          <div className="fb-element-card__label">{label}</div>
+          <div className="fb-element-card__icon-wrap">
+            <div className="fb-element-card__icon">{icon}</div>
+            {toolbarPalette ? <span className="fb-element-card__meta">{meta}</span> : null}
+          </div>
+          <div className="fb-element-card__body">
+            <div className="fb-element-card__label">{label}</div>
+            {toolbarPalette ? <div className="fb-element-card__hint">{hint}</div> : null}
+          </div>
         </div>
       ))}
     </div>
@@ -97,18 +115,8 @@ export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null,
 export default function ElementsPanel() {
   return (
     <div>
-      <div className="fb-section-label">Layout</div>
+      <div className="fb-section-label">Elements</div>
       <ElementPickerGrid />
-
-      <div className="fb-section-label" style={{ marginTop: 8 }}>How to use</div>
-      <div style={{ padding: '4px 12px 12px', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-        • <strong style={{ color: 'var(--text-secondary)' }}>Click</strong> to enter draw mode, then draw on canvas<br />
-        • <strong style={{ color: 'var(--text-secondary)' }}>Drag</strong> onto any artboard to place at default size<br />
-        • <strong style={{ color: 'var(--text-secondary)' }}>Esc</strong> to cancel draw mode<br />
-        • <strong style={{ color: 'var(--text-secondary)' }}>Ctrl+scroll</strong> to zoom<br />
-        • <strong style={{ color: 'var(--text-secondary)' }}>Space+drag</strong> to pan<br />
-        • <strong style={{ color: 'var(--text-secondary)' }}>Del</strong> to remove selected
-      </div>
     </div>
   );
 }

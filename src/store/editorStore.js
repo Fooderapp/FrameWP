@@ -205,32 +205,43 @@ function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
     if (el.id !== elementId) return el;
     if (bpId === 'desktop') {
       if (el.type === 'text') {
-        return {
+        return pruneElementBreakpointOverrides({
           ...el,
           base: {
             ...el.base,
             ...safeUpdates,
             ...normalizeTextFields({ ...el.base, ...safeUpdates }),
           },
-        };
+        });
       }
-      return { ...el, base: { ...el.base, ...safeUpdates } };
+      return pruneElementBreakpointOverrides({ ...el, base: { ...el.base, ...safeUpdates } });
     }
     const ov = el.overrides?.[bpId] ?? {};
     if (el.type === 'text') {
-      return {
+      const hasExplicitTextUpdate = safeUpdates.text != null || safeUpdates.richTextHtml != null;
+      const hasExistingExplicitText = ov.text != null || ov.richTextHtml != null;
+      const nextOverride = {
+        ...ov,
+        ...safeUpdates,
+      };
+
+      if (hasExplicitTextUpdate || hasExistingExplicitText) {
+        Object.assign(nextOverride, normalizeTextFields({
+          ...el.base,
+          ...ov,
+          ...safeUpdates,
+        }));
+      }
+
+      return pruneElementBreakpointOverrides({
         ...el,
         overrides: {
           ...el.overrides,
-          [bpId]: {
-            ...ov,
-            ...safeUpdates,
-            ...normalizeTextFields({ ...el.base, ...ov, ...safeUpdates }),
-          },
+          [bpId]: nextOverride,
         },
-      };
+      });
     }
-    return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } };
+    return pruneElementBreakpointOverrides({ ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } });
   });
 }
 
@@ -717,6 +728,83 @@ function valuesMatchForAnimationOverride(nextValue, baseValue) {
   return `${nextValue ?? ''}` === `${baseValue ?? ''}`;
 }
 
+function stripInheritedTextOverride(override = {}, inheritedSource = {}) {
+  const hasTextField = override.text != null || override.richTextHtml != null;
+  if (!hasTextField) return override;
+
+  const inheritedText = normalizeTextFields(inheritedSource);
+  const resolvedOverrideText = normalizeTextFields({
+    ...inheritedText,
+    ...override,
+  });
+
+  if (
+    resolvedOverrideText.text !== inheritedText.text
+    || resolvedOverrideText.richTextHtml !== inheritedText.richTextHtml
+  ) {
+    return {
+      ...override,
+      ...resolvedOverrideText,
+    };
+  }
+
+  const nextOverride = { ...override };
+  delete nextOverride.text;
+  delete nextOverride.richTextHtml;
+  return nextOverride;
+}
+
+function pruneBreakpointOverride(override = {}, inheritedSource = {}, elementType = null) {
+  let nextOverride = { ...(override ?? {}) };
+
+  if (elementType === 'text') {
+    nextOverride = stripInheritedTextOverride(nextOverride, inheritedSource);
+  }
+
+  if (nextOverride.styles && typeof nextOverride.styles === 'object') {
+    const nextStyles = { ...nextOverride.styles };
+    Object.keys(nextStyles).forEach((styleKey) => {
+      if (valuesMatchForAnimationOverride(nextStyles[styleKey], inheritedSource?.styles?.[styleKey])) {
+        delete nextStyles[styleKey];
+      }
+    });
+    if (Object.keys(nextStyles).length) nextOverride.styles = nextStyles;
+    else delete nextOverride.styles;
+  }
+
+  Object.keys(nextOverride).forEach((key) => {
+    if (key === 'styles') return;
+    if ((key === 'text' || key === 'richTextHtml') && elementType === 'text') return;
+    if (valuesMatchForAnimationOverride(nextOverride[key], inheritedSource?.[key])) {
+      delete nextOverride[key];
+    }
+  });
+
+  return nextOverride;
+}
+
+function pruneElementBreakpointOverrides(element) {
+  if (!element || typeof element !== 'object') return element;
+
+  const nextOverrides = { ...(element.overrides ?? {}) };
+  const tabletOverride = pruneBreakpointOverride(nextOverrides.tablet ?? {}, element.base ?? {}, element.type);
+  const tabletResolved = {
+    ...(element.base ?? {}),
+    ...tabletOverride,
+    styles: { ...(element.base?.styles ?? {}), ...(tabletOverride.styles ?? {}) },
+  };
+  const mobileOverride = pruneBreakpointOverride(nextOverrides.mobile ?? {}, tabletResolved, element.type);
+
+  return {
+    ...element,
+    overrides: {
+      ...nextOverrides,
+      tablet: tabletOverride,
+      mobile: mobileOverride,
+    },
+  };
+}
+
 export function applyAnimationPreviewPatch(resolved, patch) {
   if (!patch) return resolved;
   return {
@@ -866,25 +954,11 @@ function normalizeTextElementFields(element) {
   };
   const normalizedOverrides = { ...(element.overrides ?? {}) };
 
-  ['tablet', 'mobile'].forEach((bpId) => {
-    const bpOverride = normalizedOverrides[bpId];
-    if (!bpOverride) return;
-    const hasTextField = bpOverride.text != null || bpOverride.richTextHtml != null;
-    if (!hasTextField) return;
-    normalizedOverrides[bpId] = {
-      ...bpOverride,
-      ...normalizeTextFields({
-        ...normalizedBase,
-        ...bpOverride,
-      }),
-    };
-  });
-
-  return {
+  return pruneElementBreakpointOverrides({
     ...element,
     base: normalizedBase,
     overrides: normalizedOverrides,
-  };
+  });
 }
 
 function getTextStyleDrivenFieldUpdates(element, bpId, styleUpdates) {
@@ -1003,7 +1077,9 @@ function normalizeScrollSequenceElementFields(element) {
 }
 
 function normalizeElementDynamicFields(element) {
-  const normalizedElement = normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element))));
+  const normalizedElement = pruneElementBreakpointOverrides(
+    normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element))))
+  );
   return {
     ...normalizedElement,
     animations: normalizeElementAnimations(element?.animations),
@@ -2647,12 +2723,17 @@ export function createText(x = 80, y = 80, name) {
 // Cascade: desktop (base)  →  tablet  →  mobile
 export function resolveElement(el, bpId) {
   if (bpId === 'desktop') return { ...el.base, styles: { ...el.base.styles } };
-  const tabOv = el.overrides?.tablet ?? {};
+
+  const tabOv = pruneBreakpointOverride(el.overrides?.tablet ?? {}, el.base ?? {}, el.type);
   if (bpId === 'tablet') {
     return { ...el.base, ...tabOv, styles: { ...el.base.styles, ...(tabOv.styles ?? {}) } };
   }
   // mobile: base  →  tablet override  →  mobile override
-  const mobOv = el.overrides?.mobile ?? {};
+  const mobOv = pruneBreakpointOverride(el.overrides?.mobile ?? {}, {
+    ...el.base,
+    ...tabOv,
+    styles: { ...(el.base?.styles ?? {}), ...(tabOv.styles ?? {}) },
+  }, el.type);
   return {
     ...el.base, ...tabOv, ...mobOv,
     styles: { ...el.base.styles, ...(tabOv.styles ?? {}), ...(mobOv.styles ?? {}) },
@@ -4333,23 +4414,23 @@ export const useEditorStore = create((set, get) => {
         if (el.id !== elementId) return el;
         const textFieldUpdates = getTextStyleDrivenFieldUpdates(el, bpId, styleUpdates);
         if (bpId === 'desktop') {
-          return {
+          return pruneElementBreakpointOverrides({
             ...el,
             base: {
               ...el.base,
               ...textFieldUpdates,
               styles: { ...el.base.styles, ...styleUpdates },
             },
-          };
+          });
         }
         const ov = el.overrides?.[bpId] ?? {};
-        return {
+        return pruneElementBreakpointOverrides({
           ...el,
           overrides: {
             ...el.overrides,
             [bpId]: { ...ov, ...textFieldUpdates, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
           },
-        };
+        });
       }));
     },
 
@@ -4360,23 +4441,23 @@ export const useEditorStore = create((set, get) => {
         if (!targetIds.has(el.id)) return el;
         const textFieldUpdates = getTextStyleDrivenFieldUpdates(el, bpId, styleUpdates);
         if (bpId === 'desktop') {
-          return {
+          return pruneElementBreakpointOverrides({
             ...el,
             base: {
               ...el.base,
               ...textFieldUpdates,
               styles: { ...el.base.styles, ...styleUpdates },
             },
-          };
+          });
         }
         const ov = el.overrides?.[bpId] ?? {};
-        return {
+        return pruneElementBreakpointOverrides({
           ...el,
           overrides: {
             ...el.overrides,
             [bpId]: { ...ov, ...textFieldUpdates, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
           },
-        };
+        });
       }));
     },
 
@@ -4428,9 +4509,9 @@ export const useEditorStore = create((set, get) => {
       if (!targetIds.size || !safeUpdates || !Object.keys(safeUpdates).length) return;
       withPage((els) => els.map((el) => {
         if (!targetIds.has(el.id)) return el;
-        if (bpId === 'desktop') return { ...el, base: { ...el.base, ...safeUpdates } };
+        if (bpId === 'desktop') return pruneElementBreakpointOverrides({ ...el, base: { ...el.base, ...safeUpdates } });
         const ov = el.overrides?.[bpId] ?? {};
-        return { ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } };
+        return pruneElementBreakpointOverrides({ ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } });
       }));
 
       if (safeUpdates?.hidden === true) {

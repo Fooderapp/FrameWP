@@ -11,6 +11,12 @@
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
+    "@tiptap/extension-color": "^3.20.4",
+    "@tiptap/extension-text-style": "^3.20.4",
+    "@tiptap/extension-underline": "^3.20.4",
+    "@tiptap/pm": "^3.20.4",
+    "@tiptap/react": "^3.20.4",
+    "@tiptap/starter-kit": "^3.20.4",
     "gsap": "^3.14.2",
     "iconoir-react": "^7.11.0",
     "lucide-react": "^0.577.0",
@@ -21,6 +27,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.0",
+    "playwright": "^1.58.2",
     "vite": "^5.1.0"
   }
 }

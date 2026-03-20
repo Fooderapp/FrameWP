@@ -559,8 +559,9 @@ class FrameBuilder_Exporter {
 			$html    .= '<div class="fb-bp-inner">';
 			$artboard_layout_on = is_array( $this->page_layout[ $bpId ] ?? null );
 			$artboard_flex_dir  = $artboard_layout_on ? ( $this->page_layout[ $bpId ]['flexDirection'] ?? 'column' ) : 'none';
+			$artboard_align_items = $artboard_layout_on ? ( $this->page_layout[ $bpId ]['alignItems'] ?? 'flex-start' ) : 'stretch';
 			foreach ( $root_els as $el ) {
-				$html .= $this->render_element( $el, $bpId, $cw, $ch, $artboard_layout_on, $artboard_flex_dir );
+				$html .= $this->render_element( $el, $bpId, $cw, $ch, $artboard_layout_on, $artboard_flex_dir, $artboard_align_items );
 			}
 			$html .= '</div>';
 			$html .= '</div>';
@@ -650,7 +651,7 @@ class FrameBuilder_Exporter {
 	 * @param float $cw  Design width  of the containing context in px.
 	 * @param float $ch  Design height of the containing context in px.
 	 */
-	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): string {
+	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none', string $parent_align_items = 'stretch' ): string {
 		$resolved = $this->resolve_element_with_variables( $el, $bpId );
 		if ( ! empty( $resolved['hidden'] ) ) return '';
 
@@ -699,6 +700,18 @@ class FrameBuilder_Exporter {
 		$pin_bottom = !empty( $cx['bottom'] );
 		$right_val  = $cw - $x - $w;
 		$bottom_val = $ch - $y - $h;
+		$sticky_cross_axis_extra = '';
+		if ( 'sticky' === $pos_type ) {
+			if ( 'column' === $parent_flex_dir ) {
+				if ( 'center' === $parent_align_items ) $sticky_cross_axis_extra = 'margin-left:auto;margin-right:auto;';
+				elseif ( 'flex-end' === $parent_align_items ) $sticky_cross_axis_extra = 'margin-left:auto;margin-right:0;';
+				elseif ( 'flex-start' === $parent_align_items ) $sticky_cross_axis_extra = 'margin-left:0;margin-right:auto;';
+			} elseif ( 'row' === $parent_flex_dir ) {
+				if ( 'center' === $parent_align_items ) $sticky_cross_axis_extra = 'margin-top:auto;margin-bottom:auto;';
+				elseif ( 'flex-end' === $parent_align_items ) $sticky_cross_axis_extra = 'margin-top:auto;margin-bottom:0;';
+				elseif ( 'flex-start' === $parent_align_items ) $sticky_cross_axis_extra = 'margin-top:0;margin-bottom:auto;';
+			}
+		}
 
 		if ( $pos_type === 'relative' || $pos_type === 'sticky' ) {
 			// Direction-aware fill sizing (matches CanvasElement.jsx logic)
@@ -706,22 +719,20 @@ class FrameBuilder_Exporter {
 			if ( $parent_flex_dir === 'row' && $width_mode === 'fill' ) {
 				// Main axis (width) grows via flex
 				$extra  = "flex:{$w_fr} 1 0%;min-width:0;";
-				$extra .= ( $height_mode === 'fill' ) ? 'align-self:stretch;' : "height:{$h_str};";
+				$extra .= ( $height_mode === 'fill' ) ? 'height:100%;' : "height:{$h_str};";
 			} elseif ( $parent_flex_dir === 'column' && $height_mode === 'fill' ) {
 				// Main axis (height) grows via flex
 				$extra  = "flex:{$h_fr} 1 0%;min-height:0;";
-				$extra .= ( $width_mode === 'fill' ) ? 'align-self:stretch;' : "width:{$w_str};";
+				$extra .= ( $width_mode === 'fill' ) ? 'width:100%;' : "width:{$w_str};";
 			} else {
 				// Cross-axis fill or no flex parent
 				$w_part = ( $width_mode  === 'fill' ) ? 'width:100%;'  : "width:{$w_str};";
 				$h_part = ( $height_mode === 'fill' ) ? 'height:100%;' : "height:{$h_str};";
-				if ( $parent_flex_dir === 'column' && $width_mode  === 'fill' ) $extra .= 'align-self:stretch;';
-				if ( $parent_flex_dir === 'row'    && $height_mode === 'fill' ) $extra .= 'align-self:stretch;';
 				$extra .= $w_part . $h_part;
 			}
 			$sticky_offsets = '';
 			if ( $pos_type === 'sticky' ) {
-				$sticky_offsets .= "--fb-sticky-top:{$sticky_top}px;top:{$sticky_top}px;align-self:flex-start;";
+				$sticky_offsets .= "--fb-sticky-top:{$sticky_top}px;top:{$sticky_top}px;align-self:{$parent_align_items};{$sticky_cross_axis_extra}";
 			}
 			$inline = 'position:' . ( $pos_type === 'sticky' ? 'sticky' : 'relative' ) . ";box-sizing:border-box;{$sticky_offsets}{$extra}";
 		} elseif ( $pos_type === 'fixed' || $pos_type === 'absolute' ) {
@@ -980,11 +991,12 @@ class FrameBuilder_Exporter {
 			$child_flex_dir = $styles['flexDirection'] ?? 'column';
 		}
 		$child_layout_on = $child_flex_dir !== 'none';
+		$child_align_items = $child_layout_on ? ( $styles['alignItems'] ?? 'stretch' ) : 'stretch';
 		list( $child_cw, $child_ch ) = $this->compute_child_context_size( $resolved, $cw, $ch, $artboard_layout_on, $parent_flex_dir );
 		foreach ( $el['children'] ?? [] as $child_id ) {
 			$child = $this->el_index[ $child_id ] ?? null;
 			if ( $child ) {
-				$html .= $this->render_element( $child, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir );
+				$html .= $this->render_element( $child, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items );
 			}
 		}
 
@@ -1053,7 +1065,7 @@ class FrameBuilder_Exporter {
 				$rules[] = "flex: {$w_fr} 1 0%";
 				$rules[] = 'min-width: 0';
 				if ( $height_mode === 'fill' ) {
-					$rules[] = 'align-self: stretch';
+					$rules[] = 'height: 100%';
 				} elseif ( $height_mode === 'hug' ) {
 					$rules[] = 'height: fit-content';
 				} elseif ( $height_mode === 'relative' ) {
@@ -1066,7 +1078,7 @@ class FrameBuilder_Exporter {
 				$rules[] = "flex: {$h_fr} 1 0%";
 				$rules[] = 'min-height: 0';
 				if ( $width_mode === 'fill' ) {
-					$rules[] = 'align-self: stretch';
+					$rules[] = 'width: 100%';
 				} elseif ( $width_mode === 'hug' ) {
 					$rules[] = 'width: fit-content';
 				} elseif ( $width_mode === 'relative' ) {
@@ -1077,8 +1089,7 @@ class FrameBuilder_Exporter {
 			} else {
 				// Cross-axis fill or no flex parent
 				if ( $width_mode === 'fill' ) {
-					if ( $parent_flex_dir === 'column' ) { $rules[] = 'align-self: stretch'; }
-					else { $rules[] = 'width: 100%'; }
+					$rules[] = 'width: 100%';
 				} elseif ( $width_mode === 'hug' ) {
 					$rules[] = 'width: fit-content';
 				} elseif ( $width_mode === 'relative' ) {
@@ -1087,8 +1098,7 @@ class FrameBuilder_Exporter {
 					$rules[] = "width: {$w}px";
 				}
 				if ( $height_mode === 'fill' ) {
-					if ( $parent_flex_dir === 'row' ) { $rules[] = 'align-self: stretch'; }
-					else { $rules[] = 'height: 100%'; }
+					$rules[] = 'height: 100%';
 				} elseif ( $height_mode === 'hug' ) {
 					$rules[] = 'height: fit-content';
 				} elseif ( $height_mode === 'relative' ) {
@@ -1826,10 +1836,10 @@ class FrameBuilder_Exporter {
 		}, $snapshot );
 	}
 
-	private function render_snapshot_element( array $el, array $snapshot_index, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none' ): string {
+	private function render_snapshot_element( array $el, array $snapshot_index, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none', string $parent_align_items = 'stretch' ): string {
 		$previous_index = $this->el_index;
 		$this->el_index = $snapshot_index;
-		$html = $this->render_element( $el, $bpId, $cw, $ch, $artboard_layout_on, $parent_flex_dir );
+		$html = $this->render_element( $el, $bpId, $cw, $ch, $artboard_layout_on, $parent_flex_dir, $parent_align_items );
 		$this->el_index = $previous_index;
 		return $html;
 	}
@@ -3203,30 +3213,34 @@ class FrameBuilder_Exporter {
 		var width = Math.max((current && current.offsetWidth) || 0, (next && next.offsetWidth) || 0, 24);
 		return Math.min(42, Math.max(14, width * 0.14));
 	};
-	var animateVariantWrappers = function(current, next, transition) {
+	var animateVariantWrappers = function(current, next, transition, options) {
 		if (!gsap || !current || !next) return null;
+		options = options || {};
+		var crossfadeVariants = options.crossfadeVariants !== false;
 		var direction = getVariantWrapperDirection(current, next);
 		var travel = getVariantWrapperTravel(current, next);
 		if (transition.type === 'realistic' && transition.springMode === 'physics') {
 			var spring = getPhysicsSpringConfig(transition);
 			var physicsTimeline = gsap.timeline({ defaults: { overwrite: true } });
 			gsap.set(current, { opacity: 1, x: 0, scaleX: 1, scaleY: 1, transformOrigin: 'top left' });
-			gsap.set(next, { opacity: 0, transformOrigin: 'top left' });
+			gsap.set(next, { opacity: crossfadeVariants ? 0 : 1, transformOrigin: 'top left' });
 			physicsTimeline.to(current, {
-				opacity: 0,
+				...(crossfadeVariants ? { opacity: 0 } : null),
 				x: travel * 0.22 * direction,
 				scaleX: 0.985,
 				scaleY: 0.985,
 				duration: spring.duration,
 				ease: 'none',
-				clearProps: 'opacity,transform'
+				clearProps: crossfadeVariants ? 'opacity,transform' : 'transform'
 			}, 0);
-			physicsTimeline.to(next, {
-				opacity: 1,
-				duration: spring.duration,
-				ease: 'none',
-				clearProps: 'opacity'
-			}, 0);
+			if (crossfadeVariants) {
+				physicsTimeline.to(next, {
+					opacity: 1,
+					duration: spring.duration,
+					ease: 'none',
+					clearProps: 'opacity'
+				}, 0);
+			}
 			addPhysicsSpringSequence(physicsTimeline, next, {
 				x: -travel * 0.82 * direction,
 				y: 0,
@@ -3240,16 +3254,16 @@ class FrameBuilder_Exporter {
 			var profile = getRealisticProfile(transition);
 			var realisticTimeline = gsap.timeline({ defaults: { overwrite: true } });
 			gsap.set(current, { opacity: 1, x: 0, scale: 1, transformOrigin: 'top left' });
-			gsap.set(next, { opacity: 0, x: -travel * 0.82 * direction, scale: 0.94, transformOrigin: 'top left' });
+			gsap.set(next, { opacity: crossfadeVariants ? 0 : 1, x: -travel * 0.82 * direction, scale: 0.94, transformOrigin: 'top left' });
 			realisticTimeline.to(current, {
-				opacity: 0,
+				...(crossfadeVariants ? { opacity: 0 } : null),
 				x: travel * 0.2 * direction,
 				scale: 0.985,
 				duration: profile.pushDuration,
 				ease: profile.pushEase
 			}, 0);
 			realisticTimeline.to(next, {
-				opacity: 1,
+				...(crossfadeVariants ? { opacity: 1 } : null),
 				x: travel * profile.travelOvershoot * direction,
 				scale: 1 + profile.scaleOvershoot,
 				duration: profile.pushDuration,
@@ -3260,7 +3274,7 @@ class FrameBuilder_Exporter {
 				scale: 1,
 				duration: profile.settleDuration,
 				ease: profile.settleEase,
-				clearProps: 'opacity,transform'
+				clearProps: crossfadeVariants ? 'opacity,transform' : 'transform'
 			}, profile.pushDuration);
 			return realisticTimeline;
 		}
@@ -3509,9 +3523,10 @@ class FrameBuilder_Exporter {
 				? 'elastic.out(1,' + Math.max(0.2, transition.mass * 0.45) + ')'
 				: 'back.out(' + (1 + transition.bounce * 1.2) + ')')
 			: getEaseValue(transition);
-		var animatedPairs = prepareAnimatedPairs(collectSharedElementPairs(instance, current, next));
-		var matchedIds = new Set(animatedPairs.map(function(entry) {
-			return entry.pair.nextNode.dataset.fbNodeId;
+		var sharedPairs = collectSharedElementPairs(instance, current, next);
+		var animatedPairs = prepareAnimatedPairs(sharedPairs);
+		var matchedIds = new Set(sharedPairs.map(function(entry) {
+			return entry.nextNode.dataset.fbNodeId;
 		}).filter(Boolean));
 		var shouldCrossfadeVariants = animatedPairs.some(function(entry) {
 			return entry.changes.needsCrossfade;
@@ -3525,9 +3540,7 @@ class FrameBuilder_Exporter {
 		next.style.pointerEvents = 'none';
 		current.style.pointerEvents = 'none';
 		next.style.opacity = shouldCrossfadeVariants ? '0' : '1';
-		if (shouldCrossfadeVariants) {
-			animateVariantWrappers(current, next, transition);
-		}
+		animateVariantWrappers(current, next, transition, { crossfadeVariants: shouldCrossfadeVariants });
 		try {
 			Flip.from(state, {
 				targets: Array.prototype.slice.call(current.querySelectorAll('[data-flip-id]')).concat(Array.prototype.slice.call(next.querySelectorAll('[data-flip-id]'))),

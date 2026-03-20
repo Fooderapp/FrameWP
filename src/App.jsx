@@ -43,8 +43,8 @@ export default function App() {
   const getAllElements = useEditorStore(s => s.getAllElements);
   const activeCanvasTool = useEditorStore(s => s.activeCanvasTool);
   const activeCommentId = useEditorStore(s => s.activeCommentId);
-  const [leftWidth, setLeftWidth] = useState(244);
-  const [rightWidth, setRightWidth] = useState(312);
+  const [leftWidth, setLeftWidth] = useState(300);
+  const [rightWidth, setRightWidth] = useState(332);
   const resizeStateRef = useRef(null);
   const autoSaveReadyRef = useRef(false);
   const autoSaveTimerRef = useRef(null);

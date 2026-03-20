@@ -37,13 +37,13 @@ function StrokeSvg({ children, size = 16, strokeWidth = 1.7, ...props }) {
 export const UIIcons = {
   arrowLeft: <SolidSvg><path d="M10.78 5.22a.75.75 0 0 1 0 1.06L6.81 10.25H20a.75.75 0 0 1 0 1.5H6.81l3.97 3.97a.75.75 0 1 1-1.06 1.06l-5.25-5.25a.75.75 0 0 1 0-1.06l5.25-5.25a.75.75 0 0 1 1.06 0Z" /></SolidSvg>,
   select: <SolidSvg><path d="M5.5 4.25a.75.75 0 0 1 .75.18l10 9a.75.75 0 0 1-.38 1.3l-4.2.74 1.24 3.2a.75.75 0 0 1-1.05.93l-2.2-1.1a.75.75 0 0 1-.37-.43l-1.35-4.25-2.84 2.05A.75.75 0 0 1 4 15.25V5a.75.75 0 0 1 1.5-.75Z" /></SolidSvg>,
-  undo: <SolidSvg><path d="M10.2 5.25c-2.33 0-4.54.87-6.2 2.42V5.75a.75.75 0 0 0-1.28-.53l-2.5 2.5a.75.75 0 0 0 0 1.06l2.5 2.5A.75.75 0 0 0 4 10.75V9.7a7.25 7.25 0 0 1 6.2-2.95c3.84 0 6.95 2.97 7.28 6.72a.75.75 0 0 0 1.5-.13c-.39-4.53-4.18-8.09-8.78-8.09Z" /></SolidSvg>,
-  redo: <SolidSvg><path d="M13.8 5.25c4.6 0 8.39 3.56 8.78 8.09a.75.75 0 0 1-1.5.13 7.25 7.25 0 0 0-7.28-6.72c-2.33 0-4.54.87-6.2 2.42V9.7a.75.75 0 0 1-1.28.53l-2.5-2.5a.75.75 0 0 1 0-1.06l2.5-2.5A.75.75 0 0 1 7.6 5v2.67a8.98 8.98 0 0 1 6.2-2.42Z" /></SolidSvg>,
+  undo: <StrokeSvg><path d="M9 7H5v4" /><path d="M5 11c1.8-3.4 4.84-5.1 8.2-5.1 4.1 0 7.33 2.43 7.8 6.6" /></StrokeSvg>,
+  redo: <StrokeSvg><path d="M15 7h4v4" /><path d="M19 11c-1.8-3.4-4.84-5.1-8.2-5.1-4.1 0-7.33 2.43-7.8 6.6" /></StrokeSvg>,
   zoomIn: <SolidSvg><path fillRule="evenodd" d="M10.5 4a6.5 6.5 0 1 0 4.08 11.56l3.9 3.91a.75.75 0 1 0 1.06-1.06l-3.91-3.9A6.5 6.5 0 0 0 10.5 4Zm-.75 3.75a.75.75 0 0 1 1.5 0v2h2a.75.75 0 0 1 0 1.5h-2v2a.75.75 0 0 1-1.5 0v-2h-2a.75.75 0 0 1 0-1.5h2v-2Z" clipRule="evenodd" /></SolidSvg>,
   zoomOut: <SolidSvg><path fillRule="evenodd" d="M10.5 4a6.5 6.5 0 1 0 4.08 11.56l3.9 3.91a.75.75 0 1 0 1.06-1.06l-3.91-3.9A6.5 6.5 0 0 0 10.5 4Zm-2.75 5.75a.75.75 0 0 0 0 1.5h5.5a.75.75 0 0 0 0-1.5h-5.5Z" clipRule="evenodd" /></SolidSvg>,
   fit: <SolidSvg><path d="M4 4h5v2H6v3H4V4Zm11 0h5v5h-2V6h-3V4ZM4 15h2v3h3v2H4v-5Zm14 0h2v5h-5v-2h3v-3Z" /></SolidSvg>,
   save: <SolidSvg><path fillRule="evenodd" d="M5 4.5A1.5 1.5 0 0 1 6.5 3h8.88c.4 0 .78.16 1.06.44l2.12 2.12c.28.28.44.66.44 1.06V19.5A1.5 1.5 0 0 1 17.5 21h-11A1.5 1.5 0 0 1 5 19.5v-15Zm3 0V10h8V6.12L14.88 5H8.5A.5.5 0 0 0 8 5.5Zm1.5 10.75a.75.75 0 0 0 0 1.5h5a.75.75 0 0 0 0-1.5h-5Z" clipRule="evenodd" /></SolidSvg>,
-  publish: <SolidSvg><path d="M11.25 4.75a.75.75 0 0 1 1.5 0v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V4.75ZM5 18.5a.75.75 0 0 1 .75-.75h12.5a.75.75 0 0 1 0 1.5H5.75A.75.75 0 0 1 5 18.5Z" /></SolidSvg>,
+  publish: <StrokeSvg><path d="M12 18V6" /><path d="M7.5 10.5 12 6l4.5 4.5" /><path d="M6 18h12" /></StrokeSvg>,
   play: <SolidSvg><path fillRule="evenodd" d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm-1.75 5.44a.75.75 0 0 1 1.14-.64l5.25 3.56a.75.75 0 0 1 0 1.28l-5.25 3.56a.75.75 0 0 1-1.14-.64V8.44Z" clipRule="evenodd" /></SolidSvg>,
   layers: <SolidSvg><path d="M12 3.75 3.25 8 12 12.25 20.75 8 12 3.75Zm-6.96 8.17L12 15.3l6.96-3.38.65 1.34L12 16.95l-7.61-3.69.65-1.34Zm0 4L12 19.3l6.96-3.38.65 1.34L12 20.95l-7.61-3.69.65-1.34Z" /></SolidSvg>,
   elements: <SolidSvg><path d="M4.5 4h6v6h-6V4Zm9 0h6v6h-6V4Zm-9 9h6v6h-6v-6Zm9 0h6v6h-6v-6Z" /></SolidSvg>,
@@ -79,7 +79,7 @@ export const UIIcons = {
   radiusIndependent: <StrokeSvg><path d="M9 5h6a4 4 0 0 1 4 4v6" /><path d="M5 9a4 4 0 0 1 4-4" /><path d="M5 15a4 4 0 0 0 4 4h6a4 4 0 0 0 4-4" /></StrokeSvg>,
   layoutOff: <StrokeSvg><rect x="5" y="5" width="14" height="14" rx="2" /><path d="M7 7l10 10" /></StrokeSvg>,
   layoutOn: <StrokeSvg><rect x="5" y="7" width="4" height="10" rx="1" /><rect x="11" y="7" width="4" height="10" rx="1" /><rect x="17" y="7" width="2" height="10" rx="1" /></StrokeSvg>,
-  inherit: <StrokeSvg><path d="M8 8H4v4" /><path d="M4 12c1.5-3.5 4.8-5.5 8.5-5.5H20" /></StrokeSvg>,
+  inherit: <StrokeSvg><path d="M18 8v4h-4" /><path d="M18 12a6 6 0 1 1-1.76-4.24" /></StrokeSvg>,
   chevronDown: <SolidSvg><path d="M7.22 8.97a.75.75 0 0 1 1.06 0L12 12.69l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L7.22 10.03a.75.75 0 0 1 0-1.06Z" /></SolidSvg>,
 };
 

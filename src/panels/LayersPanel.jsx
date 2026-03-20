@@ -83,6 +83,19 @@ function getLayerChildren(el, allElements) {
     : allElements.filter((candidate) => candidate.parentId === el.id);
 }
 
+function hasHoveredDescendant(el, allElements, hoveredId) {
+  if (!hoveredId) return false;
+  const childIds = Array.isArray(el?.children) && el.children.length
+    ? el.children
+    : allElements.filter((candidate) => candidate.parentId === el.id).map((candidate) => candidate.id);
+  for (const childId of childIds) {
+    if (childId === hoveredId) return true;
+    const child = allElements.find((candidate) => candidate.id === childId);
+    if (child && hasHoveredDescendant(child, allElements, hoveredId)) return true;
+  }
+  return false;
+}
+
 // Is a root element off-canvas for a given bp?
 function checkOffCanvas(el, bpId, bpDef) {
   if (!bpDef || el.parentId) return false;
@@ -116,6 +129,10 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
 
   const isSel = isElementSelected(selection, el.id, bpId || 'desktop');
   const isHov = hoveredId === el.id;
+  const isBranchActive = useMemo(
+    () => hoveredId !== el.id && hasHoveredDescendant(el, allElements, hoveredId),
+    [allElements, el, hoveredId],
+  );
   const resolved = resolveElementWithVariables(el, bpId || 'desktop', pageVariables, globalVariables);
   const isMainSurfaceComponent = activeSurface === 'page' && !!el.componentInstance;
   const componentMeta = el.componentInstance?.componentId
@@ -181,7 +198,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
     <div className={`fb-layer-node${hasChildren ? ' fb-layer-node--parent' : ''}${el.componentInstance ? ' fb-layer-node--component' : ''}`}>
       <div
         ref={itemRef}
-        className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${isHov && !isSel ? ' fb-layer-item--hovered' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}${el.componentInstance ? ' fb-layer-item--component' : ''}${hasChildren ? ' fb-layer-item--parent' : ''}${dragOverPart === 'before' ? ' fb-layer-item--drag-before' : ''}${dragOverPart === 'after' ? ' fb-layer-item--drag-after' : ''}${dragOverPart === 'into' ? ' fb-layer-item--drag-into' : ''}`}
+        className={`fb-layer-item${isSel ? ' fb-layer-item--selected' : ''}${isHov && !isSel ? ' fb-layer-item--hovered' : ''}${isBranchActive && !isSel && !isHov ? ' fb-layer-item--branch-active' : ''}${offCanvas ? ' fb-layer-item--offcanvas' : ''}${el.componentInstance ? ' fb-layer-item--component' : ''}${hasChildren ? ' fb-layer-item--parent' : ''}${dragOverPart === 'before' ? ' fb-layer-item--drag-before' : ''}${dragOverPart === 'after' ? ' fb-layer-item--drag-after' : ''}${dragOverPart === 'into' ? ' fb-layer-item--drag-into' : ''}`}
         style={{ paddingLeft: 10 + depth * 14 }}
         data-depth={depth}
         draggable
@@ -259,7 +276,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
         </span>
       </div>
       {expanded && hasChildren ? (
-        <div className={`fb-layer-children${el.componentInstance ? ' fb-layer-children--component' : ''}`}>
+        <div className={`fb-layer-children${el.componentInstance ? ' fb-layer-children--component' : ''}${isBranchActive ? ' fb-layer-children--active' : ''}`}>
           {visibleChildren.map(child => (
             <LayerItem
               key={child.id}

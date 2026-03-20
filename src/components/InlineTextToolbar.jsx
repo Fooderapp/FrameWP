@@ -26,11 +26,19 @@ function ToolbarButton({ active = false, title, children, onClick }) {
       className={`fb-inline-text-toolbar__btn${active ? ' is-active' : ''}`}
       title={title}
       aria-label={title}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       onMouseDown={(event) => {
         event.preventDefault();
         event.stopPropagation();
       }}
-      onClick={onClick}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick?.();
+      }}
     >
       {children}
     </button>
@@ -114,6 +122,7 @@ export default function InlineTextToolbar({
       className="fb-inline-text-toolbar fb-inline-text-toolbar--portal"
       data-inline-editor-ui="true"
       style={toolbarStyle ?? undefined}
+      onPointerDown={handleToolbarPointerDown}
       onMouseDown={handleToolbarPointerDown}
     >
       <div className="fb-inline-text-toolbar__group fb-inline-text-toolbar__group--formatting">

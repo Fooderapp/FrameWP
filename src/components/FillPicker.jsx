@@ -13,7 +13,10 @@ function eventHitsNode(event, node) {
 }
 
 function shouldPreservePickerFocus(event) {
-  return !(event.target instanceof Element && event.target.closest('input, textarea, select'));
+  return !(
+    event.target instanceof Element
+    && event.target.closest('input, textarea, select, [data-fill-picker-target="satval"], [data-fill-picker-target="slider"]')
+  );
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
@@ -190,15 +193,29 @@ function SatValSquare({ hue, sat, val, onSVChange }) {
   useEffect(() => {
     const up = () => { dragging.current = false; };
     const mv = (e) => { if (dragging.current) pick(e); };
+    const pointerUp = () => { dragging.current = false; };
+    const pointerMove = (e) => { if (dragging.current) pick(e); };
     window.addEventListener('mousemove', mv);
     window.addEventListener('mouseup', up);
-    return () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); };
+    window.addEventListener('pointermove', pointerMove);
+    window.addEventListener('pointerup', pointerUp);
+    return () => {
+      window.removeEventListener('mousemove', mv);
+      window.removeEventListener('mouseup', up);
+      window.removeEventListener('pointermove', pointerMove);
+      window.removeEventListener('pointerup', pointerUp);
+    };
   }, [pick]);
 
   const { r, g, b } = hsvToRgb(hue, sat, val);
   return (
     <div
+      data-fill-picker-target="satval"
       style={{ position: 'relative', borderRadius: '8px 8px 0 0', overflow: 'hidden', cursor: 'crosshair', userSelect: 'none' }}
+      onPointerDown={e => {
+        dragging.current = true;
+        pick(e);
+      }}
       onMouseDown={e => { dragging.current = true; pick(e); }}
     >
       <canvas ref={canvasRef} width={304} height={180} style={{ display: 'block', width: '100%', height: 180 }} />
@@ -225,13 +242,24 @@ function TrackSlider({ value, onChange, trackBg, thumbBg }) {
   useEffect(() => {
     const up = () => { dragging.current = false; };
     const mv = (e) => { if (dragging.current) pick(e); };
+    const pointerUp = () => { dragging.current = false; };
+    const pointerMove = (e) => { if (dragging.current) pick(e); };
     window.addEventListener('mousemove', mv);
     window.addEventListener('mouseup', up);
-    return () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); };
+    window.addEventListener('pointermove', pointerMove);
+    window.addEventListener('pointerup', pointerUp);
+    return () => {
+      window.removeEventListener('mousemove', mv);
+      window.removeEventListener('mouseup', up);
+      window.removeEventListener('pointermove', pointerMove);
+      window.removeEventListener('pointerup', pointerUp);
+    };
   }, [pick]);
   return (
     <div
       ref={ref}
+      data-fill-picker-target="slider"
+      onPointerDown={e => { dragging.current = true; pick(e); }}
       onMouseDown={e => { dragging.current = true; pick(e); }}
       style={{ position: 'relative', height: 14, borderRadius: 7, cursor: 'pointer', userSelect: 'none', ...trackBg }}
     >
@@ -649,6 +677,12 @@ export default function FillPicker({
         type="button"
         ref={triggerRef}
         className={`fb-fill-swatch${compact ? ' fb-fill-swatch--compact' : ''}`}
+        onPointerDown={(event) => {
+          if (preserveFocus) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
         onMouseDown={handleTriggerMouseDown}
         onClick={() => (open ? closePicker() : openPicker())}
         title={title}
@@ -663,6 +697,12 @@ export default function FillPicker({
           className="fb-fill-popover"
           data-inline-editor-ui="true"
           style={{ top: pos.top, left: pos.left }}
+          onPointerDown={(e) => {
+            if (shouldPreservePickerFocus(e)) {
+              e.preventDefault();
+            }
+            e.stopPropagation();
+          }}
           onMouseDown={(e) => {
             if (shouldPreservePickerFocus(e)) {
               e.preventDefault();

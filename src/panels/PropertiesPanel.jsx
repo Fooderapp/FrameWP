@@ -26,6 +26,15 @@ function Section({ title, children, defaultOpen = true, action }) {
   );
 }
 
+function HeaderActionButton({ icon, title, label, className = '', children, ...props }) {
+  return (
+    <IconButton icon={icon} title={title} className={`fb-panel-header-action${className ? ` ${className}` : ''}`} {...props}>
+      <span className="fb-panel-header-action__label">{label}</span>
+      {children}
+    </IconButton>
+  );
+}
+
 function getDefaultInteractionValue(variableType) {
   if (variableType === 'boolean') return false;
   if (variableType === 'color') return '#000000';
@@ -508,10 +517,11 @@ function BoundVariableCta({ variable, fallbackLabel = 'Bound variable' }) {
 
 function InteractionSection({ flow, legacyInteractions, onOpenFlow, onMigrateLegacy }) {
   const interactionCount = legacyInteractions.length;
+  const hasInteractionSetup = !!flow || interactionCount > 0;
   const title = (
     <span className="fb-section-title-with-badge">
       <span>Interactions</span>
-      {flow ? <span className="fb-section-badge">Flow</span> : interactionCount ? <span className="fb-section-badge">Legacy</span> : null}
+      {flow ? <span className="fb-section-badge is-active">Flow</span> : interactionCount ? <span className="fb-section-badge">Legacy</span> : null}
     </span>
   );
 
@@ -519,16 +529,24 @@ function InteractionSection({ flow, legacyInteractions, onOpenFlow, onMigrateLeg
     <Section
       title={title}
       defaultOpen={!!flow || interactionCount > 0}
-      action={<button type="button" className="fb-add-field fb-add-field--compact" onClick={onOpenFlow}>Open Flow</button>}
+      action={(
+        <HeaderActionButton
+          icon={UIIcons.flow}
+          title={flow ? 'Edit interaction flow' : 'Add interaction flow'}
+          label={flow ? 'Edit Flow' : 'Add Flow'}
+          className={hasInteractionSetup ? 'fb-panel-header-action--active' : ''}
+          onClick={onOpenFlow}
+        />
+      )}
     >
       {flow ? (
-        <div className="fb-interaction-card">
+        <div className="fb-interaction-card is-active">
           <div className="fb-interaction-card__head">
             <div>
               <strong>{flow.name || 'Interaction Flow'}</strong>
               <div className="fb-interaction-card__hint">{Math.max(0, (flow.nodes ?? []).length - 1)} step(s) in a guided action flow.</div>
             </div>
-            <span className="fb-interaction-card__status">Flow</span>
+            <span className="fb-interaction-card__status is-active">Flow</span>
           </div>
           <div className="fb-interaction-flow-summary">
             {flow.trigger?.type === 'element-click' ? 'Starts on click' : 'Custom trigger'}
@@ -982,6 +1000,30 @@ function getTransitionTypeLabel(type) {
   return 'Instant';
 }
 
+const TRANSITION_CLIPBOARD_KEY = 'fb:transition-clipboard';
+
+function readStoredTransitionClipboard() {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(TRANSITION_CLIPBOARD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.transition) return null;
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeStoredTransitionClipboard(payload) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(TRANSITION_CLIPBOARD_KEY, JSON.stringify(payload));
+  } catch (error) {
+    return;
+  }
+}
+
 function getTransitionSummary(interaction) {
   if (!interaction?.targetVariantId) return 'No transition';
   const transition = interaction.transition ?? { type: 'instant' };
@@ -1033,9 +1075,12 @@ function ResetBtn({ show, onReset }) {
   return (
     <button
       className="fb-reset-btn"
-      title="Reset to desktop value"
+      title="Reset override"
       onClick={e => { e.stopPropagation(); e.preventDefault(); onReset(); }}
-    >{UIIcons.inherit}</button>
+    >
+      <span className="fb-reset-btn__icon">{UIIcons.inherit}</span>
+      <span className="fb-reset-btn__label">Reset</span>
+    </button>
   );
 }
 
@@ -1043,6 +1088,8 @@ function ResetBtn({ show, onReset }) {
 
 export default function PropertiesPanel() {
   const [transitionModalState, setTransitionModalState] = useState(null);
+  const [transitionContextMenu, setTransitionContextMenu] = useState(null);
+  const [hasStoredTransitionClipboard, setHasStoredTransitionClipboard] = useState(() => !!readStoredTransitionClipboard());
   const [elementAnimationModalState, setElementAnimationModalState] = useState(null);
   const [animationAddMenuOpen, setAnimationAddMenuOpen] = useState(false);
   const [shadowModalOpen, setShadowModalOpen] = useState(false);
@@ -1084,6 +1131,20 @@ export default function PropertiesPanel() {
   const openAnimationEditor = useEditorStore(s => s.openAnimationEditor);
   const closeAnimationEditor = useEditorStore(s => s.closeAnimationEditor);
   const openScrollSequenceRangeEditor = useEditorStore(s => s.openScrollSequenceRangeEditor);
+
+  useEffect(() => {
+    if (!transitionContextMenu) return undefined;
+    const handleDismiss = () => setTransitionContextMenu(null);
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') setTransitionContextMenu(null);
+    };
+    window.addEventListener('pointerdown', handleDismiss);
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('pointerdown', handleDismiss);
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [transitionContextMenu]);
   const closeScrollSequenceRangeEditor = useEditorStore(s => s.closeScrollSequenceRangeEditor);
 
   // Artboard selection
@@ -1587,13 +1648,15 @@ export default function PropertiesPanel() {
     return (
       <aside className="fb-right">
         <div className="fb-right__header">
-          <span style={{ color: 'var(--text-primary)' }}>{selectionIds.length} elements</span>
-          <IconButton
-            icon={UIIcons.trash}
-            title="Delete selected elements"
-            className="fb-btn--sm"
-            onClick={() => { deleteElements(selectionIds); pushHistory(); }}
-          />
+          <span className="fb-right__header-title">{selectionIds.length} elements</span>
+          <div className="fb-right__header-actions">
+            <HeaderActionButton
+              icon={UIIcons.trash}
+              title="Delete selected elements"
+              label="Delete"
+              onClick={() => { deleteElements(selectionIds); pushHistory(); }}
+            />
+          </div>
         </div>
 
         <div className="fb-panel-body">
@@ -1676,9 +1739,9 @@ export default function PropertiesPanel() {
                       onChange={(event) => applyMultiSizeMode('width', event.target.value)}
                     >
                       <option value="" disabled>Mixed</option>
-                      <option value="fixed">Fixed px</option>
-                      <option value="fill">Fill fr</option>
-                      <option value="relative">Relative %</option>
+                      <option value="fixed">Fixed</option>
+                      <option value="fill">Fill</option>
+                      <option value="relative">Rel</option>
                       <option value="hug">Hug</option>
                     </select>
                   </div>
@@ -1699,9 +1762,9 @@ export default function PropertiesPanel() {
                       onChange={(event) => applyMultiSizeMode('height', event.target.value)}
                     >
                       <option value="" disabled>Mixed</option>
-                      <option value="fixed">Fixed px</option>
-                      <option value="fill">Fill fr</option>
-                      <option value="relative">Relative %</option>
+                      <option value="fixed">Fixed</option>
+                      <option value="fill">Fill</option>
+                      <option value="relative">Rel</option>
                       <option value="hug">Hug</option>
                     </select>
                   </div>
@@ -1944,6 +2007,58 @@ export default function PropertiesPanel() {
   const selectedEditorTransitionTarget = selectedEditorVariant?.interaction?.targetVariantId
     ? (componentEditor.variants ?? []).find((variant) => variant.id === selectedEditorVariant.interaction.targetVariantId) ?? null
     : null;
+  const openTransitionContextMenu = (event) => {
+    if (!selectedEditorVariant?.interaction?.targetVariantId) return;
+    event.preventDefault();
+    setHasStoredTransitionClipboard(!!readStoredTransitionClipboard());
+    setTransitionContextMenu({
+      x: Math.min(event.clientX, Math.max(12, window.innerWidth - 188)),
+      y: Math.min(event.clientY, Math.max(12, window.innerHeight - 112)),
+    });
+  };
+  const copySelectedTransition = async () => {
+    if (!selectedEditorVariant?.interaction?.targetVariantId) return;
+    const payload = {
+      transition: selectedEditorVariant.interaction?.transition ?? { type: 'instant' },
+      delay: selectedEditorVariant.interaction?.delay ?? 0,
+    };
+    writeStoredTransitionClipboard(payload);
+    setHasStoredTransitionClipboard(true);
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(payload));
+      } catch (error) {
+        // Ignore clipboard permission failures and keep local storage copy.
+      }
+    }
+    setTransitionContextMenu(null);
+  };
+  const pasteSelectedTransition = async () => {
+    if (!selectedEditorVariant?.interaction?.targetVariantId) return;
+    let payload = readStoredTransitionClipboard();
+    if (!payload && navigator.clipboard?.readText) {
+      try {
+        const raw = await navigator.clipboard.readText();
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && parsed.transition) payload = parsed;
+      } catch (error) {
+        payload = null;
+      }
+    }
+    if (!payload?.transition) {
+      setTransitionContextMenu(null);
+      return;
+    }
+    updateComponentEditorVariantInteraction(selectedEditorVariant.id, {
+      targetVariantId: selectedEditorVariant.interaction?.targetVariantId,
+      trigger: selectedEditorVariant.interaction?.trigger ?? 'click',
+      delay: typeof payload.delay === 'number' ? payload.delay : (selectedEditorVariant.interaction?.delay ?? 0),
+      transition: payload.transition,
+    });
+    commit();
+    setHasStoredTransitionClipboard(true);
+    setTransitionContextMenu(null);
+  };
   const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(element);
   const vectorShapeData = ['path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(element) : null;
   const selectedVectorPoint = activeVectorPoint?.elementId === element?.id && activeVectorPoint?.bpId === bpId && vectorShapeData
@@ -2020,6 +2135,7 @@ export default function PropertiesPanel() {
                       <button
                         type="button"
                         className="fb-secondary-btn fb-prop-action-btn"
+                        onContextMenu={openTransitionContextMenu}
                         onClick={() => setTransitionModalState({ variantId: selectedEditorVariant.id })}
                       >
                         {getTransitionSummary(selectedEditorVariant?.interaction)}
@@ -2057,6 +2173,18 @@ export default function PropertiesPanel() {
             }}
           />
         ) : null}
+        {transitionContextMenu && typeof document !== 'undefined' ? createPortal(
+          <div
+            className="fb-context-menu"
+            style={{ left: transitionContextMenu.x, top: transitionContextMenu.y }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button type="button" className="fb-context-menu__item" onClick={copySelectedTransition}>Copy transition</button>
+            <button type="button" className="fb-context-menu__item" onClick={pasteSelectedTransition} disabled={!hasStoredTransitionClipboard}>Paste transition</button>
+          </div>,
+          document.body,
+        ) : null}
       </>
     );
   }
@@ -2091,15 +2219,17 @@ export default function PropertiesPanel() {
     <>
     <aside className="fb-right">
       <div className="fb-right__header">
-        <span style={{ color: 'var(--text-primary)' }}>
+        <span className="fb-right__header-title">
           {element.name || element.type}
         </span>
-        <IconButton
-          icon={UIIcons.trash}
-          title="Delete element"
-          className="fb-btn--sm"
-          onClick={() => { deleteElement(element.id); pushHistory(); }}
-        />
+        <div className="fb-right__header-actions">
+          <HeaderActionButton
+            icon={UIIcons.trash}
+            title="Delete element"
+            label="Delete"
+            onClick={() => { deleteElement(element.id); pushHistory(); }}
+          />
+        </div>
       </div>
 
       <div className="fb-panel-body">
@@ -2139,12 +2269,18 @@ export default function PropertiesPanel() {
 
         {activeSurface === 'page' ? (
           <Section
-            title="Animation"
+            title={(
+              <span className="fb-section-title-with-badge">
+                <span>Animation</span>
+                {resolvedAnimations.length ? <span className="fb-section-badge is-active">{resolvedAnimations.length}</span> : null}
+              </span>
+            )}
             action={(
-              <IconButton
-                icon={UIIcons.plus}
+              <HeaderActionButton
+                icon={UIIcons.plusCircle}
                 title="Add animation"
-                className="fb-btn--sm"
+                label={resolvedAnimations.length ? 'Add More' : 'Add'}
+                className={resolvedAnimations.length ? 'fb-panel-header-action--active' : ''}
                 onClick={() => setAnimationAddMenuOpen((current) => !current)}
               />
             )}
@@ -2200,7 +2336,7 @@ export default function PropertiesPanel() {
                   <button
                     key={animation.id}
                     type="button"
-                    className="fb-animation-card"
+                    className="fb-animation-card is-configured"
                     onClick={() => setElementAnimationModalState({ animationId: animation.id })}
                   >
                     <span className="fb-animation-card__type">{getElementAnimationTypeLabel(animation.type)}</span>
@@ -2339,9 +2475,9 @@ export default function PropertiesPanel() {
                 value={resolved.widthMode ?? 'fixed'}
                 onChange={e => { upd('widthMode', e.target.value); commit(); }}
               >
-                <option value="fixed">Fixed px</option>
-                <option value="fill" disabled={isComponentRoot}>Fill fr</option>
-                <option value="relative">Relative %</option>
+                      <option value="fixed">Fixed</option>
+                      <option value="fill" disabled={isComponentRoot}>Fill</option>
+                      <option value="relative">Rel</option>
                 <option value="hug">Hug</option>
               </select>
             </div>
@@ -2362,9 +2498,9 @@ export default function PropertiesPanel() {
                 value={resolved.heightMode ?? 'fixed'}
                 onChange={e => { upd('heightMode', e.target.value); commit(); }}
               >
-                <option value="fixed">Fixed px</option>
-                <option value="fill" disabled={isComponentRoot}>Fill fr</option>
-                <option value="relative">Relative %</option>
+                <option value="fixed">Fixed</option>
+                <option value="fill" disabled={isComponentRoot}>Fill</option>
+                <option value="relative">Rel</option>
                 <option value="hug">Hug</option>
               </select>
             </div>

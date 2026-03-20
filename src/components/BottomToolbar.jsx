@@ -119,10 +119,10 @@ export default function BottomToolbar() {
             onClick={() => setOpenMenu((current) => (current === 'elements' ? null : 'elements'))}
           />
           {openMenu === 'elements' ? (
-            <div className="fb-bottom-toolbar__modal">
+            <div className="fb-bottom-toolbar__modal fb-bottom-toolbar__modal--elements">
               <div className="fb-bottom-toolbar__modal-title">Elements</div>
               <div className="fb-bottom-toolbar__modal-hint">Click to draw or drag directly onto the canvas.</div>
-              <ElementPickerGrid compact onItemChosen={() => setOpenMenu(null)} onItemDragEnd={handleDragEnd} />
+              <ElementPickerGrid compact toolbarPalette onItemChosen={() => setOpenMenu(null)} onItemDragEnd={handleDragEnd} />
             </div>
           ) : null}
         </div>
@@ -136,7 +136,7 @@ export default function BottomToolbar() {
             onClick={() => setOpenMenu((current) => (current === 'shapes' ? null : 'shapes'))}
           />
           {openMenu === 'shapes' ? (
-            <div className="fb-bottom-toolbar__modal">
+            <div className="fb-bottom-toolbar__modal fb-bottom-toolbar__modal--shapes">
               <div className="fb-bottom-toolbar__modal-title">Shapes</div>
               <div className="fb-bottom-toolbar__modal-hint">Draw with one click or drag to place a default shape.</div>
               <ShapePickerGrid onPick={handleShapePick} onDragStart={handleShapeDragStart} onDragEnd={handleDragEnd} />

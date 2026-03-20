@@ -688,7 +688,15 @@ export default function FlowEditorModal() {
   return (
     <div className="fb-overlay-modal" onMouseDown={closeFlowEditor}>
       <div className="fb-overlay-modal__card fb-flow-editor-modal fb-flow-editor-modal--graph" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="fb-overlay-modal__head">Interaction Flow</div>
+        <div className="fb-overlay-modal__head fb-flow-editor-modal__head">
+          <div className="fb-flow-editor-modal__head-copy">
+            <div className="fb-flow-editor-modal__eyebrow">Interaction Flow</div>
+            <div className="fb-flow-editor-modal__title">{activeFlow?.name || `${element?.name || 'Element'} interaction`}</div>
+          </div>
+          <IconButton icon={UIIcons.close} title="Close flow editor" className="fb-flow-editor-modal__close-btn" onClick={closeFlowEditor}>
+            <span className="fb-flow-editor-modal__close-label">Close</span>
+          </IconButton>
+        </div>
         <div className="fb-overlay-modal__body fb-flow-editor-modal__body fb-flow-editor-modal__body--graph">
           <div
             ref={canvasWrapRef}

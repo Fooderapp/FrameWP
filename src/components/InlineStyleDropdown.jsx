@@ -54,7 +54,7 @@ export default function InlineStyleDropdown({
     if (!editing) return;
     setDraftValue(`${value ?? ''}`);
     setReplaceOnNextKey(true);
-  }, [editing]);
+  }, [editing, value]);
 
   useEffect(() => {
     if (!editing) return undefined;
@@ -66,6 +66,8 @@ export default function InlineStyleDropdown({
         event.preventDefault();
         event.stopPropagation();
         commitTypedValue();
+        setEditing(false);
+        onOpenChange?.(false);
         return;
       }
 
@@ -74,11 +76,12 @@ export default function InlineStyleDropdown({
         event.stopPropagation();
         setDraftValue(`${value ?? ''}`);
         setEditing(false);
+        setReplaceOnNextKey(false);
         onOpenChange?.(false);
         return;
       }
 
-      if (event.key === 'Backspace') {
+      if (event.key === 'Backspace' || event.key === 'Delete') {
         event.preventDefault();
         event.stopPropagation();
         setReplaceOnNextKey(false);
@@ -167,10 +170,10 @@ export default function InlineStyleDropdown({
       if (eventHitsNode(event, rootRef.current) || eventHitsNode(event, popoverRef.current)) return;
       if (editing) {
         commitTypedValue();
-        return;
+        setEditing(false);
+        setReplaceOnNextKey(false);
       }
       setOpen(false);
-      setEditing(false);
       onOpenChange?.(false);
       onPreviewReset?.();
     };
@@ -200,10 +203,25 @@ export default function InlineStyleDropdown({
     event.preventDefault();
   };
 
-  const beginEditing = (event) => {
-    if (!editable) return;
+  const handleTriggerPointerDown = (event) => {
+    if (!preserveFocus) return;
     event.preventDefault();
     event.stopPropagation();
+  };
+
+  const preserveTriggerClick = (event) => {
+    if (!preserveFocus) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.blur?.();
+  };
+
+  const beginEditing = (event) => {
+    if (!editable) return;
+    if (preserveFocus) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
     setOpen(false);
     setEditing(true);
     setReplaceOnNextKey(true);
@@ -212,20 +230,16 @@ export default function InlineStyleDropdown({
 
   const commitTypedValue = () => {
     if (!editable || typeof parseInput !== 'function') {
-      setEditing(false);
       return;
     }
     const parsed = parseInput(draftValue);
-    setEditing(false);
-    setReplaceOnNextKey(false);
     if (parsed == null) {
       setDraftValue(`${value ?? ''}`);
-      onOpenChange?.(false);
       return;
     }
     onPreviewReset?.();
     onChange(parsed);
-    setOpen(false);
+    setReplaceOnNextKey(false);
   };
 
   const displayLabel = formatValue
@@ -238,6 +252,10 @@ export default function InlineStyleDropdown({
       className="fb-inline-style-dropdown__popover"
       data-inline-editor-ui="true"
       style={popoverStyle ?? undefined}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       onMouseDown={(event) => event.stopPropagation()}
     >
       <div className="fb-inline-style-dropdown__list" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
@@ -248,10 +266,12 @@ export default function InlineStyleDropdown({
               key={`${option.value}`}
               type="button"
               className={`fb-inline-style-dropdown__option${active ? ' is-active' : ''}`}
+              onPointerDown={handleTriggerPointerDown}
               onMouseDown={handleTriggerMouseDown}
               onMouseEnter={() => onPreviewChange?.(option.value)}
               onFocus={() => onPreviewChange?.(option.value)}
-              onClick={() => {
+              onClick={(event) => {
+                preserveTriggerClick(event);
                 onPreviewReset?.();
                 onChange(option.value);
                 setOpen(false);
@@ -268,26 +288,23 @@ export default function InlineStyleDropdown({
   return (
     <div className={`fb-inline-style-dropdown${className ? ` ${className}` : ''}`} ref={rootRef}>
       <div ref={triggerRef} className="fb-inline-style-dropdown__field">
-        {editable && editing ? (
+        {editable ? (
           <button
             ref={inputRef}
             type="button"
-            className="fb-inline-style-dropdown__input fb-inline-style-dropdown__input--pseudo"
+            className={`fb-inline-style-dropdown__input fb-inline-style-dropdown__input--pseudo${editing ? ' is-editing' : ''}`}
+            onPointerDown={handleTriggerPointerDown}
             onMouseDown={handleTriggerMouseDown}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-            }}
+            onClick={beginEditing}
           >
-            {draftValue || '0'}
+            <span className="fb-inline-style-dropdown__input-text">{draftValue || '0'}</span>
           </button>
         ) : (
           <button
             type="button"
             className="fb-inline-style-dropdown__trigger"
+            onPointerDown={handleTriggerPointerDown}
             onMouseDown={handleTriggerMouseDown}
-            onClick={beginEditing}
-            onDoubleClick={beginEditing}
           >
             <span className="fb-inline-style-dropdown__label">{displayLabel}</span>
           </button>
@@ -295,8 +312,10 @@ export default function InlineStyleDropdown({
         <button
           type="button"
           className="fb-inline-style-dropdown__toggle"
+          onPointerDown={handleTriggerPointerDown}
           onMouseDown={handleTriggerMouseDown}
-          onClick={() => {
+          onClick={(event) => {
+            preserveTriggerClick(event);
             setOpen((current) => {
               const next = !current;
               onOpenChange?.(next);

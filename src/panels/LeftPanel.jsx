@@ -13,17 +13,16 @@ export default function LeftPanel() {
 
   return (
     <aside className="fb-left">
-      <div className="fb-left__head">
-        <span className="fb-left__label">Navigate</span>
-      </div>
-      <div className="fb-tabs">
-        <IconTab active={effectiveTab === 'layers'} title="Layers" icon={UIIcons.layers} onClick={() => setTab('layers')} />
-        {showComponentsTab ? <IconTab active={effectiveTab === 'components'} title="Components" icon={UIIcons.component} onClick={() => setTab('components')} /> : null}
-      </div>
+      <div className="fb-left__panel fb-left__panel--simple">
+        <div className="fb-tabs fb-left__tabs fb-left__tabs--icons">
+          <IconTab active={effectiveTab === 'layers'} title="Layers" icon={UIIcons.layers} onClick={() => setTab('layers')} />
+          {showComponentsTab ? <IconTab active={effectiveTab === 'components'} title="Components" icon={UIIcons.component} onClick={() => setTab('components')} /> : null}
+        </div>
 
-      <div className="fb-panel-body">
-        {effectiveTab === 'layers' ? <LayersPanel /> : null}
-        {showComponentsTab && effectiveTab === 'components' ? <ComponentsPanel /> : null}
+        <div className="fb-panel-body fb-left__panel-body">
+          {effectiveTab === 'layers' ? <LayersPanel /> : null}
+          {showComponentsTab && effectiveTab === 'components' ? <ComponentsPanel /> : null}
+        </div>
       </div>
     </aside>
   );

@@ -1,9 +1,9 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
-import InlineTextToolbar from '../components/InlineTextToolbar';
+import RichTextEditor from '../components/RichTextEditor';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
-import { getResolvedRichTextHtml, plainTextToRichTextHtml, richTextHtmlToPlainText, sanitizeRichTextHtml } from '../components/richText';
+import { getResolvedRichTextHtml, plainTextToRichTextHtml } from '../components/richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from '../components/videoUtils';
 
 function rectStateChanged(current, next) {
@@ -93,111 +93,20 @@ function normalizeFontFamilySelection(value, fallback = 'Inter') {
   return trimmed || fallback;
 }
 
-function getNodeTextLength(node) {
-  if (!node) return 0;
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length ?? 0;
-  return node.textContent?.length ?? 0;
+function isRichTextEditorUiTarget(target) {
+  return !!(
+    target instanceof Element
+    && target.closest('[data-rich-text-editor-ui="true"], [data-inline-editor-ui="true"]')
+  );
 }
 
-function unwrapElement(node) {
-  const parent = node.parentNode;
-  if (!parent) return;
-  while (node.firstChild) parent.insertBefore(node.firstChild, node);
-  parent.removeChild(node);
-}
-
-function replaceFormattingTag(node) {
-  const parent = node.parentNode;
-  if (!parent) return null;
-  const replacement = node.ownerDocument.createElement('span');
-  if (node.getAttribute('style')) replacement.setAttribute('style', node.getAttribute('style'));
-  while (node.firstChild) replacement.appendChild(node.firstChild);
-  parent.replaceChild(replacement, node);
-  return replacement;
-}
-
-function clearDescendantOverrideStyles(root, styleKeys) {
-  if (!root || !styleKeys?.length) return;
-  const keys = new Set(styleKeys);
-  const formattingTagMap = new Map([
-    ['strong', 'fontWeight'],
-    ['b', 'fontWeight'],
-    ['em', 'fontStyle'],
-    ['i', 'fontStyle'],
-    ['u', 'textDecoration'],
-  ]);
-
-  const visit = (node) => {
-    Array.from(node.children ?? []).forEach((child) => {
-      let current = child;
-      const mappedStyleKey = formattingTagMap.get(child.tagName.toLowerCase());
-      if (mappedStyleKey && keys.has(mappedStyleKey)) {
-        current = replaceFormattingTag(child) ?? child;
-      }
-
-      if (current.style) {
-        styleKeys.forEach((styleKey) => current.style.removeProperty(styleKey.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)));
-        if (!current.getAttribute('style')?.trim() && current.tagName.toLowerCase() === 'span') {
-          const nextNode = current;
-          visit(nextNode);
-          unwrapElement(nextNode);
-          return;
-        }
-      }
-
-      visit(current);
-    });
-  };
-
-  visit(root);
-}
-
-function isInlineEditorUiTarget(target) {
-  return !!(target instanceof Element && target.closest('[data-inline-editor-ui="true"]'));
-}
-
-function isInlineEditorTextInputTarget(target) {
-  return !!(target instanceof Element && target.matches('[data-inline-editor-ui="true"] input, [data-inline-editor-ui="true"] textarea'));
-}
-
-function isSelectionInsideNode(node, selection) {
-  if (!node || !selection || selection.rangeCount === 0) return false;
-  return node.contains(selection.anchorNode) && node.contains(selection.focusNode);
-}
-
-function isBackwardSelection(selection, range) {
-  if (!selection || !range || selection.rangeCount === 0 || selection.isCollapsed) return false;
-  return selection.anchorNode === range.endContainer && selection.anchorOffset === range.endOffset;
-}
-
-export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, dragPreview = null, draggingElementId = null }) {
+export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, artboardAlignItems, dragPreview = null, draggingElementId = null, draggingElementBpId = null }) {
   const [dropOver, setDropOver] = useState(false);
   const elementRef = useRef(null);
-  const textEditorRef = useRef(null);
   const [isEditingText, setIsEditingText] = useState(false);
   const [toolbarRect, setToolbarRect] = useState(null);
-  const [textSelectionStyles, setTextSelectionStyles] = useState({
-    bold: false,
-    italic: false,
-    underline: false,
-    fontSize: 42,
-    fontWeight: '400',
-    color: '#000000',
-    fontFamily: 'Inter',
-  });
-  const selectionRangeRef = useRef(null);
-  const selectionOffsetsRef = useRef(null);
-  const expandedSelectionRangeRef = useRef(null);
-  const expandedSelectionOffsetsRef = useRef(null);
-  const toolbarInteractingRef = useRef(false);
-  const selectionSyncFrameRef = useRef(0);
-  const inlineEditorInteractionRef = useRef({
-    pointerDownInsideUi: false,
-    suppressBlurUntil: 0,
-  });
   const textEditInitialRef = useRef({ text: 'Text', richTextHtml: plainTextToRichTextHtml('Text') });
   const syncedTextDraftRef = useRef({ text: 'Text', richTextHtml: plainTextToRichTextHtml('Text') });
-  const fontPreviewSnapshotRef = useRef(null);
   const selectAllOnTextEditRef = useRef(false);
 
   const allElements            = useEditorStore(s => s.getAllElements());
@@ -300,6 +209,14 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       return parentResolved.styles.flexDirection ?? 'row';
     return 'block';
   })();
+  const parentCrossAlign = (() => {
+    if (!effectiveFlowPosition) return undefined;
+    if (!el?.parentId && artboardLayoutOn) return artboardAlignItems ?? 'flex-start';
+    if (el?.parentId && parentResolved?.styles?.display === 'flex') {
+      return parentResolved.styles.alignItems ?? 'stretch';
+    }
+    return undefined;
+  })();
 
   // ── Width / Height CSS values ──────────────────────────────
   // Modes: fixed (px), fill (flex/stretch/100%), relative (%), hug (fit-content)
@@ -335,362 +252,18 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     : ['nw','n','ne','e','se','s','sw','w'];
   const inlineResizeHandles = resizeHandles;
   const resolvedRichTextHtml = el?.type === 'text' ? getResolvedRichTextHtml(resolved, 'Text') : '';
-
-  const restoreTextSelection = () => {
-    const node = textEditorRef.current;
-    const selection = window.getSelection();
-    if (!node || !selection) return false;
-    if ((toolbarInteractingRef.current || fontPreviewSnapshotRef.current) && expandedSelectionOffsetsRef.current && restoreSelectionOffsets(expandedSelectionOffsetsRef.current)) {
-      return true;
-    }
-    if (selectionOffsetsRef.current && restoreSelectionOffsets(selectionOffsetsRef.current)) return true;
-    if (expandedSelectionOffsetsRef.current && restoreSelectionOffsets(expandedSelectionOffsetsRef.current)) return true;
-    if (!selectionRangeRef.current) return false;
-    selection.removeAllRanges();
-    selection.addRange(selectionRangeRef.current.cloneRange());
-    return true;
+  const handleRichTextDraftChange = (nextState) => {
+    syncedTextDraftRef.current = nextState;
+    updateElementLayout(id, bpId, nextState);
   };
 
-  const captureTextSelection = () => {
-    const node = textEditorRef.current;
-    const selection = window.getSelection();
-    if (!node || !selection || selection.rangeCount === 0) return false;
-    const range = selection.getRangeAt(0);
-    if (!node.contains(range.startContainer) || !node.contains(range.endContainer)) return false;
-    selectionRangeRef.current = range.cloneRange();
-    selectionOffsetsRef.current = getSelectionOffsets(range);
-    if (!range.collapsed) {
-      expandedSelectionRangeRef.current = range.cloneRange();
-      expandedSelectionOffsetsRef.current = selectionOffsetsRef.current;
-    }
-    return true;
-  };
-
-  const syncSelectionStyles = () => {
-    const node = textEditorRef.current;
-    const selection = window.getSelection();
-    const fallbackFontFamily = normalizeFontFamilySelection(styles?.fontFamily, 'Inter');
-    if (!node || !selection) return;
-    let anchorNode = selection.anchorNode;
-    if (!anchorNode || !node.contains(anchorNode)) {
-      setTextSelectionStyles((current) => {
-        const nextStyles = {
-          ...current,
-          fontSize: styles?.fontSize ?? 42,
-          fontWeight: `${styles?.fontWeight ?? 400}`,
-          color: styles?.color ?? '#000000',
-          fontFamily: fallbackFontFamily,
-        };
-        return selectionStyleStateChanged(current, nextStyles) ? nextStyles : current;
-      });
-      return;
-    }
-    if (anchorNode.nodeType === Node.TEXT_NODE) anchorNode = anchorNode.parentElement;
-    const computed = window.getComputedStyle(anchorNode);
-    const colorMatch = `${computed.color || ''}`.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-    const nextColor = colorMatch
-      ? `#${colorMatch.slice(1, 4).map((channel) => Number(channel).toString(16).padStart(2, '0')).join('')}`
-      : (styles?.color ?? '#000000');
-    setTextSelectionStyles((current) => {
-      const nextStyles = {
-        bold: typeof document.queryCommandState === 'function' ? document.queryCommandState('bold') : parseInt(computed.fontWeight, 10) >= 600,
-        italic: typeof document.queryCommandState === 'function' ? document.queryCommandState('italic') : computed.fontStyle === 'italic',
-        underline: typeof document.queryCommandState === 'function' ? document.queryCommandState('underline') : computed.textDecorationLine.includes('underline'),
-        fontSize: Math.round(parseFloat(computed.fontSize) || styles?.fontSize || 42),
-        fontWeight: `${computed.fontWeight || styles?.fontWeight || 400}`,
-        color: nextColor,
-        fontFamily: normalizeFontFamilySelection(computed.fontFamily, fallbackFontFamily),
-      };
-      return selectionStyleStateChanged(current, nextStyles) ? nextStyles : current;
-    });
-  };
-
-  const scheduleSelectionSync = () => {
-    if (selectionSyncFrameRef.current) return;
-    selectionSyncFrameRef.current = window.requestAnimationFrame(() => {
-      selectionSyncFrameRef.current = 0;
-      captureTextSelection();
-      syncSelectionStyles();
-    });
-  };
-
-  const getSelectionOffsets = (range) => {
-    const root = textEditorRef.current;
-    const selection = window.getSelection();
-    if (!root || !range) return null;
-
-    const resolveOffset = (targetNode, targetOffset) => {
-      let offset = 0;
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      let current = walker.nextNode();
-      while (current) {
-        if (current === targetNode) return offset + targetOffset;
-        offset += current.textContent?.length ?? 0;
-        current = walker.nextNode();
-      }
-      if (targetNode?.nodeType === Node.ELEMENT_NODE && root.contains(targetNode)) {
-        const priorChildren = Array.from(targetNode.childNodes).slice(0, targetOffset);
-        return offset + priorChildren.reduce((sum, child) => sum + getNodeTextLength(child), 0);
-      }
-      return offset;
-    };
-
-    return {
-      start: resolveOffset(range.startContainer, range.startOffset),
-      end: resolveOffset(range.endContainer, range.endOffset),
-      backward: isBackwardSelection(selection, range),
-    };
-  };
-
-  const restoreSelectionOffsets = (offsets) => {
-    const root = textEditorRef.current;
-    const selection = window.getSelection();
-    if (!root || !selection || !offsets) return false;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    let consumed = 0;
-    let startNode = null;
-    let endNode = null;
-    let startOffset = 0;
-    let endOffset = 0;
-    let current = walker.nextNode();
-
-    while (current) {
-      const nextConsumed = consumed + (current.textContent?.length ?? 0);
-      if (!startNode && offsets.start <= nextConsumed) {
-        startNode = current;
-        startOffset = Math.max(0, offsets.start - consumed);
-      }
-      if (!endNode && offsets.end <= nextConsumed) {
-        endNode = current;
-        endOffset = Math.max(0, offsets.end - consumed);
-        break;
-      }
-      consumed = nextConsumed;
-      current = walker.nextNode();
-    }
-
-    if (!startNode || !endNode) return false;
-    const range = document.createRange();
-    range.setStart(startNode, Math.min(startOffset, startNode.textContent?.length ?? 0));
-    range.setEnd(endNode, Math.min(endOffset, endNode.textContent?.length ?? 0));
-    selection.removeAllRanges();
-    if (offsets.backward && typeof selection.setBaseAndExtent === 'function') {
-      selection.setBaseAndExtent(endNode, Math.min(endOffset, endNode.textContent?.length ?? 0), startNode, Math.min(startOffset, startNode.textContent?.length ?? 0));
-    } else {
-      selection.addRange(range);
-    }
-    selectionRangeRef.current = range.cloneRange();
-    selectionOffsetsRef.current = offsets;
-    if (!range.collapsed) {
-      expandedSelectionRangeRef.current = range.cloneRange();
-      expandedSelectionOffsetsRef.current = offsets;
-    }
-    return true;
-  };
-
-  const restoreFontPreviewSnapshot = (clearAfterRestore = false) => {
-    const snapshot = fontPreviewSnapshotRef.current;
-    const node = textEditorRef.current;
-    if (!snapshot || !node) return false;
-    node.innerHTML = snapshot.html;
-    node.focus({ preventScroll: true });
-    restoreSelectionOffsets(snapshot.offsets);
-    captureTextSelection();
-    syncSelectionStyles();
-    if (clearAfterRestore) fontPreviewSnapshotRef.current = null;
-    return true;
-  };
-
-  const captureFontPreviewSnapshot = () => {
-    if (fontPreviewSnapshotRef.current) return true;
-    const node = textEditorRef.current;
-    const selection = window.getSelection();
-    if (!node || !selection || selection.rangeCount === 0) return false;
-    const range = selection.getRangeAt(0);
-    if (range.collapsed || !node.contains(range.startContainer) || !node.contains(range.endContainer)) return false;
-    fontPreviewSnapshotRef.current = {
-      html: node.innerHTML,
-      offsets: getSelectionOffsets(range),
-    };
-    return true;
-  };
-
-  const placeCaretFromPoint = (clientX, clientY) => {
-    const node = textEditorRef.current;
-    const selection = window.getSelection();
-    if (!node || !selection) return false;
-
-    let range = null;
-    if (typeof document.caretRangeFromPoint === 'function') {
-      range = document.caretRangeFromPoint(clientX, clientY);
-    } else if (typeof document.caretPositionFromPoint === 'function') {
-      const caretPosition = document.caretPositionFromPoint(clientX, clientY);
-      if (caretPosition?.offsetNode) {
-        range = document.createRange();
-        range.setStart(caretPosition.offsetNode, caretPosition.offset);
-        range.collapse(true);
-      }
-    }
-
-    if (!range || !node.contains(range.startContainer)) return false;
-    selection.removeAllRanges();
-    selection.addRange(range);
-    selectionRangeRef.current = range.cloneRange();
-    selectionOffsetsRef.current = getSelectionOffsets(range);
-    return true;
-  };
-
-  const syncTextDraftFromDom = (sourceHtml) => {
-    if (el?.type !== 'text') {
-      const fallbackText = syncedTextDraftRef.current.text || 'Text';
-      return {
-        nextText: fallbackText,
-        nextRichTextHtml: plainTextToRichTextHtml(fallbackText),
-      };
-    }
-    const nextSourceHtml = sourceHtml ?? textEditorRef.current?.innerHTML ?? '';
-    const derivedPlainText = richTextHtmlToPlainText(nextSourceHtml).trim();
-    const nextRichTextHtml = sanitizeRichTextHtml(nextSourceHtml) || plainTextToRichTextHtml(derivedPlainText || 'Text');
-    const nextText = richTextHtmlToPlainText(nextRichTextHtml) || 'Text';
-    if (
-      nextText !== syncedTextDraftRef.current.text
-      || nextRichTextHtml !== syncedTextDraftRef.current.richTextHtml
-    ) {
-      syncedTextDraftRef.current = { text: nextText, richTextHtml: nextRichTextHtml };
-    }
-    return { nextText, nextRichTextHtml };
-  };
-
-  const persistTextDraftToStore = (sourceHtml) => {
-    const nextState = syncTextDraftFromDom(sourceHtml);
+  const handleRichTextAlignChange = (textAlign) => {
     updateElementLayout(id, bpId, {
-      text: nextState.nextText,
-      richTextHtml: nextState.nextRichTextHtml,
+      styles: {
+        ...(resolved?.styles ?? {}),
+        textAlign,
+      },
     });
-    return nextState;
-  };
-
-  const withRestoredSelection = (callback, options = {}) => {
-    const { persist = true } = options;
-    const node = textEditorRef.current;
-    if (!node) return;
-    node.focus({ preventScroll: true });
-    restoreTextSelection();
-    callback();
-    captureTextSelection();
-    if (persist) persistTextDraftToStore(node.innerHTML);
-    else syncTextDraftFromDom(node.innerHTML);
-    syncSelectionStyles();
-  };
-
-  const ensureInlineSelectionSession = () => {
-    const node = textEditorRef.current;
-    const selection = window.getSelection();
-    if (!node || !selection) return false;
-
-    const liveRange = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-    const hasExpandedLiveSelection = !!(
-      liveRange
-      && !liveRange.collapsed
-      && node.contains(liveRange.startContainer)
-      && node.contains(liveRange.endContainer)
-    );
-
-    if (hasExpandedLiveSelection) {
-      captureTextSelection();
-    }
-
-    const sessionOffsets = hasExpandedLiveSelection
-      ? selectionOffsetsRef.current
-      : expandedSelectionOffsetsRef.current;
-
-    if (sessionOffsets && !fontPreviewSnapshotRef.current) {
-      fontPreviewSnapshotRef.current = {
-        html: node.innerHTML,
-        offsets: sessionOffsets,
-      };
-      return true;
-    }
-    if (fontPreviewSnapshotRef.current) return true;
-    if (!captureTextSelection()) return false;
-    if (selection.getRangeAt(0).collapsed) return false;
-    return captureFontPreviewSnapshot();
-  };
-
-  const applyWrappedSelectionStyle = (stylePatch, options = {}) => {
-    withRestoredSelection(() => {
-      const node = textEditorRef.current;
-      const selection = window.getSelection();
-      if (!node || !selection || selection.rangeCount === 0) return;
-      const range = selection.getRangeAt(0);
-      if (range.collapsed || !node.contains(range.startContainer) || !node.contains(range.endContainer)) return;
-      const styleKeys = Object.keys(stylePatch);
-      const span = document.createElement('span');
-      Object.entries(stylePatch).forEach(([styleKey, styleValue]) => {
-        span.style[styleKey] = styleValue;
-      });
-      const fragment = range.extractContents();
-      clearDescendantOverrideStyles(fragment, styleKeys);
-      span.appendChild(fragment);
-      range.insertNode(span);
-      range.selectNodeContents(span);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }, options);
-  };
-
-  const applyExecCommand = (command, value = null, options = {}) => {
-    withRestoredSelection(() => {
-      if (typeof document.execCommand !== 'function') return;
-      document.execCommand('styleWithCSS', false, true);
-      document.execCommand(command, false, value);
-    }, options);
-  };
-
-  const previewInlineStyle = (stylePatch) => {
-    if (!ensureInlineSelectionSession()) return;
-    restoreFontPreviewSnapshot(false);
-    applyWrappedSelectionStyle(stylePatch, { persist: false });
-  };
-
-  const startInlinePreviewSession = () => {
-    ensureInlineSelectionSession();
-    toolbarInteractingRef.current = true;
-  };
-
-  const commitInlineStyle = (stylePatch) => {
-    if (!ensureInlineSelectionSession()) return;
-    restoreFontPreviewSnapshot(true);
-    applyWrappedSelectionStyle(stylePatch);
-    requestAnimationFrame(() => {
-      toolbarInteractingRef.current = false;
-      textEditorRef.current?.focus({ preventScroll: true });
-      restoreTextSelection();
-      syncSelectionStyles();
-    });
-  };
-
-  const restoreToolbarSelectionFocus = () => {
-    requestAnimationFrame(() => {
-      toolbarInteractingRef.current = false;
-      textEditorRef.current?.focus({ preventScroll: true });
-      restoreTextSelection();
-      syncSelectionStyles();
-    });
-  };
-
-  const cancelInlinePreview = () => {
-    restoreFontPreviewSnapshot(true);
-    restoreToolbarSelectionFocus();
-  };
-
-  const commitInlineColor = (colorValue) => {
-    if (fontPreviewSnapshotRef.current) {
-      commitInlineStyle({ color: colorValue });
-      return;
-    }
-    startInlinePreviewSession();
-    commitInlineStyle({ color: colorValue });
   };
 
   useEffect(() => {
@@ -712,74 +285,29 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   useEffect(() => {
     if (!el || !isEditingText || el.type !== 'text') return;
-    const node = textEditorRef.current;
-    if (!node) return;
     const initialText = resolved?.text || 'Text';
     const initialRichTextHtml = resolvedRichTextHtml || plainTextToRichTextHtml(initialText);
     textEditInitialRef.current = { text: initialText, richTextHtml: initialRichTextHtml };
     syncedTextDraftRef.current = { text: initialText, richTextHtml: initialRichTextHtml };
-    node.innerHTML = initialRichTextHtml;
-    node.focus({ preventScroll: true });
-    const selection = window.getSelection();
-    if (selectAllOnTextEditRef.current) {
-      const range = document.createRange();
-      range.selectNodeContents(node);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      selectionRangeRef.current = range.cloneRange();
-      selectionOffsetsRef.current = getSelectionOffsets(range);
-      captureTextSelection();
-    } else {
-      selection?.removeAllRanges();
-      selectionRangeRef.current = null;
-      selectionOffsetsRef.current = null;
-    }
     selectAllOnTextEditRef.current = false;
-    syncSelectionStyles();
   }, [el?.id, el?.type, isEditingText]);
-
-  useEffect(() => {
-    if (!isEditingText || el?.type !== 'text') return undefined;
-    const handleSelectionChange = () => {
-      const liveSelection = window.getSelection();
-      const editorNode = textEditorRef.current;
-      if (!editorNode || !liveSelection) return;
-      if ((toolbarInteractingRef.current || fontPreviewSnapshotRef.current) && !isSelectionInsideNode(editorNode, liveSelection)) {
-        return;
-      }
-      scheduleSelectionSync();
-    };
-    document.addEventListener('selectionchange', handleSelectionChange);
-    return () => {
-      if (selectionSyncFrameRef.current) {
-        window.cancelAnimationFrame(selectionSyncFrameRef.current);
-        selectionSyncFrameRef.current = 0;
-      }
-      fontPreviewSnapshotRef.current = null;
-      expandedSelectionRangeRef.current = null;
-      expandedSelectionOffsetsRef.current = null;
-      document.removeEventListener('selectionchange', handleSelectionChange);
-    };
-  }, [el?.type, isEditingText]);
 
   useEffect(() => {
     if (!isEditingText || el?.type !== 'text') return undefined;
 
     const handlePointerDownCapture = (event) => {
       const target = event.target;
-      if (isInlineEditorUiTarget(target) || textEditorRef.current?.contains(target)) {
+      if (isRichTextEditorUiTarget(target) || elementRef.current?.contains(target)) {
         return;
       }
-      toolbarInteractingRef.current = false;
       commitTextEdit();
     };
 
     const handleFocusInCapture = (event) => {
       const target = event.target;
-      if (isInlineEditorUiTarget(target) || textEditorRef.current?.contains(target)) {
+      if (isRichTextEditorUiTarget(target) || elementRef.current?.contains(target)) {
         return;
       }
-      toolbarInteractingRef.current = false;
       commitTextEdit();
     };
 
@@ -788,42 +316,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     return () => {
       window.removeEventListener('pointerdown', handlePointerDownCapture, true);
       window.removeEventListener('focusin', handleFocusInCapture, true);
-    };
-  }, [el?.type, isEditingText]);
-
-  useEffect(() => {
-    if (!isEditingText || el?.type !== 'text') return undefined;
-
-    const handlePointerDownCapture = (event) => {
-      const insideUi = isInlineEditorUiTarget(event.target);
-      inlineEditorInteractionRef.current = {
-        pointerDownInsideUi: insideUi,
-        suppressBlurUntil: insideUi ? Date.now() + 400 : 0,
-      };
-      if (insideUi) {
-        toolbarInteractingRef.current = true;
-      }
-    };
-
-    const clearInteractionGuard = () => {
-      if (Date.now() < inlineEditorInteractionRef.current.suppressBlurUntil) return;
-      inlineEditorInteractionRef.current = {
-        pointerDownInsideUi: false,
-        suppressBlurUntil: 0,
-      };
-    };
-
-    window.addEventListener('pointerdown', handlePointerDownCapture, true);
-    window.addEventListener('pointerup', clearInteractionGuard, true);
-    window.addEventListener('pointercancel', clearInteractionGuard, true);
-    return () => {
-      inlineEditorInteractionRef.current = {
-        pointerDownInsideUi: false,
-        suppressBlurUntil: 0,
-      };
-      window.removeEventListener('pointerdown', handlePointerDownCapture, true);
-      window.removeEventListener('pointerup', clearInteractionGuard, true);
-      window.removeEventListener('pointercancel', clearInteractionGuard, true);
     };
   }, [el?.type, isEditingText]);
 
@@ -853,8 +345,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     observer.observe(node);
     return () => observer.disconnect();
   }, [bpId, el, heightMode, id, isEditingText, resolved?.height, resolved?.width, resolvedRichTextHtml, styles?.fontFamily, styles?.fontSize, styles?.fontWeight, styles?.letterSpacing, styles?.lineHeight, updateElementLayout, widthMode]);
-
-  if (!el || hidden) return null;
 
   // Off-canvas: only meaningful on desktop — tablet/mobile inherit desktop positions
   // which may overflow their narrower artboard, but that's expected behaviour not an error.
@@ -909,6 +399,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     if (el.type === 'text') {
       e.stopPropagation();
       setSelection({ elementId: id, bpId });
+      const initialText = resolved?.text || 'Text';
+      const initialRichTextHtml = resolvedRichTextHtml || plainTextToRichTextHtml(initialText);
+      textEditInitialRef.current = { text: initialText, richTextHtml: initialRichTextHtml };
+      syncedTextDraftRef.current = { text: initialText, richTextHtml: initialRichTextHtml };
       selectAllOnTextEditRef.current = true;
       setIsEditingText(true);
       return;
@@ -922,65 +416,21 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   const handleKeyDown = (e) => {
     if (el.type === 'text' && isEditingText) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        restoreFontPreviewSnapshot(true);
-        const initialState = textEditInitialRef.current;
-        syncedTextDraftRef.current = initialState;
-        updateElementLayout(id, bpId, { text: initialState.text, richTextHtml: initialState.richTextHtml });
-        if (textEditorRef.current) textEditorRef.current.innerHTML = initialState.richTextHtml;
-        setIsEditingText(false);
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-        e.preventDefault();
-        e.stopPropagation();
-        restoreFontPreviewSnapshot(true);
-        persistTextDraftToStore();
-        const initialState = textEditInitialRef.current;
-        const currentState = syncedTextDraftRef.current;
-        if (
-          currentState.text !== initialState.text
-          || currentState.richTextHtml !== initialState.richTextHtml
-        ) pushHistory();
-        setIsEditingText(false);
-      }
+      e.stopPropagation();
       return;
     }
   };
 
-  const moveTextCursor = (key, extendSelection = false) => {
-    const node = textEditorRef.current;
-    const selection = window.getSelection();
-    if (!node || !selection || selection.rangeCount === 0) return false;
-    if (!node.contains(selection.anchorNode) || !node.contains(selection.focusNode)) return false;
-
-    const direction = key === 'ArrowLeft' || key === 'ArrowUp' ? 'backward' : 'forward';
-    const granularity = key === 'ArrowUp' || key === 'ArrowDown' ? 'line' : 'character';
-
-    if (!extendSelection && !selection.isCollapsed) {
-      const range = selection.getRangeAt(0).cloneRange();
-      range.collapse(direction === 'backward');
-      selection.removeAllRanges();
-      selection.addRange(range);
-      return true;
-    }
-
-    if (typeof selection.modify === 'function') {
-      selection.modify(extendSelection ? 'extend' : 'move', direction, granularity);
-      return true;
-    }
-
-    return false;
+  const cancelTextEdit = () => {
+    const initialState = textEditInitialRef.current;
+    syncedTextDraftRef.current = initialState;
+    updateElementLayout(id, bpId, initialState);
+    setIsEditingText(false);
   };
 
   const commitTextEdit = () => {
     if (el.type !== 'text') return;
-    if (toolbarInteractingRef.current) {
-      return;
-    }
-    restoreFontPreviewSnapshot(true);
-    persistTextDraftToStore();
+    updateElementLayout(id, bpId, syncedTextDraftRef.current);
     const initialState = textEditInitialRef.current;
     const currentState = syncedTextDraftRef.current;
     if (
@@ -1016,24 +466,37 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   // block parent  → fall back to width/height: 100%
   const wFill = effectiveFlowPosition && widthMode  === 'fill';
   const hFill = effectiveFlowPosition && heightMode === 'fill';
-  const fillW        = wFill ? (parentDir === 'row'    ? undefined   // flexGrow owns it
-                              : parentDir === 'column' ? undefined   // alignSelf owns it
-                              : '100%')                              // block fallback
-                     : undefined;
-  const fillH        = hFill ? (parentDir === 'column' ? undefined   // flexGrow owns it
-                              : parentDir === 'row'    ? undefined   // alignSelf owns it
-                              : '100%')                              // block fallback
-                     : undefined;
+  const fillW        = wFill
+    ? (parentDir === 'row' ? undefined : '100%')
+    : undefined;
+  const fillH        = hFill
+    ? (parentDir === 'column' ? undefined : '100%')
+    : undefined;
   const fillFlexGrow = (wFill && parentDir === 'row')    ? wFr
                      : (hFill && parentDir === 'column') ? hFr
                      : undefined;
   const fillFlexBasis   = fillFlexGrow != null ? '0%' : undefined;
   const fillFlexShrink  = fillFlexGrow != null ? 1   : undefined;
-  const fillAlignSelf   = (wFill && parentDir === 'column') ? 'stretch'
-                        : (hFill && parentDir === 'row')    ? 'stretch'
-                        : undefined;
-  const isDragPreviewActive = dragPreview?.elementId === id;
-  const isDraggingSource = draggingElementId === id;
+  const fillAlignSelf   = undefined;
+  const stickyAlignSelf = isSticky && parentCrossAlign ? parentCrossAlign : undefined;
+  const stickyFlowMargins = (() => {
+    if (!isSticky || !parentCrossAlign) return null;
+    if (parentDir === 'column') {
+      if (parentCrossAlign === 'center') return { marginLeft: 'auto', marginRight: 'auto' };
+      if (parentCrossAlign === 'flex-end') return { marginLeft: 'auto', marginRight: 0 };
+      if (parentCrossAlign === 'flex-start') return { marginLeft: 0, marginRight: 'auto' };
+    }
+    if (parentDir === 'row') {
+      if (parentCrossAlign === 'center') return { marginTop: 'auto', marginBottom: 'auto' };
+      if (parentCrossAlign === 'flex-end') return { marginTop: 'auto', marginBottom: 0 };
+      if (parentCrossAlign === 'flex-start') return { marginTop: 0, marginBottom: 'auto' };
+    }
+    return null;
+  })();
+  const flowMinWidth = wFill && parentDir === 'row' && minW == null ? 0 : minW;
+  const flowMinHeight = hFill && parentDir === 'column' && minH == null ? 0 : minH;
+  const isDragPreviewActive = dragPreview?.elementId === id && dragPreview?.bpId === bpId;
+  const isDraggingSource = draggingElementId === id && draggingElementBpId === bpId;
   const previewDx = isDragPreviewActive ? (dragPreview.dx ?? 0) : 0;
   const previewDy = isDragPreviewActive ? (dragPreview.dy ?? 0) : 0;
   const absoluteLeft = !effectiveFlowPosition ? x + previewDx : x;
@@ -1060,14 +523,15 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           flexGrow:   fillFlexGrow,
           flexShrink: fillFlexShrink,
           flexBasis:  fillFlexBasis,
-          alignSelf:  isSticky ? (wFill ? 'stretch' : 'flex-start') : fillAlignSelf,
+          alignSelf:  fillAlignSelf ?? stickyAlignSelf,
           top:        isSticky ? stickyTop : undefined,
+          ...(stickyFlowMargins ?? {}),
         }
       : { left: absoluteLeft, top: absoluteTop, width: csW, height: csH }
     ),
-    minWidth:  minW,
+    minWidth:  effectiveFlowPosition ? flowMinWidth : minW,
     maxWidth:  maxW,
-    minHeight: minH,
+    minHeight: effectiveFlowPosition ? flowMinHeight : minH,
     maxHeight: maxH,
     transform: composedTransform,
     // backgroundColor can hold a CSS gradient string — route accordingly
@@ -1244,22 +708,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     };
   }, [el?.type, isEditingText, viewport?.scale, viewport?.x, viewport?.y, resolved?.width, resolved?.height, x, y]);
 
-  const inlineToolbar = isEditingText && toolbarRect ? (
-    <InlineTextToolbar
-      anchorRect={toolbarRect}
-      selectionStyles={textSelectionStyles}
-      previewText={richTextHtmlToPlainText(textEditorRef.current?.innerHTML ?? '') || 'Text'}
-      onExecCommand={applyExecCommand}
-      onStartPreviewSession={startInlinePreviewSession}
-      onPreviewStyle={previewInlineStyle}
-      onPreviewCancel={cancelInlinePreview}
-      onCommitStyle={commitInlineStyle}
-      onColorChange={commitInlineColor}
-      onInteractionChange={(nextValue) => {
-        toolbarInteractingRef.current = nextValue;
-      }}
-    />
-  ) : null;
+  if (!el || hidden) return null;
 
   return (
     <div
@@ -1489,7 +938,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           }}
         />
       ) : null}
-      {inlineToolbar}
       {el.type === 'text' && (
         <>
           {textStrokeLayerStyle ? (
@@ -1500,91 +948,27 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               dangerouslySetInnerHTML={{ __html: resolvedRichTextHtml }}
             />
           ) : null}
-          <div
-            ref={textEditorRef}
-            className="fb-text-content"
-            style={textStyle}
-            contentEditable={isEditingText}
-            draggable={false}
-            suppressContentEditableWarning
-            onMouseDown={(e) => {
-              if (!isEditingText) return;
-              e.stopPropagation();
-              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey) return;
-              const node = textEditorRef.current;
-              const selection = window.getSelection();
-              if (!node || !selection || selection.rangeCount === 0 || selection.isCollapsed) return;
-              if (!node.contains(selection.anchorNode) || !node.contains(selection.focusNode)) return;
-              placeCaretFromPoint(e.clientX, e.clientY);
-            }}
-            onDragStart={(e) => {
-              if (!isEditingText) return;
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-            onMouseUp={(e) => {
-              if (!isEditingText) return;
-              e.stopPropagation();
-              captureTextSelection();
-              syncSelectionStyles();
-            }}
-            onClick={(e) => {
-              if (!isEditingText) return;
-              e.stopPropagation();
-              captureTextSelection();
-              syncSelectionStyles();
-            }}
-            onDoubleClick={(e) => {
-              if (!isEditingText) return;
-              e.stopPropagation();
-              const node = textEditorRef.current;
-              const selection = window.getSelection();
-              if (!node || !selection) return;
-              const range = document.createRange();
-              range.selectNodeContents(node);
-              selection.removeAllRanges();
-              selection.addRange(range);
-              selectionRangeRef.current = range.cloneRange();
-              selectionOffsetsRef.current = getSelectionOffsets(range);
-              captureTextSelection();
-              syncSelectionStyles();
-            }}
-            onInput={(e) => {
-              syncTextDraftFromDom(e.currentTarget.innerHTML ?? '');
-              scheduleSelectionSync();
-            }}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
-                e.preventDefault();
-                const node = textEditorRef.current;
-                if (node) {
-                  const selection = window.getSelection();
-                  const range = document.createRange();
-                  range.selectNodeContents(node);
-                  selection?.removeAllRanges();
-                  selection?.addRange(range);
-                  selectionRangeRef.current = range.cloneRange();
-                  syncSelectionStyles();
-                }
-                return;
-              }
-              if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-                const handled = moveTextCursor(e.key, e.shiftKey);
-                if (handled) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }
-                return;
-              }
-              if (e.key === 'Enter' && !(e.metaKey || e.ctrlKey) && !(e.shiftKey)) {
-                e.preventDefault();
-                document.execCommand('insertLineBreak');
-                return;
-              }
-              e.stopPropagation();
-            }}
-            dangerouslySetInnerHTML={!isEditingText ? { __html: resolvedRichTextHtml } : undefined}
-          />
+          {isEditingText ? (
+            <RichTextEditor
+              value={textEditInitialRef.current.richTextHtml}
+              style={textStyle}
+              anchorRect={toolbarRect}
+              baseStyles={styles}
+              selectAllOnMount={selectAllOnTextEditRef.current}
+              onChange={handleRichTextDraftChange}
+              onCommit={commitTextEdit}
+              onCancel={cancelTextEdit}
+              onTextAlignChange={handleRichTextAlignChange}
+            />
+          ) : (
+            <div
+              className="fb-text-content"
+              style={textStyle}
+              draggable={false}
+              suppressContentEditableWarning
+              dangerouslySetInnerHTML={{ __html: resolvedRichTextHtml }}
+            />
+          )}
         </>
       )}
       {el.type === 'icon' && ((vectorShapeMarkup || iconMarkup) ? (

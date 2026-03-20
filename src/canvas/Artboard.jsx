@@ -55,6 +55,7 @@ export default function Artboard({
   surfaceMode = 'artboard',
   dragPreview = null,
   draggingElementId = null,
+  draggingElementBpId = null,
   skipNextBoardClickRef = null,
 }) {
   const allElements      = useEditorStore(s => s.getAllElements());
@@ -202,6 +203,7 @@ export default function Artboard({
           style={{
             position: 'relative',
             width: '100%',
+            height: '100%',
             minHeight: '100%',
             boxSizing: 'border-box',
             padding: `${resolvedPad.top}px ${resolvedPad.right}px ${resolvedPad.bottom}px ${resolvedPad.left}px`,
@@ -227,6 +229,7 @@ export default function Artboard({
                   dropTargetId={dropTargetId}
                   artboardLayoutOn={layoutOn}
                   artboardFlexDir={resolvedLayout?.flexDirection ?? 'column'}
+                  artboardAlignItems={resolvedLayout?.alignItems ?? 'flex-start'}
                   onStartElementDrag={onStartElementDrag}
                   onStartElementResize={onStartResize}
                   onStartElementRotate={onStartRotate}
@@ -236,6 +239,7 @@ export default function Artboard({
                   reorderTarget={reorderTarget}
                   dragPreview={dragPreview}
                   draggingElementId={draggingElementId}
+                  draggingElementBpId={draggingElementBpId}
                 />
               </React.Fragment>
             );
@@ -325,6 +329,10 @@ export default function Artboard({
                 onStartElementResize={onStartResize}
                 onStartElementRotate={onStartRotate}
                 onDropOntoElement={onDropOntoElement}
+                artboardLayoutOn={layoutOn}
+                artboardFlexDir={resolvedLayout?.flexDirection ?? 'column'}
+                artboardAlignItems={resolvedLayout?.alignItems ?? 'flex-start'}
+                draggingElementBpId={draggingElementBpId}
               />
             ))}
           </div>

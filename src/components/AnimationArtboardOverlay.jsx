@@ -79,9 +79,7 @@ function useElementRect(boardRef, elementId, deps) {
       setRect({
         left: (targetRect.left - boardRect.left) / Math.max(scaleX, 0.0001),
         top: (targetRect.top - boardRect.top) / Math.max(scaleY, 0.0001),
-        anchorTop: isStickyElement(target)
-          ? (getLocalOffsetWithinAncestor(target, board) / Math.max(scaleY, 0.0001))
-          : ((targetRect.top - boardRect.top) / Math.max(scaleY, 0.0001)),
+        anchorTop: getLocalOffsetWithinAncestor(target, board) / Math.max(scaleY, 0.0001),
         width: targetRect.width / Math.max(scaleX, 0.0001),
         height: targetRect.height / Math.max(scaleY, 0.0001),
       });
