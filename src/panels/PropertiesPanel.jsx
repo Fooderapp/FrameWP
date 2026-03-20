@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
@@ -1146,6 +1146,25 @@ export default function PropertiesPanel() {
     };
   }, [transitionContextMenu]);
   const closeScrollSequenceRangeEditor = useEditorStore(s => s.closeScrollSequenceRangeEditor);
+
+  const selectedAnimationStillExists = useMemo(() => {
+    if (!elementAnimationModalState?.animationId || !element || !selection) return false;
+    return resolveElementAnimations(element, selection.bpId || 'desktop')
+      .some((entry) => entry.id === elementAnimationModalState.animationId);
+  }, [element, elementAnimationModalState?.animationId, selection]);
+
+  useEffect(() => {
+    if (!elementAnimationModalState) return;
+    if (selectedAnimationStillExists) return;
+    setElementAnimationModalState(null);
+    closeAnimationEditor();
+    closeScrollSequenceRangeEditor();
+  }, [
+    closeAnimationEditor,
+    closeScrollSequenceRangeEditor,
+    elementAnimationModalState,
+    selectedAnimationStillExists,
+  ]);
 
   // Artboard selection
   const artboardSel         = useEditorStore(s => s.artboardSel);

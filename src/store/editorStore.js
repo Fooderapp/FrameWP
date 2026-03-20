@@ -4587,6 +4587,8 @@ export const useEditorStore = create((set, get) => {
 
     deleteElements(elementIds) {
       const els = getEls();
+      const currentAnimationEditor = get().animationEditor;
+      const currentScrollSequenceRangeEditor = get().scrollSequenceRangeEditor;
       const toDelete = new Set();
       const collect = (id) => {
         toDelete.add(id);
@@ -4601,6 +4603,8 @@ export const useEditorStore = create((set, get) => {
       );
       set(state => ({
         selection: removeSelectionIds(state.selection, toDelete),
+        animationEditor: toDelete.has(currentAnimationEditor?.elementId) ? null : state.animationEditor,
+        scrollSequenceRangeEditor: toDelete.has(currentScrollSequenceRangeEditor?.elementId) ? null : state.scrollSequenceRangeEditor,
       }));
     },
 
