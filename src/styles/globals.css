@@ -9139,3 +9139,17 @@ html, body, #framebuilder-root {
 .fb-scroll-sequence-panel__actions {
   flex-wrap: wrap;
 }
+
+.fb-app .fb-topbar__left {
+  justify-content: flex-start;
+  gap: 18px;
+}
+
+.fb-app .fb-topbar__brandmark,
+.fb-app .fb-topbar__brand {
+  color: #7BE300;
+}
+
+.fb-app .fb-topbar__back {
+  flex-shrink: 0;
+}

@@ -72,16 +72,15 @@ export default function TopBar() {
   return (
     <header className="fb-topbar">
       <div className="fb-topbar__left">
-        <button type="button" className="fb-secondary-btn fb-topbar__back" onClick={handleBackToWordPress}>
-          {UIIcons.arrowLeft}
-          <span>WordPress</span>
-        </button>
         <div className="fb-topbar__project">
           <span className="fb-topbar__brandmark">
             <AtomLogo />
           </span>
-          <span className="fb-topbar__brand">Atom</span>
         </div>
+        <button type="button" className="fb-secondary-btn fb-topbar__back" onClick={handleBackToWordPress}>
+          {UIIcons.arrowLeft}
+          <span>WordPress</span>
+        </button>
       </div>
 
       <div className="fb-topbar__center">

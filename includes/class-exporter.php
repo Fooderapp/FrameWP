@@ -2640,6 +2640,13 @@ class FrameBuilder_Exporter {
 	};
 	var refreshNaturalMarkerAnchor = function(target, ancestor) {
 		if (!target || !ancestor) return;
+		if (isStickyNodeElement(target)) {
+			var stickyLocalOffsetTop = getCumulativeOffsetTop(target) - getCumulativeOffsetTop(ancestor);
+			if (isFinite(stickyLocalOffsetTop)) {
+				target.__fbNaturalLocalOffsetTop = stickyLocalOffsetTop;
+				return;
+			}
+		}
 		if (isOffsetParentAncestor(target, ancestor)) {
 			target.__fbNaturalLocalOffsetTop = getCumulativeOffsetTop(target) - getCumulativeOffsetTop(ancestor);
 			return;
@@ -2774,7 +2781,6 @@ class FrameBuilder_Exporter {
 		if (!node || node.dataset.fbScrollSequenceBound === '1') return;
 		var config = parseJsonAttr(node.dataset.fbScrollSequence, null);
 		if (!config || typeof config !== 'object') return;
-		refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
 		var media = node.querySelector('[data-fb-scroll-sequence-media]');
 		if (!media) return;
 		node.dataset.fbScrollSequenceBound = '1';
@@ -2793,13 +2799,15 @@ class FrameBuilder_Exporter {
 		var lastFrameIndex = -1;
 		var scrollFrame = null;
 		var metrics = null;
-		var refreshMetrics = function() {
-			refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
+		var refreshMetrics = function(forceAnchorRefresh) {
+			if (forceAnchorRefresh || !isStickyNodeElement(node)) {
+				refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
+			}
 			metrics = buildScrollAnimationMetrics(node, config.start, config.end, config.startOffsetPx, config.endOffsetPx);
 		};
 		var updateSequence = function() {
 			scrollFrame = null;
-			refreshMetrics();
+			refreshMetrics(false);
 			var progress = getScrollAnimationProgressFromMetrics(metrics);
 			node.style.setProperty('--fb-scroll-sequence-progress', String(progress));
 			if (type === 'video') {
@@ -2830,10 +2838,10 @@ class FrameBuilder_Exporter {
 			scrollFrame = window.requestAnimationFrame(updateSequence);
 		};
 		var handleResize = function() {
-			refreshMetrics();
+			refreshMetrics(true);
 			requestUpdate();
 		};
-		refreshMetrics();
+		refreshMetrics(true);
 		window.addEventListener('scroll', requestUpdate, { passive: true });
 		window.addEventListener('resize', handleResize);
 		window.addEventListener('load', handleResize);
