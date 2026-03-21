@@ -15,6 +15,9 @@ import { useEditorStore } from './store/editorStore';
 export default function App() {
   const loadLayout = useEditorStore(s => s.loadLayout);
   const loadComponents = useEditorStore(s => s.loadComponents);
+  const loadColorStyles = useEditorStore(s => s.loadColorStyles);
+  const loadTextStyles = useEditorStore(s => s.loadTextStyles);
+  const loadElementStyles = useEditorStore(s => s.loadElementStyles);
   const loadGlobalVariables = useEditorStore(s => s.loadGlobalVariables);
   const loadVariableSources = useEditorStore(s => s.loadVariableSources);
   const repairComponentEditorState = useEditorStore(s => s.repairComponentEditorState);
@@ -54,6 +57,9 @@ export default function App() {
       const layoutState = await loadLayout();
       await Promise.all([
         layoutState?.hasStoredComponentLibrary ? Promise.resolve() : loadComponents(),
+        loadColorStyles(),
+        loadTextStyles(),
+        loadElementStyles(),
         loadGlobalVariables(),
         loadVariableSources(),
       ]);

@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { gsap, Flip } from 'gsap/all';
-import { resolveElement } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementAnimations } from '../store/editorStore';
+import { getEmbedPreview } from './embedUtils';
 import { familyToFontStack } from './googleFonts';
 import { sanitizeSvgMarkup } from './iconLibrary';
+import { getLoopAnimationStyle, useLoopAnimationPlayback } from './loopAnimation';
 import { getResolvedRichTextHtml } from './richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from './videoUtils';
 
@@ -631,7 +633,10 @@ function collectTopLevelUnmatchedNodes(variantNode, matchedIds) {
 }
 
 function PreviewNode({ element, indexById, bpId = 'desktop' }) {
+  const nodeRef = useRef(null);
+  const loopAnimationPreview = useEditorStore((state) => state.loopAnimationPreview);
   const resolved = resolveElement(element, bpId);
+  const activeLoopAnimation = resolveElementAnimations(element, bpId).find((entry) => entry.type === 'loop') ?? null;
   const styles = resolved?.styles ?? {};
   const widthMode = resolved?.widthMode ?? 'fixed';
   const heightMode = resolved?.heightMode ?? 'fixed';
@@ -686,7 +691,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const hasGradientFrameStroke = typeof styles?.borderColor === 'string' && styles.borderColor.includes('gradient(');
   const strokeWidth = Math.max(0, parseFloat(styles?.strokeWidth) || 0);
   const strokeColor = getGradientFallbackColor(styles?.strokeColor, element.type === 'icon' ? (styles?.color ?? '#111827') : '#000000');
-  const iconMarkup = element.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
+  const iconMarkup = element.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '', { forceCurrentColor: false }) : '';
   const builderVideoAutoplay = element.type === 'video'
     ? resolved?.videoAutoplay === true && resolved?.videoDisableAutoplayInBuilder !== true
     : false;
@@ -704,12 +709,22 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const scrollSequencePreview = element.type === 'scroll-sequence'
     ? getScrollSequencePreview(resolved)
     : null;
+  const embedPreview = element.type === 'embed'
+    ? getEmbedPreview(resolved)
+    : null;
   const backgroundColor = styles?.backgroundColor && !String(styles.backgroundColor).includes('gradient(')
     ? styles.backgroundColor
     : undefined;
   const backgroundImage = String(styles?.backgroundColor ?? '').includes('gradient(')
     ? styles.backgroundColor
     : (backgroundImageUrl ? `url(${backgroundImageUrl})` : undefined);
+  const baseTransform = resolved?.rotation ? `rotate(${resolved.rotation}deg)` : '';
+  const isLoopPreviewActive = !!activeLoopAnimation
+    && loopAnimationPreview?.elementId === element.id
+    && loopAnimationPreview?.bpId === bpId
+    && loopAnimationPreview?.animationId === activeLoopAnimation.id;
+  const loopAnimationPlayState = useLoopAnimationPlayback(nodeRef, isLoopPreviewActive, activeLoopAnimation?.offscreenBehavior);
+  const loopAnimationStyle = getLoopAnimationStyle(isLoopPreviewActive ? activeLoopAnimation : null, baseTransform, loopAnimationPlayState);
 
   const style = {
     position: isSticky ? 'sticky' : (isRelative ? 'relative' : 'absolute'),
@@ -727,7 +742,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     maxWidth: resolved?.maxW ?? undefined,
     minHeight: effectiveFlowPosition ? flowMinHeight : (resolved?.minH ?? undefined),
     maxHeight: resolved?.maxH ?? undefined,
-    transform: resolved?.rotation ? `rotate(${resolved.rotation}deg)` : undefined,
+    transform: loopAnimationStyle ? undefined : (baseTransform || undefined),
     backgroundColor,
     backgroundImage,
     backgroundSize: backgroundImage ? (styles?.backgroundSize ?? 'cover') : undefined,
@@ -756,6 +771,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     justifyContent: styles?.justifyContent,
     boxSizing: 'border-box',
     pointerEvents: resolved?.hidden ? 'none' : undefined,
+    ...(loopAnimationStyle ?? {}),
   };
 
   const textStyle = element.type === 'text' ? {
@@ -777,7 +793,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   } : null;
 
   return (
-    <div className="fb-component-play-preview__node" data-fb-node-id={element.id} data-flip-id={element.id} style={style}>
+    <div ref={nodeRef} className="fb-component-play-preview__node" data-fb-node-id={element.id} data-flip-id={element.id} style={style}>
       {hasGradientFrameStroke && styles?.borderWidth > 0 ? (
         <div
           aria-hidden="true"
@@ -844,6 +860,46 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: styles?.objectFit ?? 'cover', borderRadius: 'inherit' }}
             draggable={false}
           />
+        )
+      ) : null}
+      {element.type === 'embed' ? (
+        embedPreview?.mode === 'html' && embedPreview?.hasPreview ? (
+          <iframe
+            srcDoc={embedPreview.srcDoc}
+            title={element.name || 'Embed'}
+            sandbox=""
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: 'transparent', pointerEvents: 'none' }}
+          />
+        ) : (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 18,
+              border: '1.5px dashed rgba(120,120,160,0.32)',
+              borderRadius: 'inherit',
+              background: 'linear-gradient(180deg, rgba(248,250,252,0.92), rgba(241,245,249,0.88))',
+              color: '#0f172a',
+              pointerEvents: 'none',
+            }}
+          >
+            <div style={{ display: 'grid', gap: 8, width: '100%', maxWidth: 240 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 700 }}>
+                  {embedPreview?.mode === 'shortcode' ? 'Shortcode renders on publish' : `${(embedPreview?.mode ?? 'html').toUpperCase()} snippet`}
+                </span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(15,23,42,0.08)', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em' }}>
+                  {(embedPreview?.mode ?? 'html').toUpperCase()}
+                </span>
+              </div>
+              <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 10.5, lineHeight: 1.5, color: 'rgba(15,23,42,0.72)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 110, overflow: 'hidden' }}>
+                {embedPreview?.code?.trim() || 'Add code in the element properties.'}
+              </div>
+            </div>
+          </div>
         )
       ) : null}
       {element.type === 'text' ? (

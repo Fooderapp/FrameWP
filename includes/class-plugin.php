@@ -131,6 +131,7 @@ class FrameBuilder_Plugin {
 			return;
 		}
 
+		self::cleanup_builder_admin_screen();
 		self::dequeue_builder_admin_scripts();
 
 		wp_deregister_script( 'svg-painter' );
@@ -142,7 +143,8 @@ class FrameBuilder_Plugin {
 
 		// Hide default WP admin chrome when builder is open
 		echo '<style>#wpcontent,#wpbody{padding:0!important;margin:0!important;}
-		      #adminmenuwrap,#adminmenuback,#wpadminbar{display:none!important;}
+		      #adminmenuwrap,#adminmenuback,#wpadminbar,#screen-meta-links,#screen-meta,.notice,.update-nag,#wp-auth-check-wrap,.screen-reader-shortcut{display:none!important;}
+		      body.wp-admin .hidden{display:none!important;}
 		      body{overflow:hidden!important;}</style>';
 
 		$assets_dir = FB_DIR . 'assets/';
@@ -206,6 +208,15 @@ class FrameBuilder_Plugin {
 			}
 		}
 		return false;
+	}
+
+	private static function cleanup_builder_admin_screen(): void {
+		if ( ! self::is_builder_screen() ) {
+			return;
+		}
+
+		remove_action( 'admin_print_footer_scripts', 'wp_auth_check_html', 5 );
+		remove_action( 'admin_footer', 'wp_auth_check_html', 5 );
 	}
 
 	public static function dequeue_builder_admin_scripts() {

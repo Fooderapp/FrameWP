@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atomiq Teleport</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c1114;
+      --panel: #12191e;
+      --panel-2: #182128;
+      --line: rgba(255, 255, 255, 0.08);
+      --text: #eef4ea;
+      --muted: rgba(238, 244, 234, 0.64);
+      --accent: #7be300;
+      --accent-soft: rgba(123, 227, 0, 0.12);
+      --danger: #ff7c69;
+      --shadow: 0 22px 48px rgba(0, 0, 0, 0.32);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #0c1114, #11181d);
+      color: var(--text);
+    }
+
+    .app {
+      min-height: 100vh;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(20, 28, 34, 0.96), rgba(17, 24, 29, 0.94));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brandmark {
+      width: 36px;
+      height: 36px;
+      padding: 8px;
+      border-radius: 12px;
+      background: rgba(123, 227, 0, 0.1);
+      color: var(--accent);
+      box-shadow: inset 0 0 0 1px rgba(123, 227, 0, 0.18);
+    }
+
+    .eyebrow {
+      margin: 0 0 2px;
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .title {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+
+    .subtle {
+      margin: 10px 0 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    .stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status.ready {
+      background: var(--accent-soft);
+      border-color: rgba(123, 227, 0, 0.24);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.28);
+    }
+
+    .status.ready .dot {
+      background: var(--accent);
+    }
+
+    .meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 4px 2px 0;
+    }
+
+    .meta-item {
+      flex: 1;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .meta-label {
+      display: block;
+      color: var(--muted);
+      margin-bottom: 2px;
+    }
+
+    .meta-value {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .feedback {
+      min-height: 34px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+
+    .feedback.success { color: var(--accent); }
+    .feedback.error { color: var(--danger); }
+
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 14px;
+      padding: 13px 14px;
+      font: inherit;
+      cursor: pointer;
+      transition: transform 120ms ease, opacity 120ms ease, background 120ms ease, border-color 120ms ease;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+      transform: none;
+    }
+
+    .primary {
+      background: linear-gradient(180deg, #8cff16, #73da00);
+      color: #071100;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+      box-shadow: 0 12px 22px rgba(123, 227, 0, 0.2);
+    }
+
+    .secondary {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      font-weight: 700;
+    }
+
+    .button-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 8px;
+    }
+
+    button:not(:disabled):hover {
+      transform: translateY(-1px);
+    }
+
+    .hint {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="card stack">
+      <div class="brand">
+        <div class="brandmark" aria-hidden="true">
+          <svg viewBox="0 0 382 356" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M222.879 47.7959L186.252 111.233L247.601 75.8145L381.101 307.044L298.315 354.84L267 300.6V356H0V260.407H57.1318L6.59277 231.229L140.093 0L222.879 47.7959ZM100.128 260.407H243.795L171.961 135.987L100.128 260.407Z" fill="currentColor"/>
+          </svg>
+        </div>
+        <div>
+          <p class="eyebrow">Atomiq</p>
+          <h1 class="title">Teleport</h1>
+        </div>
+      </div>
+      <p class="subtle">Copy the current Figma selection as Teleport JSON, then paste it directly into FRAMEWP.</p>
+    </section>
+
+    <section class="card stack">
+      <div id="selection-pill" class="status">
+        <span class="dot"></span>
+        <span id="selection-summary">No selection</span>
+      </div>
+
+      <div class="meta">
+        <div class="meta-item">
+          <span class="meta-label">Selection</span>
+          <span id="selection-name" class="meta-value">Nothing selected</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Status</span>
+          <span id="selection-status" class="meta-value">Waiting</span>
+        </div>
+      </div>
+
+      <div id="feedback" class="feedback">Select a frame or layer, then copy it to the clipboard.</div>
+
+      <div class="button-row">
+        <button id="copy" class="primary" type="button" disabled>Copy to Teleport</button>
+        <button id="refresh" class="secondary" type="button">Refresh</button>
+        <button id="close" class="secondary" type="button">Close</button>
+      </div>
+
+      <div class="hint">Selection updates automatically. Copy only becomes active when the current selection snapshot is ready.</div>
+    </section>
+  </div>
+
+  <script>
+    const copyButton = document.getElementById('copy');
+    const refreshButton = document.getElementById('refresh');
+    const closeButton = document.getElementById('close');
+    const feedback = document.getElementById('feedback');
+    const selectionName = document.getElementById('selection-name');
+    const selectionPill = document.getElementById('selection-pill');
+    const selectionSummary = document.getElementById('selection-summary');
+    const selectionStatus = document.getElementById('selection-status');
+    let cachedPayloadText = '';
+    let cachedSelectionName = '';
+
+    function post(type) {
+      parent.postMessage({ pluginMessage: { type } }, '*');
+    }
+
+    function setFeedback(message, tone) {
+      feedback.textContent = message;
+      feedback.className = `feedback${tone ? ` ${tone}` : ''}`;
+    }
+
+    async function writeClipboard(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const field = document.createElement('textarea');
+      field.value = text;
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.appendChild(field);
+      field.focus();
+      field.select();
+      document.execCommand('copy');
+      document.body.removeChild(field);
+    }
+
+    copyButton.onclick = async () => {
+      if (!cachedPayloadText) {
+        setFeedback('This selection is still syncing. Wait a moment, then copy again.', 'error');
+        return;
+      }
+      try {
+        await writeClipboard(cachedPayloadText);
+        setFeedback(`Copied ${cachedSelectionName || 'selection'} to the clipboard.`, 'success');
+      } catch (error) {
+        setFeedback('Clipboard write was blocked. Try again and allow clipboard access.', 'error');
+      }
+    };
+
+    refreshButton.onclick = () => post('refresh-selection');
+    closeButton.onclick = () => post('cancel');
+
+    window.onmessage = async (event) => {
+      const message = event.data.pluginMessage;
+      if (!message) return;
+
+      if (message.type === 'selection-state') {
+        cachedPayloadText = message.payloadReady ? (message.payloadText || '') : '';
+        cachedSelectionName = message.selectionName || '';
+        selectionName.textContent = message.selectionName;
+        selectionSummary.textContent = message.canCopy ? `${message.selectionCount} selected` : 'No selection';
+        selectionPill.className = `status${message.payloadReady ? ' ready' : ''}`;
+        selectionStatus.textContent = message.payloadReady ? 'Ready' : (message.canCopy ? 'Preparing' : 'Waiting');
+        copyButton.disabled = !message.canCopy || !message.payloadReady;
+        if (!message.canCopy) setFeedback('Select a frame or layer, then copy it to the clipboard.', '');
+        else if (!message.payloadReady) setFeedback('Preparing the current selection…', '');
+        return;
+      }
+
+      if (message.type === 'copy-error') {
+        setFeedback(message.message || 'Copy failed.', 'error');
+        return;
+      }
+    };
+
+    post('refresh-selection');
+  </script>
+</body>
+</html>

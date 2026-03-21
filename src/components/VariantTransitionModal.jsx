@@ -383,8 +383,13 @@ export default function VariantTransitionModal({ sourceName, targetName, initial
   };
 
   return (
-    <div className="fb-overlay-modal" onMouseDown={onCancel}>
-      <div className="fb-overlay-modal__card fb-variant-transition-modal" onMouseDown={(e) => e.stopPropagation()} onContextMenu={handleContextMenu}>
+    <div className="fb-overlay-modal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <div
+        className="fb-overlay-modal__card fb-variant-transition-modal"
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onContextMenu={handleContextMenu}
+      >
         <button type="button" className="fb-variant-transition-modal__close" onClick={onCancel} aria-label="Close transition modal">
           ×
         </button>

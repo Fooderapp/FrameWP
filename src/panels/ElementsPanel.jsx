@@ -37,6 +37,19 @@ export const ELEMENT_TYPES = [
     meta: 'Media',
   },
   {
+    type: 'embed',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M5.5 4 2.5 8l3 4" />
+        <path d="M10.5 4 13.5 8l-3 4" />
+        <path d="M8.9 2.5 7 13.5" />
+      </svg>
+    ),
+    label: 'Embed',
+    hint: 'HTML snippets, WordPress shortcodes, and code handoff blocks',
+    meta: 'Custom',
+  },
+  {
     type: 'scroll-sequence',
     icon: (
       <svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" stroke="none">

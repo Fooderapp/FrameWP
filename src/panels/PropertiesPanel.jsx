@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
+import { ASSET_STORAGE_COMPONENT_ID, useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import CustomSelect from '../components/CustomSelect';
+import { EMBED_MODE_OPTIONS } from '../components/embedUtils';
 import { IconButton, UIIcons } from '../components/UIIcons';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
 import { getRichTextInlineStyleValues, plainTextToRichTextHtml } from '../components/richText';
@@ -40,6 +41,46 @@ function getDefaultInteractionValue(variableType) {
   if (variableType === 'color') return '#000000';
   if (variableType === 'number') return 0;
   return '';
+}
+
+const ASSET_TEXT_STYLE_KEYS = [
+  'color', 'fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'fontSizeUnit',
+  'lineHeight', 'lineHeightUnit', 'letterSpacing', 'letterSpacingUnit', 'textAlign',
+  'textTransform', 'textDecoration',
+];
+
+function pickAssetStyleProps(source = {}, keys = []) {
+  return keys.reduce((acc, key) => {
+    if (source?.[key] != null && source[key] !== '') acc[key] = source[key];
+    return acc;
+  }, {});
+}
+
+function buildPanelTextStyleAsset(element, resolved) {
+  return {
+    id: `txt-style-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: `${element?.name || element?.type || 'Text'} Text`,
+    type: 'text',
+    source: 'builder',
+    sourceId: element?.id || '',
+    styleProps: pickAssetStyleProps(resolved?.styles ?? {}, ASSET_TEXT_STYLE_KEYS),
+  };
+}
+
+function buildPanelElementStyleAsset(element, resolved) {
+  return {
+    id: `el-style-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: `${element?.name || element?.type || 'Element'} Style`,
+    type: element?.type || 'element',
+    source: 'builder',
+    sourceId: element?.id || '',
+    styleProps: { ...(resolved?.styles ?? {}) },
+  };
+}
+
+function isSameAssetStyle(existing, candidate) {
+  return `${existing?.name || ''}`.trim().toLowerCase() === `${candidate?.name || ''}`.trim().toLowerCase()
+    && JSON.stringify(existing?.styleProps ?? existing?.value ?? null) === JSON.stringify(candidate?.styleProps ?? candidate?.value ?? null);
 }
 
 function getTextColorMeta(resolved, fallback = '#000000') {
@@ -1036,8 +1077,22 @@ function getTransitionSummary(interaction) {
 
 function getElementAnimationTypeLabel(type) {
   if (type === 'scroll') return 'Scroll';
+  if (type === 'loop') return 'Loop';
   if (type === 'scroll-variant') return 'Scroll variant';
   return 'Appear';
+}
+
+function summarizeLoopEffect(effect) {
+  if (!effect) return '';
+  const parts = [];
+  if ((effect.offsetY ?? 0) !== 0) parts.push(`Y ${Math.round(effect.offsetY)}px`);
+  if ((effect.offsetX ?? 0) !== 0) parts.push(`X ${Math.round(effect.offsetX)}px`);
+  if ((effect.opacity ?? 1) !== 1) parts.push(`Opacity ${Math.round((effect.opacity ?? 1) * 100)}%`);
+  if ((effect.scale ?? 1) !== 1) parts.push(`Scale ${Math.round((effect.scale ?? 1) * 100)}%`);
+  if ((effect.rotateMode === '3d'
+    ? (effect.rotateX ?? 0) || (effect.rotateY ?? 0) || (effect.rotate ?? 0)
+    : (effect.rotate ?? 0)) !== 0) parts.push('Rotate');
+  return parts.join(' · ');
 }
 
 function getElementAnimationSummary(animation, variantOptions = []) {
@@ -1047,6 +1102,14 @@ function getElementAnimationSummary(animation, variantOptions = []) {
   }
   if (animation.type === 'scroll') {
     return `Start ${Math.round((animation.start ?? 0) * 100)}% · End ${Math.round((animation.end ?? 0) * 100)}%`;
+  }
+  if (animation.type === 'loop') {
+    const modeLabel = animation.loopType === 'mirror' ? 'Mirror' : 'Loop';
+    const effectSummary = summarizeLoopEffect(animation.effect);
+    const parts = [modeLabel];
+    if (animation.delay > 0) parts.push(`${Math.round((animation.delay ?? 0) * 10) / 10}s delay`);
+    if (effectSummary) parts.push(effectSummary);
+    return parts.join(' · ');
   }
   const targets = Array.isArray(animation.targets) ? animation.targets : [];
   if (!targets.length) return 'Add variant triggers';
@@ -1069,6 +1132,79 @@ function getVariantLabel(variants, variant) {
   return `${parent?.name || 'Variant'} · ${stateName}`;
 }
 
+const COMPONENT_CONTROL_TYPE_OPTIONS = [
+  { value: 'text', label: 'Text' },
+  { value: 'textarea', label: 'Textarea' },
+  { value: 'number', label: 'Number' },
+  { value: 'boolean', label: 'Boolean' },
+  { value: 'select', label: 'Select' },
+  { value: 'color', label: 'Color' },
+  { value: 'image', label: 'Image URL' },
+  { value: 'url', label: 'URL' },
+];
+
+function getComponentControlDefaultValue(type, options = []) {
+  if (type === 'boolean') return false;
+  if (type === 'number') return 0;
+  if (type === 'color') return '#000000';
+  if (type === 'select') return options[0]?.value ?? '';
+  return '';
+}
+
+function getComponentControlTypeForProperty(property) {
+  if (property === 'hidden') return 'boolean';
+  if (property === 'src') return 'url';
+  if (property === 'styles.backgroundColor' || property === 'styles.color') return 'color';
+  if (property === 'styles.borderRadius' || property === 'styles.borderWidth' || property === 'styles.opacity') return 'number';
+  return 'text';
+}
+
+function getComponentControlPropertyOptions(element) {
+  if (!element) return [];
+  const options = [];
+  const hasText = typeof element.base?.text === 'string' || typeof element.base?.richTextHtml === 'string';
+  const hasSource = Object.prototype.hasOwnProperty.call(element.base ?? {}, 'src');
+
+  if (hasText) options.push({ value: 'text', label: 'Text content' });
+  if (hasSource) options.push({ value: 'src', label: 'Source URL' });
+  options.push({ value: 'hidden', label: 'Hidden' });
+  options.push({ value: 'styles.backgroundColor', label: 'Background color' });
+  options.push({ value: 'styles.color', label: 'Text/Icon color' });
+  options.push({ value: 'styles.borderRadius', label: 'Border radius' });
+  options.push({ value: 'styles.borderWidth', label: 'Border width' });
+  options.push({ value: 'styles.opacity', label: 'Opacity' });
+
+  return options.filter((option, index, allOptions) => allOptions.findIndex((candidate) => candidate.value === option.value) === index);
+}
+
+function formatComponentControlOptionsText(options = []) {
+  return (options ?? []).map((option) => {
+    if (!option) return '';
+    if (option.label && option.label !== option.value) return `${option.label}|${option.value}`;
+    return option.value ?? '';
+  }).join('\n');
+}
+
+function parseComponentControlOptionsText(text) {
+  return `${text ?? ''}`
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [rawLabel, rawValue] = line.includes('|') ? line.split('|') : [line, line];
+      const label = `${rawLabel ?? ''}`.trim();
+      const value = `${rawValue ?? rawLabel ?? ''}`.trim();
+      return { label: label || value, value: value || label };
+    })
+    .filter((option) => option.value);
+}
+
+function getComponentControlEffectiveValue(control, props = {}) {
+  return Object.prototype.hasOwnProperty.call(props, control.id)
+    ? props[control.id]
+    : control.defaultValue;
+}
+
 // ── Reset override button ───────────────────────────────────────
 function ResetBtn({ show, onReset }) {
   if (!show) return null;
@@ -1079,7 +1215,6 @@ function ResetBtn({ show, onReset }) {
       onClick={e => { e.stopPropagation(); e.preventDefault(); onReset(); }}
     >
       <span className="fb-reset-btn__icon">{UIIcons.inherit}</span>
-      <span className="fb-reset-btn__label">Reset</span>
     </button>
   );
 }
@@ -1093,9 +1228,11 @@ export default function PropertiesPanel() {
   const [elementAnimationModalState, setElementAnimationModalState] = useState(null);
   const [animationAddMenuOpen, setAnimationAddMenuOpen] = useState(false);
   const [shadowModalOpen, setShadowModalOpen] = useState(false);
+  const selectedPanelRef = useRef(null);
   const fontPreviewSnapshotRef = useRef(null);
   const shadowTriggerRef = useRef(null);
   const shadowDraftDirtyRef = useRef(false);
+  const animationDraftDirtyRef = useRef(false);
   const selection           = useEditorStore(s => s.selection);
   const activeSurface       = useEditorStore(s => s.activeSurface);
   const componentEditor     = useEditorStore(s => s.componentEditor);
@@ -1103,7 +1240,11 @@ export default function PropertiesPanel() {
   const globalVariables     = useEditorStore(s => s.globalVariables);
   const components          = useEditorStore(s => s.components);
   const changeComponentInstanceVariant = useEditorStore(s => s.changeComponentInstanceVariant);
+  const updateComponentInstanceProp = useEditorStore(s => s.updateComponentInstanceProp);
   const updateComponentEditorVariantInteraction = useEditorStore(s => s.updateComponentEditorVariantInteraction);
+  const addComponentEditorControl = useEditorStore(s => s.addComponentEditorControl);
+  const updateComponentEditorControl = useEditorStore(s => s.updateComponentEditorControl);
+  const removeComponentEditorControl = useEditorStore(s => s.removeComponentEditorControl);
   const activeVectorPoint   = useEditorStore(s => s.activeVectorPoint);
   const setActiveVectorPoint = useEditorStore(s => s.setActiveVectorPoint);
   const clearActiveVectorPoint = useEditorStore(s => s.clearActiveVectorPoint);
@@ -1125,11 +1266,21 @@ export default function PropertiesPanel() {
   const allEls              = useEditorStore(s => s.getAllElements());
   const viewportScale       = useEditorStore(s => s.viewport.scale);
   const openIconLibraryModal = useEditorStore(s => s.openIconLibraryModal);
+  const openAssetStorage = useEditorStore(s => s.openAssetStorage);
+  const colorStyles = useEditorStore(s => s.colorStyles);
+  const saveColorStyles = useEditorStore(s => s.saveColorStyles);
+  const textStyles = useEditorStore(s => s.textStyles);
+  const saveTextStyles = useEditorStore(s => s.saveTextStyles);
+  const elementStyles = useEditorStore(s => s.elementStyles);
+  const saveElementStyles = useEditorStore(s => s.saveElementStyles);
   const addElementAnimation = useEditorStore(s => s.addElementAnimation);
   const updateElementAnimation = useEditorStore(s => s.updateElementAnimation);
   const removeElementAnimation = useEditorStore(s => s.removeElementAnimation);
   const openAnimationEditor = useEditorStore(s => s.openAnimationEditor);
   const closeAnimationEditor = useEditorStore(s => s.closeAnimationEditor);
+  const loopAnimationPreview = useEditorStore(s => s.loopAnimationPreview);
+  const openLoopAnimationPreview = useEditorStore(s => s.openLoopAnimationPreview);
+  const closeLoopAnimationPreview = useEditorStore(s => s.closeLoopAnimationPreview);
   const openScrollSequenceRangeEditor = useEditorStore(s => s.openScrollSequenceRangeEditor);
 
   useEffect(() => {
@@ -1146,6 +1297,13 @@ export default function PropertiesPanel() {
     };
   }, [transitionContextMenu]);
   const closeScrollSequenceRangeEditor = useEditorStore(s => s.closeScrollSequenceRangeEditor);
+
+  const selectedLoopAnimationId = useMemo(() => {
+    if (!elementAnimationModalState?.animationId || !element || !selection) return null;
+    const currentBpId = selection.bpId || 'desktop';
+    return resolveElementAnimations(element, currentBpId)
+      .find((entry) => entry.id === elementAnimationModalState.animationId && entry.type === 'loop')?.id ?? null;
+  }, [element, elementAnimationModalState?.animationId, selection]);
 
   const selectedAnimationStillExists = useMemo(() => {
     if (!elementAnimationModalState?.animationId || !element || !selection) return false;
@@ -1165,6 +1323,21 @@ export default function PropertiesPanel() {
     elementAnimationModalState,
     selectedAnimationStillExists,
   ]);
+
+  useEffect(() => {
+    if (!selectedLoopAnimationId || !element || !selection) {
+      closeLoopAnimationPreview();
+      return undefined;
+    }
+    openLoopAnimationPreview({
+      elementId: element.id,
+      bpId: selection.bpId || 'desktop',
+      animationId: selectedLoopAnimationId,
+    });
+    return () => {
+      closeLoopAnimationPreview();
+    };
+  }, [closeLoopAnimationPreview, element, openLoopAnimationPreview, selectedLoopAnimationId, selection]);
 
   // Artboard selection
   const artboardSel         = useEditorStore(s => s.artboardSel);
@@ -1198,6 +1371,16 @@ export default function PropertiesPanel() {
   const hasMultiSelection = selectionIds.length > 1;
   const allVariables = [...pageVariables, ...globalVariables];
   const variableLookup = new Map(allVariables.map((variable) => [`${variable.scope}:${variable.id}`, variable]));
+  const componentSourceLabelMap = useMemo(() => {
+    const map = new Map();
+    if (activeSurface !== 'component') return map;
+    (componentEditor.page?.elements ?? []).forEach((entry) => {
+      const sourceId = entry.componentSourceId ?? entry.id;
+      if (!sourceId || map.has(sourceId)) return;
+      map.set(sourceId, entry.name || entry.type || 'Element');
+    });
+    return map;
+  }, [activeSurface, componentEditor.page?.elements]);
 
   const captureFontPreviewSnapshot = (elementIds, currentBpId) => {
     if (fontPreviewSnapshotRef.current) return;
@@ -2011,7 +2194,8 @@ export default function PropertiesPanel() {
   const artboardLayout = resolvePageLayout(page?.layout, bpId);
   const inAutoLayout   = !element.parentId && artboardLayout !== null;
   const isFlowInLayout = inAutoLayout && !resolved.absoluteInLayout;
-  const isComponentRoot = activeSurface === 'component' && !element.parentId;
+  const isAssetStorageSurface = activeSurface === 'component' && componentEditor.componentId === ASSET_STORAGE_COMPONENT_ID;
+  const isComponentRoot = activeSurface === 'component' && !isAssetStorageSurface && !element.parentId;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!element.componentInstance;
   const allowVariableBindings = activeSurface === 'page';
   const componentMeta = isComponentInstanceOnPage ? selectedComponentMeta : null;
@@ -2019,10 +2203,23 @@ export default function PropertiesPanel() {
   const componentVariantId = componentVariants.some((variant) => variant.id === element.componentInstance?.variantId)
     ? element.componentInstance?.variantId
     : componentMeta?.defaultVariantId ?? componentVariants[0]?.id ?? '';
-  const selectedEditorVariant = activeSurface === 'component' && element.componentRoot
+  const selectedEditorVariant = activeSurface === 'component' && !isAssetStorageSurface && element.componentRoot
     ? (componentEditor.variants ?? []).find((variant) => variant.id === element.componentEditorVariantId)
     : null;
+  const transitionEditorVariant = transitionModalState?.variantId
+    ? (componentEditor.variants ?? []).find((variant) => variant.id === transitionModalState.variantId) ?? null
+    : null;
   const selectedEditorVariantLabel = getVariantLabel(componentEditor.variants ?? [], selectedEditorVariant);
+    const transitionEditorTarget = transitionEditorVariant?.interaction?.targetVariantId
+      ? (componentEditor.variants ?? []).find((variant) => variant.id === transitionEditorVariant.interaction.targetVariantId) ?? null
+      : null;
+  const componentEditorControls = activeSurface === 'component' && !isAssetStorageSurface ? (componentEditor.controls ?? []) : [];
+  const componentControlTargetId = activeSurface === 'component' && !isAssetStorageSurface
+    ? (element?.componentSourceId ?? element?.id ?? null)
+    : null;
+  const componentControlPropertyOptions = activeSurface === 'component' && !isAssetStorageSurface
+    ? getComponentControlPropertyOptions(element)
+    : [];
   const selectedEditorTransitionTarget = selectedEditorVariant?.interaction?.targetVariantId
     ? (componentEditor.variants ?? []).find((variant) => variant.id === selectedEditorVariant.interaction.targetVariantId) ?? null
     : null;
@@ -2104,8 +2301,235 @@ export default function PropertiesPanel() {
       }),
     });
   };
+  const componentControlAuthoringSection = activeSurface === 'component' && !isAssetStorageSurface ? (
+    <Section
+      title="Component Controls"
+      action={(
+        <HeaderActionButton
+          icon={UIIcons.plusCircle}
+          title="Add control"
+          label="Add"
+          onClick={() => {
+            const defaultProperty = componentControlPropertyOptions[0]?.value ?? 'text';
+            const inferredType = getComponentControlTypeForProperty(defaultProperty);
+            const nextControlId = addComponentEditorControl({
+              label: `${element?.name || 'Element'} ${componentControlPropertyOptions[0]?.label || 'Control'}`,
+              type: inferredType,
+              defaultValue: getComponentControlDefaultValue(inferredType),
+              options: inferredType === 'select' ? [{ label: 'Option 1', value: 'option-1' }] : [],
+              bindings: componentControlTargetId
+                ? [{ elementId: componentControlTargetId, property: defaultProperty }]
+                : [],
+            });
+            if (nextControlId) commit();
+          }}
+        />
+      )}
+    >
+      <div className="fb-artboard-bp-note" style={{ marginBottom: componentEditorControls.length ? 10 : 0 }}>
+        Select a layer in the component editor, then create controls that bind to its text, source, visibility, or style properties.
+      </div>
+      {!componentEditorControls.length ? (
+        <div className="fb-artboard-bp-note">No controls yet. Add one from the currently selected element.</div>
+      ) : null}
+      {componentEditorControls.map((control) => {
+        const primaryBinding = control.bindings?.[0] ?? null;
+        const bindingTargetLabel = primaryBinding?.elementId
+          ? (componentSourceLabelMap.get(primaryBinding.elementId) ?? 'Bound element')
+          : 'Not bound';
+        return (
+          <div key={control.id} className="fb-section-block" style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Label</span>
+              <input
+                className="fb-prop-input"
+                value={control.label}
+                onChange={(event) => updateComponentEditorControl(control.id, { label: event.target.value })}
+                onBlur={commit}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Type</span>
+              <select
+                className="fb-prop-input"
+                value={control.type}
+                onChange={(event) => {
+                  const nextType = event.target.value;
+                  const nextOptions = nextType === 'select'
+                    ? (control.options?.length ? control.options : [{ label: 'Option 1', value: 'option-1' }])
+                    : [];
+                  updateComponentEditorControl(control.id, {
+                    type: nextType,
+                    options: nextOptions,
+                    defaultValue: getComponentControlDefaultValue(nextType, nextOptions),
+                  });
+                  commit();
+                }}
+              >
+                {COMPONENT_CONTROL_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Binding</span>
+              <select
+                className="fb-prop-input"
+                value={primaryBinding?.elementId === componentControlTargetId ? (primaryBinding?.property ?? '') : ''}
+                onChange={(event) => {
+                  const nextProperty = event.target.value;
+                  updateComponentEditorControl(control.id, {
+                    bindings: nextProperty && componentControlTargetId
+                      ? [{ elementId: componentControlTargetId, property: nextProperty }]
+                      : [],
+                  });
+                  commit();
+                }}
+              >
+                <option value="">Unbound</option>
+                {componentControlPropertyOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="fb-artboard-bp-note" style={{ marginTop: -4, marginBottom: 8 }}>
+              {primaryBinding
+                ? `Currently bound to ${bindingTargetLabel} · ${primaryBinding.property}`
+                : 'Choose a property from the currently selected element to bind this control.'}
+            </div>
+            {control.type === 'select' ? (
+              <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Options</span>
+                <textarea
+                  className="fb-prop-input"
+                  rows={3}
+                  value={formatComponentControlOptionsText(control.options)}
+                  onChange={(event) => updateComponentEditorControl(control.id, { options: parseComponentControlOptionsText(event.target.value) })}
+                  onBlur={commit}
+                />
+              </div>
+            ) : null}
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Default</span>
+              {control.type === 'boolean' ? (
+                <Toggle
+                  value={control.defaultValue === true}
+                  onChange={(nextValue) => {
+                    updateComponentEditorControl(control.id, { defaultValue: nextValue });
+                    commit();
+                  }}
+                />
+              ) : control.type === 'color' ? (
+                <ColorInput
+                  value={control.defaultValue || '#000000'}
+                  onChange={(nextValue) => {
+                    updateComponentEditorControl(control.id, { defaultValue: nextValue });
+                    commit();
+                  }}
+                />
+              ) : control.type === 'number' ? (
+                <NumberInput
+                  value={control.defaultValue ?? 0}
+                  onChange={(nextValue) => {
+                    updateComponentEditorControl(control.id, { defaultValue: nextValue });
+                    commit();
+                  }}
+                />
+              ) : control.type === 'select' ? (
+                <select
+                  className="fb-prop-input"
+                  value={control.defaultValue ?? ''}
+                  onChange={(event) => {
+                    updateComponentEditorControl(control.id, { defaultValue: event.target.value });
+                    commit();
+                  }}
+                >
+                  {(control.options ?? []).map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              ) : control.type === 'textarea' ? (
+                <textarea
+                  className="fb-prop-input"
+                  rows={3}
+                  value={control.defaultValue ?? ''}
+                  onChange={(event) => updateComponentEditorControl(control.id, { defaultValue: event.target.value })}
+                  onBlur={commit}
+                />
+              ) : (
+                <input
+                  className="fb-prop-input"
+                  type={control.type === 'url' || control.type === 'image' ? 'url' : 'text'}
+                  value={control.defaultValue ?? ''}
+                  onChange={(event) => updateComponentEditorControl(control.id, { defaultValue: event.target.value })}
+                  onBlur={commit}
+                />
+              )}
+            </div>
+            <div className="fb-prop-row" style={{ justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="fb-secondary-btn"
+                onClick={() => {
+                  removeComponentEditorControl(control.id);
+                  commit();
+                }}
+              >
+                Remove control
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </Section>
+  ) : null;
 
-  if (activeSurface === 'component' && element.componentRoot) {
+  const saveElementStyleAsset = () => {
+    if (!element || !resolved) return;
+    const nextStyle = buildPanelElementStyleAsset(element, resolved);
+    if ((elementStyles ?? []).some((entry) => isSameAssetStyle(entry, nextStyle))) return;
+    saveElementStyles([...(elementStyles ?? []), nextStyle]);
+  };
+
+  const saveTextStyleAsset = () => {
+    if (!element || element.type !== 'text' || !resolved) return;
+    const nextStyle = buildPanelTextStyleAsset(element, resolved);
+    if ((textStyles ?? []).some((entry) => isSameAssetStyle(entry, nextStyle))) return;
+    saveTextStyles([...(textStyles ?? []), nextStyle]);
+  };
+
+  const saveColorAsset = () => {
+    const colorValue = typeof resolved?.styles?.backgroundColor === 'string' && resolved.styles.backgroundColor && !resolved.styles.backgroundColor.includes('gradient(')
+      ? resolved.styles.backgroundColor
+      : (typeof resolved?.styles?.color === 'string' ? resolved.styles.color : '');
+    if (!colorValue) return;
+    const nextStyle = {
+      id: `clr-style-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: `${element?.name || element?.type || 'Color'} Color`,
+      value: colorValue,
+      source: 'builder',
+      sourceId: element?.id || '',
+    };
+    const exists = (colorStyles ?? []).some((entry) => (`${entry?.name || ''}`.trim().toLowerCase() === nextStyle.name.trim().toLowerCase() && `${entry?.value || ''}` === nextStyle.value));
+    if (exists) return;
+    saveColorStyles([...(colorStyles ?? []), nextStyle]);
+  };
+
+  const saveAsAssetSection = (
+    <Section title="Assets" defaultOpen={false}>
+      <div className="fb-artboard-bp-note" style={{ marginBottom: 10 }}>
+        Save the current layer styling into the Assets library, or jump straight to Storage.
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <button type="button" className="fb-secondary-btn" onClick={saveElementStyleAsset}>Save Element Style</button>
+        {element?.type === 'text' ? <button type="button" className="fb-secondary-btn" onClick={saveTextStyleAsset}>Save Text Style</button> : null}
+        <button type="button" className="fb-secondary-btn" onClick={saveColorAsset}>Save Color</button>
+        <button type="button" className="fb-secondary-btn" onClick={openAssetStorage}>Open Storage</button>
+      </div>
+    </Section>
+  );
+
+  if (activeSurface === 'component' && !isAssetStorageSurface && element.componentRoot) {
     return (
       <>
         <aside className="fb-right">
@@ -2145,6 +2569,7 @@ export default function PropertiesPanel() {
                     : 'This variant inherits from Primary until you override its size here. Instances on the main canvas can still be resized independently.'}
               </div>
             </Section>
+              {componentControlAuthoringSection}
             {isDefaultVariant(selectedEditorVariant) ? (
               <Section title="Transition">
                 {selectedEditorTransitionTarget ? (
@@ -2173,24 +2598,25 @@ export default function PropertiesPanel() {
             ) : null}
           </div>
         </aside>
-        {transitionModalState && selectedEditorVariant && selectedEditorTransitionTarget ? (
+        {transitionModalState && transitionEditorVariant && transitionEditorTarget && typeof document !== 'undefined' ? createPortal(
           <VariantTransitionModal
-            sourceName={selectedEditorVariant.name}
-            targetName={selectedEditorTransitionTarget.name}
-            initialTransition={selectedEditorVariant.interaction?.transition}
-            initialDelay={selectedEditorVariant.interaction?.delay ?? 0}
+            sourceName={transitionEditorVariant.name}
+            targetName={transitionEditorTarget.name}
+            initialTransition={transitionEditorVariant.interaction?.transition}
+            initialDelay={transitionEditorVariant.interaction?.delay ?? 0}
             onCancel={() => setTransitionModalState(null)}
             onSave={({ transition, delay }) => {
-              updateComponentEditorVariantInteraction(selectedEditorVariant.id, {
-                targetVariantId: selectedEditorVariant.interaction?.targetVariantId,
-                trigger: selectedEditorVariant.interaction?.trigger ?? 'click',
+              updateComponentEditorVariantInteraction(transitionEditorVariant.id, {
+                targetVariantId: transitionEditorVariant.interaction?.targetVariantId,
+                trigger: transitionEditorVariant.interaction?.trigger ?? 'click',
                 delay,
                 transition,
               });
               commit();
               setTransitionModalState(null);
             }}
-          />
+          />,
+          document.body,
         ) : null}
         {transitionContextMenu && typeof document !== 'undefined' ? createPortal(
           <div
@@ -2236,7 +2662,7 @@ export default function PropertiesPanel() {
 
   return (
     <>
-    <aside className="fb-right">
+    <aside className={`fb-right${selectedElementAnimation?.type === 'loop' ? ' fb-right--loop-popup-open' : ''}`} ref={selectedPanelRef}>
       <div className="fb-right__header">
         <span className="fb-right__header-title">
           {element.name || element.type}
@@ -2283,8 +2709,74 @@ export default function PropertiesPanel() {
                 ))}
               </select>
             </div>
+            {(componentMeta.controls ?? []).map((control) => {
+              const value = getComponentControlEffectiveValue(control, element.componentInstance?.props ?? {});
+              return (
+                <div key={control.id} className="fb-prop-row" style={{ alignItems: control.type === 'textarea' ? 'flex-start' : 'center' }}>
+                  <span className="fb-prop-label">{control.label}</span>
+                  {control.type === 'boolean' ? (
+                    <Toggle
+                      value={value === true}
+                      onChange={(nextValue) => {
+                        updateComponentInstanceProp(element.id, control.id, nextValue);
+                        commit();
+                      }}
+                    />
+                  ) : control.type === 'color' ? (
+                    <ColorInput
+                      value={value || '#000000'}
+                      onChange={(nextValue) => {
+                        updateComponentInstanceProp(element.id, control.id, nextValue);
+                        commit();
+                      }}
+                    />
+                  ) : control.type === 'number' ? (
+                    <NumberInput
+                      value={value ?? 0}
+                      onChange={(nextValue) => {
+                        updateComponentInstanceProp(element.id, control.id, nextValue);
+                        commit();
+                      }}
+                    />
+                  ) : control.type === 'select' ? (
+                    <select
+                      className="fb-prop-input"
+                      value={value ?? ''}
+                      onChange={(event) => {
+                        updateComponentInstanceProp(element.id, control.id, event.target.value);
+                        commit();
+                      }}
+                    >
+                      {(control.options ?? []).map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  ) : control.type === 'textarea' ? (
+                    <textarea
+                      className="fb-prop-input"
+                      rows={3}
+                      value={value ?? ''}
+                      onChange={(event) => updateComponentInstanceProp(element.id, control.id, event.target.value)}
+                      onBlur={commit}
+                    />
+                  ) : (
+                    <input
+                      className="fb-prop-input"
+                      type={control.type === 'url' || control.type === 'image' ? 'url' : 'text'}
+                      value={value ?? ''}
+                      onChange={(event) => updateComponentInstanceProp(element.id, control.id, event.target.value)}
+                      onBlur={commit}
+                    />
+                  )}
+                </div>
+              );
+            })}
           </Section>
         ) : null}
+
+        {componentControlAuthoringSection}
+
+        {saveAsAssetSection}
 
         {activeSurface === 'page' ? (
           <Section
@@ -2336,6 +2828,18 @@ export default function PropertiesPanel() {
                 <button
                   type="button"
                   className="fb-add-field"
+                  onClick={() => {
+                    const nextId = addElementAnimation(element.id, bpId, 'loop');
+                    commit();
+                    setAnimationAddMenuOpen(false);
+                    setElementAnimationModalState({ animationId: nextId });
+                  }}
+                >
+                  Loop
+                </button>
+                <button
+                  type="button"
+                  className="fb-add-field"
                   disabled={!isComponentInstanceOnPage || !animationVariantOptions.length}
                   onClick={() => {
                     if (!isComponentInstanceOnPage || !animationVariantOptions.length) return;
@@ -2358,7 +2862,12 @@ export default function PropertiesPanel() {
                     className="fb-animation-card is-configured"
                     onClick={() => setElementAnimationModalState({ animationId: animation.id })}
                   >
-                    <span className="fb-animation-card__type">{getElementAnimationTypeLabel(animation.type)}</span>
+                    <span className="fb-animation-card__type-row">
+                      <span className="fb-animation-card__type">{getElementAnimationTypeLabel(animation.type)}</span>
+                      {animation.type === 'loop' ? (
+                        <span className={`fb-loop-indicator${loopAnimationPreview?.animationId === animation.id ? ' is-live' : ''}`} aria-label="Loop animation" title="Loop animation" />
+                      ) : null}
+                    </span>
                     <span className="fb-animation-card__name">{animation.name}</span>
                     <span className="fb-animation-card__summary">{getElementAnimationSummary(animation, animationVariantOptions)}</span>
                   </button>
@@ -3332,6 +3841,49 @@ export default function PropertiesPanel() {
           </Section>
         )}
 
+        {element.type === 'embed' && (
+          <Section title="Embed" action={<ResetBtn show={isOv('embedMode','embedCode')} onReset={() => resetOv('embedMode','embedCode')} />}>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Mode</span>
+              <ChoiceGroup
+                value={resolved.embedMode ?? 'html'}
+                onChange={(value) => { upd('embedMode', value); commit(); }}
+                options={EMBED_MODE_OPTIONS}
+              />
+            </div>
+
+            <div className="fb-prop-row" style={{ alignItems: 'flex-start', marginTop: 8 }}>
+              <span className="fb-prop-label">Code</span>
+              <div style={{ flex: 1 }}>
+                <textarea
+                  className="fb-prop-input"
+                  rows={10}
+                  value={resolved.embedCode ?? ''}
+                  placeholder={(resolved.embedMode ?? 'html') === 'shortcode'
+                    ? '[contact-form-7 id="123"]'
+                    : (resolved.embedMode ?? 'html') === 'php'
+                      ? '<?php echo do_shortcode("[gallery]"); ?>'
+                      : (resolved.embedMode ?? 'html') === 'react'
+                        ? '<Component prop="value" />'
+                        : '<div style="padding:24px">Custom HTML</div>'}
+                  onChange={(event) => upd('embedCode', event.target.value)}
+                  onBlur={commit}
+                  style={{ minHeight: 170, resize: 'vertical', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, lineHeight: 1.5 }}
+                />
+                <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
+                  {(resolved.embedMode ?? 'html') === 'html'
+                    ? 'HTML renders inside an isolated iframe preview. Scripts are stripped.'
+                    : (resolved.embedMode ?? 'html') === 'shortcode'
+                      ? 'Shortcodes render on publish in WordPress. The builder keeps this as a placeholder so the editor stays stable.'
+                      : (resolved.embedMode ?? 'html') === 'php'
+                        ? 'PHP is stored with the element, but it is not executed in the builder or published output.'
+                        : 'React snippets are stored with the element, but they are not compiled in the builder or published output.'}
+                </div>
+              </div>
+            </div>
+          </Section>
+        )}
+
         {element.type === 'scroll-sequence' && (() => {
           const sequenceType = resolved.scrollSequenceType ?? 'video';
           const sourceMode = resolved.scrollSequenceSourceMode ?? 'library';
@@ -3618,8 +4170,8 @@ export default function PropertiesPanel() {
             <input
               className="fb-prop-input"
               type="text"
-              value={element.base?.name || element.type || ''}
-              onChange={e => updateElementLayout(element.id, 'desktop', { name: e.target.value })}
+              value={element.name || element.base?.name || element.type || ''}
+              onChange={e => updateElementBase(element.id, { name: e.target.value })}
               onBlur={commit}
             />
           </div>
@@ -3641,27 +4193,82 @@ export default function PropertiesPanel() {
         </Section>
 
       </div>
+      {selectedElementAnimation?.type === 'loop' ? (
+        <ElementAnimationModal
+          animation={selectedElementAnimation}
+          variantOptions={animationVariantOptions}
+          onClose={() => {
+            if (animationDraftDirtyRef.current) {
+              animationDraftDirtyRef.current = false;
+              commit();
+            }
+            setElementAnimationModalState(null);
+            closeAnimationEditor();
+          }}
+          onDelete={() => {
+            animationDraftDirtyRef.current = false;
+            removeElementAnimation(element.id, bpId, selectedElementAnimation.id);
+            commit();
+            setElementAnimationModalState(null);
+            closeAnimationEditor();
+          }}
+          onPreview={(nextAnimation) => {
+            animationDraftDirtyRef.current = true;
+            updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+          }}
+          onSave={(nextAnimation) => {
+            animationDraftDirtyRef.current = false;
+            updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+            commit();
+          }}
+          onOpenEditor={(mode, nextAnimation) => {
+            if (nextAnimation) {
+              animationDraftDirtyRef.current = false;
+              updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+              commit();
+            }
+            setElementAnimationModalState(null);
+            openAnimationEditor({
+              elementId: element.id,
+              bpId,
+              animationId: selectedElementAnimation.id,
+              mode,
+            });
+          }}
+        />
+      ) : null}
     </aside>
-    {selectedElementAnimation ? (
+    {selectedElementAnimation && selectedElementAnimation.type !== 'loop' ? (
       <ElementAnimationModal
         animation={selectedElementAnimation}
         variantOptions={animationVariantOptions}
         onClose={() => {
+          if (animationDraftDirtyRef.current) {
+            animationDraftDirtyRef.current = false;
+            commit();
+          }
           setElementAnimationModalState(null);
           closeAnimationEditor();
         }}
         onDelete={() => {
+          animationDraftDirtyRef.current = false;
           removeElementAnimation(element.id, bpId, selectedElementAnimation.id);
           commit();
           setElementAnimationModalState(null);
           closeAnimationEditor();
         }}
+        onPreview={(nextAnimation) => {
+          animationDraftDirtyRef.current = true;
+          updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+        }}
         onSave={(nextAnimation) => {
+          animationDraftDirtyRef.current = false;
           updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
           commit();
         }}
         onOpenEditor={(mode, nextAnimation) => {
           if (nextAnimation) {
+            animationDraftDirtyRef.current = false;
             updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
             commit();
           }

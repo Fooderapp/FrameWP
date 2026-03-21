@@ -12,6 +12,10 @@ class FrameBuilder_API {
 		add_action( 'wp_ajax_framebuilder_release_document_lock', [ __CLASS__, 'ajax_release_document_lock' ] );
 		add_action( 'wp_ajax_framebuilder_get_color_styles', [ __CLASS__, 'ajax_get_color_styles' ] );
 		add_action( 'wp_ajax_framebuilder_save_color_styles', [ __CLASS__, 'ajax_save_color_styles' ] );
+		add_action( 'wp_ajax_framebuilder_get_text_styles', [ __CLASS__, 'ajax_get_text_styles' ] );
+		add_action( 'wp_ajax_framebuilder_save_text_styles', [ __CLASS__, 'ajax_save_text_styles' ] );
+		add_action( 'wp_ajax_framebuilder_get_element_styles', [ __CLASS__, 'ajax_get_element_styles' ] );
+		add_action( 'wp_ajax_framebuilder_save_element_styles', [ __CLASS__, 'ajax_save_element_styles' ] );
 		add_action( 'wp_ajax_framebuilder_get_components', [ __CLASS__, 'ajax_get_components' ] );
 		add_action( 'wp_ajax_framebuilder_save_components', [ __CLASS__, 'ajax_save_components' ] );
 		add_action( 'wp_ajax_framebuilder_get_variables', [ __CLASS__, 'ajax_get_variables' ] );
@@ -78,6 +82,30 @@ class FrameBuilder_API {
 		register_rest_route( $ns, '/color-styles', [
 			'methods'             => 'POST',
 			'callback'            => [ __CLASS__, 'save_color_styles' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/text-styles', [
+			'methods'             => 'GET',
+			'callback'            => [ __CLASS__, 'get_text_styles' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/text-styles', [
+			'methods'             => 'POST',
+			'callback'            => [ __CLASS__, 'save_text_styles' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/element-styles', [
+			'methods'             => 'GET',
+			'callback'            => [ __CLASS__, 'get_element_styles' ],
+			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/element-styles', [
+			'methods'             => 'POST',
+			'callback'            => [ __CLASS__, 'save_element_styles' ],
 			'permission_callback' => [ __CLASS__, 'can_edit' ],
 		] );
 
@@ -509,6 +537,88 @@ class FrameBuilder_API {
 		return [ 'success' => true, 'styles' => $clean ];
 	}
 
+	private static function sanitize_style_value( $value ) {
+		if ( is_array( $value ) ) {
+			$clean = [];
+			foreach ( $value as $key => $item ) {
+				$clean_key = is_string( $key ) ? sanitize_text_field( $key ) : $key;
+				$clean[ $clean_key ] = self::sanitize_style_value( $item );
+			}
+			return $clean;
+		}
+		if ( is_bool( $value ) || is_numeric( $value ) || null === $value ) {
+			return $value;
+		}
+		return sanitize_text_field( is_scalar( $value ) ? (string) $value : '' );
+	}
+
+	private static function sanitize_style_library( $styles ): array {
+		if ( ! is_array( $styles ) ) return [];
+		$clean = [];
+		foreach ( $styles as $item ) {
+			if ( ! is_array( $item ) || empty( $item['id'] ) ) continue;
+			$clean[] = [
+				'id'        => sanitize_text_field( $item['id'] ),
+				'name'      => sanitize_text_field( $item['name'] ?? 'Style' ),
+				'type'      => sanitize_text_field( $item['type'] ?? '' ),
+				'source'    => sanitize_text_field( $item['source'] ?? '' ),
+				'sourceId'  => sanitize_text_field( $item['sourceId'] ?? '' ),
+				'styleProps' => self::sanitize_style_value( $item['styleProps'] ?? [] ),
+			];
+		}
+		return $clean;
+	}
+
+	public static function get_text_styles( WP_REST_Request $request ) {
+		return rest_ensure_response( self::perform_get_text_styles() );
+	}
+
+	private static function perform_get_text_styles() {
+		$raw = get_option( '_fb_text_styles', '[]' );
+		$styles = json_decode( $raw, true );
+		if ( ! is_array( $styles ) ) $styles = [];
+		return [ 'success' => true, 'styles' => $styles ];
+	}
+
+	public static function save_text_styles( WP_REST_Request $request ) {
+		$result = self::perform_save_text_styles( $request->get_param( 'styles' ) );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	private static function perform_save_text_styles( $styles ) {
+		$clean = self::sanitize_style_library( $styles );
+		update_option( '_fb_text_styles', wp_json_encode( $clean ) );
+		return [ 'success' => true, 'styles' => $clean ];
+	}
+
+	public static function get_element_styles( WP_REST_Request $request ) {
+		return rest_ensure_response( self::perform_get_element_styles() );
+	}
+
+	private static function perform_get_element_styles() {
+		$raw = get_option( '_fb_element_styles', '[]' );
+		$styles = json_decode( $raw, true );
+		if ( ! is_array( $styles ) ) $styles = [];
+		return [ 'success' => true, 'styles' => $styles ];
+	}
+
+	public static function save_element_styles( WP_REST_Request $request ) {
+		$result = self::perform_save_element_styles( $request->get_param( 'styles' ) );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	private static function perform_save_element_styles( $styles ) {
+		$clean = self::sanitize_style_library( $styles );
+		update_option( '_fb_element_styles', wp_json_encode( $clean ) );
+		return [ 'success' => true, 'styles' => $clean ];
+	}
+
 	public static function get_components( WP_REST_Request $request ) {
 		return rest_ensure_response( self::perform_get_components() );
 	}
@@ -762,6 +872,42 @@ class FrameBuilder_API {
 			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
 		}
 		$result = self::perform_save_components( self::decode_ajax_layout( $_POST['components'] ?? null ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	public static function ajax_get_text_styles() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		wp_send_json( self::perform_get_text_styles() );
+	}
+
+	public static function ajax_save_text_styles() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_save_text_styles( self::decode_ajax_layout( $_POST['styles'] ?? null ) );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	public static function ajax_get_element_styles() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		wp_send_json( self::perform_get_element_styles() );
+	}
+
+	public static function ajax_save_element_styles() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_save_element_styles( self::decode_ajax_layout( $_POST['styles'] ?? null ) );
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
 		}

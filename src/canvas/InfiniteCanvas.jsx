@@ -1,15 +1,18 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { useEditorStore, createFrame, createImage, createVideo, createScrollSequence, createText, createIcon, createShapePreset, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds } from '../store/editorStore';
+import { getAssetStyleUpdatesForElement, parseAssetDragPayload } from '../store/assetStyles';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
 import { buildGradient, parseGradient } from '../components/FillPicker';
 import { extractSvgMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
+import { plainTextToRichTextHtml, sanitizeRichTextHtml } from '../components/richText';
 
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
 const SNAP_THRESHOLD_PX = 6;
 const COMMENT_CURSOR = "url(\"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M6 4h10a4 4 0 0 1 4 4v8H6a2 2 0 0 0-2 2V6a2 2 0 0 1 2-2Z%27 fill=%27%237BE300%27/%3E%3Cpath d=%27M4 18V8%27 stroke=%27%237BE300%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3C/svg%3E\") 6 6, crosshair";
 const PEN_CLOSE_SNAP_PX = 16;
+const TELEPORT_MARKER = 'FRAMEWP_TELEPORT';
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
 
@@ -38,6 +41,364 @@ function cloneSubtree(subtree, rootId) {
       : { ...el.base },
     overrides: { ...(el.overrides ?? {}) },
   }));
+}
+
+function clampTeleportNumber(value, fallback = 0, min = -100000, max = 100000) {
+  const nextValue = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(nextValue)) return fallback;
+  return Math.min(max, Math.max(min, nextValue));
+}
+
+function parseTeleportClipboardPayload(text) {
+  if (typeof text !== 'string' || !text.trim().startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed?.marker !== TELEPORT_MARKER || !Array.isArray(parsed?.nodes) || !parsed.nodes.length) return null;
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+function dedupeTeleportLibraryEntries(existingEntries = [], incomingEntries = [], comparator) {
+  const nextEntries = [...existingEntries];
+  (incomingEntries ?? []).forEach((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    const alreadyExists = nextEntries.some((entry) => comparator(entry, candidate));
+    if (!alreadyExists) nextEntries.push(candidate);
+  });
+  return nextEntries;
+}
+
+function mergeTeleportStylesIntoAssets(payload) {
+  const styles = payload?.styles;
+  if (!styles || typeof styles !== 'object') return;
+  const state = useEditorStore.getState();
+
+  if (Array.isArray(styles.colorStyles) && styles.colorStyles.length) {
+    const nextColorStyles = dedupeTeleportLibraryEntries(
+      state.colorStyles ?? [],
+      styles.colorStyles,
+      (entry, candidate) => (`${entry?.sourceId || entry?.id || ''}` === `${candidate?.sourceId || candidate?.id || ''}`)
+        || ((entry?.name || '').trim().toLowerCase() === (candidate?.name || '').trim().toLowerCase() && `${entry?.value || ''}` === `${candidate?.value || ''}`),
+    );
+    state.saveColorStyles(nextColorStyles);
+  }
+
+  if (Array.isArray(styles.textStyles) && styles.textStyles.length) {
+    const nextTextStyles = dedupeTeleportLibraryEntries(
+      state.textStyles ?? [],
+      styles.textStyles,
+      (entry, candidate) => (`${entry?.sourceId || entry?.id || ''}` === `${candidate?.sourceId || candidate?.id || ''}`)
+        || ((entry?.name || '').trim().toLowerCase() === (candidate?.name || '').trim().toLowerCase() && JSON.stringify(entry?.styleProps ?? {}) === JSON.stringify(candidate?.styleProps ?? {})),
+    );
+    state.saveTextStyles(nextTextStyles);
+  }
+
+  if (Array.isArray(styles.elementStyles) && styles.elementStyles.length) {
+    const nextElementStyles = dedupeTeleportLibraryEntries(
+      state.elementStyles ?? [],
+      styles.elementStyles,
+      (entry, candidate) => (`${entry?.sourceId || entry?.id || ''}` === `${candidate?.sourceId || candidate?.id || ''}`)
+        || ((entry?.name || '').trim().toLowerCase() === (candidate?.name || '').trim().toLowerCase() && JSON.stringify(entry?.styleProps ?? {}) === JSON.stringify(candidate?.styleProps ?? {})),
+    );
+    state.saveElementStyles(nextElementStyles);
+  }
+}
+
+function getTeleportSizingMode(value, fallback = 'fixed') {
+  return value === 'hug' || value === 'fill' || value === 'fixed' ? value : fallback;
+}
+
+function getTeleportPosition(node, parentIsLayout = false) {
+  if (!parentIsLayout) return {};
+  if (node?.positionType === 'absolute' || node?.absoluteInLayout) {
+    return { positionType: 'absolute', absoluteInLayout: true };
+  }
+  return { positionType: 'relative', absoluteInLayout: false };
+}
+
+function getTeleportRadiusStyles(node) {
+  const mode = node?.borderRadiusMode === 'independent' ? 'independent' : 'linked';
+  if (mode !== 'independent') {
+    return {
+      borderRadius: Math.max(0, clampTeleportNumber(node?.borderRadius, 0, 0)),
+      borderRadiusMode: 'linked',
+    };
+  }
+  return {
+    borderRadius: Math.max(0, clampTeleportNumber(node?.borderRadius, 0, 0)),
+    borderRadiusMode: 'independent',
+    borderRadiusTL: Math.max(0, clampTeleportNumber(node?.borderRadiusTL, node?.borderRadius ?? 0, 0)),
+    borderRadiusTR: Math.max(0, clampTeleportNumber(node?.borderRadiusTR, node?.borderRadius ?? 0, 0)),
+    borderRadiusBR: Math.max(0, clampTeleportNumber(node?.borderRadiusBR, node?.borderRadius ?? 0, 0)),
+    borderRadiusBL: Math.max(0, clampTeleportNumber(node?.borderRadiusBL, node?.borderRadius ?? 0, 0)),
+  };
+}
+
+function buildImportedFrame(node, parentIsLayout = false) {
+  const label = typeof node?.name === 'string' && node.name.trim() ? node.name.trim() : 'Frame';
+  const element = createFrame(
+    clampTeleportNumber(node?.x, 0),
+    clampTeleportNumber(node?.y, 0),
+    label,
+  );
+  element.name = label;
+  const layout = node?.layout && typeof node.layout === 'object' ? node.layout : null;
+  element.base = {
+    ...element.base,
+    name: label,
+    width: Math.max(1, clampTeleportNumber(node?.width, 240, 1)),
+    height: Math.max(1, clampTeleportNumber(node?.height, 160, 1)),
+    widthMode: getTeleportSizingMode(node?.widthMode, element.base.widthMode ?? 'fixed'),
+    heightMode: getTeleportSizingMode(node?.heightMode, element.base.heightMode ?? 'fixed'),
+    widthFr: Math.max(0.1, clampTeleportNumber(node?.widthFr, element.base.widthFr ?? 1, 0.1)),
+    heightFr: Math.max(0.1, clampTeleportNumber(node?.heightFr, element.base.heightFr ?? 1, 0.1)),
+    rotation: clampTeleportNumber(node?.rotation, 0),
+    hidden: node?.visible === false,
+    ...getTeleportPosition(node, parentIsLayout),
+    styles: {
+      ...element.base.styles,
+      backgroundColor: typeof node?.backgroundColor === 'string' ? node.backgroundColor : 'transparent',
+      backgroundImage: typeof node?.backgroundImage === 'string' ? node.backgroundImage : '',
+      backgroundSize: typeof node?.backgroundSize === 'string' ? node.backgroundSize : element.base.styles.backgroundSize,
+      backgroundPosition: typeof node?.backgroundPosition === 'string' ? node.backgroundPosition : element.base.styles.backgroundPosition,
+      ...getTeleportRadiusStyles(node),
+      borderWidth: Math.max(0, clampTeleportNumber(node?.borderWidth, 0, 0)),
+      borderColor: typeof node?.borderColor === 'string' ? node.borderColor : '#000000',
+      borderStyle: 'solid',
+      opacity: Math.max(0, Math.min(1, clampTeleportNumber(node?.opacity, 1, 0, 1))),
+      overflow: node?.overflow === 'hidden' ? 'hidden' : 'visible',
+      boxShadow: typeof node?.boxShadow === 'string' ? node.boxShadow : '',
+      mixBlendMode: typeof node?.mixBlendMode === 'string' ? node.mixBlendMode : 'normal',
+      blur: Math.max(0, clampTeleportNumber(node?.blur, 0, 0)),
+      backdropBlur: Math.max(0, clampTeleportNumber(node?.backdropBlur, 0, 0)),
+      display: layout ? 'flex' : 'block',
+      flexDirection: layout?.flexDirection === 'column' ? 'column' : 'row',
+      flexWrap: layout?.flexWrap === 'wrap' ? 'wrap' : 'nowrap',
+      gap: Math.max(0, clampTeleportNumber(layout?.gap, 0, 0)),
+      paddingTop: Math.max(0, clampTeleportNumber(layout?.paddingTop, 0, 0)),
+      paddingRight: Math.max(0, clampTeleportNumber(layout?.paddingRight, 0, 0)),
+      paddingBottom: Math.max(0, clampTeleportNumber(layout?.paddingBottom, 0, 0)),
+      paddingLeft: Math.max(0, clampTeleportNumber(layout?.paddingLeft, 0, 0)),
+      alignItems: layout?.alignItems ?? 'flex-start',
+      justifyContent: layout?.justifyContent ?? 'flex-start',
+    },
+  };
+  return element;
+}
+
+function buildImportedText(node, parentIsLayout = false) {
+  const label = typeof node?.name === 'string' && node.name.trim() ? node.name.trim() : 'Text';
+  const content = typeof node?.text === 'string' ? node.text : label;
+  const richTextHtml = typeof node?.richTextHtml === 'string' && node.richTextHtml.trim()
+    ? (sanitizeRichTextHtml(node.richTextHtml) || plainTextToRichTextHtml(content || 'Text'))
+    : plainTextToRichTextHtml(content || 'Text');
+  const element = createText(
+    clampTeleportNumber(node?.x, 0),
+    clampTeleportNumber(node?.y, 0),
+    label,
+  );
+  element.name = label;
+  element.base = {
+    ...element.base,
+    name: label,
+    width: Math.max(1, clampTeleportNumber(node?.width, 240, 1)),
+    height: Math.max(1, clampTeleportNumber(node?.height, 60, 1)),
+    widthMode: getTeleportSizingMode(node?.widthMode, element.base.widthMode ?? 'hug'),
+    heightMode: getTeleportSizingMode(node?.heightMode, element.base.heightMode ?? 'hug'),
+    widthFr: Math.max(0.1, clampTeleportNumber(node?.widthFr, element.base.widthFr ?? 1, 0.1)),
+    heightFr: Math.max(0.1, clampTeleportNumber(node?.heightFr, element.base.heightFr ?? 1, 0.1)),
+    rotation: clampTeleportNumber(node?.rotation, 0),
+    hidden: node?.visible === false,
+    text: content,
+    richTextHtml,
+    ...getTeleportPosition(node, parentIsLayout),
+    styles: {
+      ...element.base.styles,
+      backgroundColor: 'transparent',
+      color: typeof node?.color === 'string' ? node.color : '#111111',
+      fontFamily: typeof node?.fontFamily === 'string' && node.fontFamily.trim() ? node.fontFamily : 'Inter',
+      fontWeight: Math.max(100, clampTeleportNumber(node?.fontWeight, 400, 100, 900)),
+      fontStyle: node?.fontStyle === 'italic' ? 'italic' : 'normal',
+      fontSize: Math.max(1, clampTeleportNumber(node?.fontSize, 16, 1)),
+      fontSizeUnit: 'px',
+      lineHeight: node?.lineHeight != null ? clampTeleportNumber(node.lineHeight, 1.2, 0.1) : 1.2,
+      lineHeightUnit: node?.lineHeightUnit === 'px' ? 'px' : 'em',
+      letterSpacing: clampTeleportNumber(node?.letterSpacing, 0),
+      letterSpacingUnit: node?.letterSpacingUnit === 'em' ? 'em' : 'px',
+      textAlign: node?.textAlign ?? 'left',
+      textTransform: typeof node?.textTransform === 'string' ? node.textTransform : 'none',
+      textDecoration: typeof node?.textDecoration === 'string' ? node.textDecoration : 'none',
+      opacity: Math.max(0, Math.min(1, clampTeleportNumber(node?.opacity, 1, 0, 1))),
+      boxShadow: typeof node?.boxShadow === 'string' ? node.boxShadow : '',
+      mixBlendMode: typeof node?.mixBlendMode === 'string' ? node.mixBlendMode : 'normal',
+      blur: Math.max(0, clampTeleportNumber(node?.blur, 0, 0)),
+      backdropBlur: Math.max(0, clampTeleportNumber(node?.backdropBlur, 0, 0)),
+    },
+  };
+  return element;
+}
+
+function buildImportedImage(node, parentIsLayout = false) {
+  const label = typeof node?.name === 'string' && node.name.trim() ? node.name.trim() : 'Image';
+  const element = createImage(
+    clampTeleportNumber(node?.x, 0),
+    clampTeleportNumber(node?.y, 0),
+    label,
+  );
+  element.name = label;
+  element.base = {
+    ...element.base,
+    name: label,
+    width: Math.max(1, clampTeleportNumber(node?.width, 240, 1)),
+    height: Math.max(1, clampTeleportNumber(node?.height, 160, 1)),
+    widthMode: getTeleportSizingMode(node?.widthMode, element.base.widthMode ?? 'fixed'),
+    heightMode: getTeleportSizingMode(node?.heightMode, element.base.heightMode ?? 'fixed'),
+    widthFr: Math.max(0.1, clampTeleportNumber(node?.widthFr, element.base.widthFr ?? 1, 0.1)),
+    heightFr: Math.max(0.1, clampTeleportNumber(node?.heightFr, element.base.heightFr ?? 1, 0.1)),
+    rotation: clampTeleportNumber(node?.rotation, 0),
+    hidden: node?.visible === false,
+    src: typeof node?.src === 'string' ? node.src : '',
+    ...getTeleportPosition(node, parentIsLayout),
+    styles: {
+      ...element.base.styles,
+      ...getTeleportRadiusStyles(node),
+      borderWidth: Math.max(0, clampTeleportNumber(node?.borderWidth, 0, 0)),
+      borderColor: typeof node?.borderColor === 'string' ? node.borderColor : '#000000',
+      opacity: Math.max(0, Math.min(1, clampTeleportNumber(node?.opacity, 1, 0, 1))),
+      boxShadow: typeof node?.boxShadow === 'string' ? node.boxShadow : '',
+      objectFit: node?.objectFit === 'contain' ? 'contain' : 'cover',
+      mixBlendMode: typeof node?.mixBlendMode === 'string' ? node.mixBlendMode : 'normal',
+      blur: Math.max(0, clampTeleportNumber(node?.blur, 0, 0)),
+      backdropBlur: Math.max(0, clampTeleportNumber(node?.backdropBlur, 0, 0)),
+    },
+  };
+  return element;
+}
+
+function buildImportedLine(node, parentIsLayout = false) {
+  const label = typeof node?.name === 'string' && node.name.trim() ? node.name.trim() : 'Line';
+  const element = createShapePreset('line', clampTeleportNumber(node?.x, 0), clampTeleportNumber(node?.y, 0));
+  const width = Math.max(1, clampTeleportNumber(node?.width, 160, 1));
+  const height = Math.max(1, clampTeleportNumber(node?.height, 24, 1));
+  const strokeWidth = Math.max(0.5, clampTeleportNumber(node?.strokeWidth ?? node?.borderWidth, 2, 0.5));
+  const strokeColor = typeof node?.strokeColor === 'string' && node.strokeColor
+    ? node.strokeColor
+    : (typeof node?.borderColor === 'string' && node.borderColor ? node.borderColor : '#111827');
+  const vectorData = createVectorLineData(width, height);
+  element.name = label;
+  element.base = {
+    ...element.base,
+    name: label,
+    width,
+    height,
+    widthMode: getTeleportSizingMode(node?.widthMode, element.base.widthMode ?? 'fixed'),
+    heightMode: getTeleportSizingMode(node?.heightMode, element.base.heightMode ?? 'fixed'),
+    widthFr: Math.max(0.1, clampTeleportNumber(node?.widthFr, element.base.widthFr ?? 1, 0.1)),
+    heightFr: Math.max(0.1, clampTeleportNumber(node?.heightFr, element.base.heightFr ?? 1, 0.1)),
+    rotation: clampTeleportNumber(node?.rotation, 0),
+    hidden: node?.visible === false,
+    vectorData,
+    svgMarkup: buildVectorShapeSvgMarkup(vectorData, { width, height, fill: 'none', stroke: strokeColor, strokeWidth }),
+    shapeType: 'line',
+    iconName: 'line',
+    ...getTeleportPosition(node, parentIsLayout),
+    styles: {
+      ...element.base.styles,
+      backgroundColor: 'transparent',
+      color: strokeColor,
+      strokeColor,
+      strokeWidth,
+      opacity: Math.max(0, Math.min(1, clampTeleportNumber(node?.opacity, 1, 0, 1))),
+      boxShadow: typeof node?.boxShadow === 'string' ? node.boxShadow : '',
+      mixBlendMode: typeof node?.mixBlendMode === 'string' ? node.mixBlendMode : 'normal',
+      blur: Math.max(0, clampTeleportNumber(node?.blur, 0, 0)),
+      backdropBlur: Math.max(0, clampTeleportNumber(node?.backdropBlur, 0, 0)),
+      overflow: 'visible',
+    },
+  };
+  return element;
+}
+
+function buildImportedVector(node, parentIsLayout = false) {
+  if (node?.vectorKind === 'line') return buildImportedLine(node, parentIsLayout);
+  const label = typeof node?.name === 'string' && node.name.trim() ? node.name.trim() : 'Vector';
+  const element = createIcon(
+    clampTeleportNumber(node?.x, 0),
+    clampTeleportNumber(node?.y, 0),
+    label,
+  );
+  element.name = label;
+  element.base = {
+    ...element.base,
+    name: label,
+    width: Math.max(1, clampTeleportNumber(node?.width, 48, 1)),
+    height: Math.max(1, clampTeleportNumber(node?.height, 48, 1)),
+    widthMode: getTeleportSizingMode(node?.widthMode, element.base.widthMode ?? 'fixed'),
+    heightMode: getTeleportSizingMode(node?.heightMode, element.base.heightMode ?? 'fixed'),
+    widthFr: Math.max(0.1, clampTeleportNumber(node?.widthFr, element.base.widthFr ?? 1, 0.1)),
+    heightFr: Math.max(0.1, clampTeleportNumber(node?.heightFr, element.base.heightFr ?? 1, 0.1)),
+    rotation: clampTeleportNumber(node?.rotation, 0),
+    hidden: node?.visible === false,
+    iconSource: 'custom',
+    iconName: 'teleport-svg',
+    svgMarkup: sanitizeSvgMarkup(typeof node?.svgMarkup === 'string' ? node.svgMarkup : '', { forceCurrentColor: false }),
+    ...getTeleportPosition(node, parentIsLayout),
+    styles: {
+      ...element.base.styles,
+      backgroundColor: 'transparent',
+      color: typeof node?.strokeColor === 'string' && node.strokeColor
+        ? node.strokeColor
+        : (typeof node?.borderColor === 'string' && node.borderColor ? node.borderColor : element.base.styles?.color),
+      strokeColor: typeof node?.strokeColor === 'string' ? node.strokeColor : (typeof node?.borderColor === 'string' ? node.borderColor : undefined),
+      strokeWidth: node?.strokeWidth != null ? Math.max(0, clampTeleportNumber(node.strokeWidth, 0, 0)) : undefined,
+      opacity: Math.max(0, Math.min(1, clampTeleportNumber(node?.opacity, 1, 0, 1))),
+      boxShadow: typeof node?.boxShadow === 'string' ? node.boxShadow : '',
+      mixBlendMode: typeof node?.mixBlendMode === 'string' ? node.mixBlendMode : 'normal',
+      blur: Math.max(0, clampTeleportNumber(node?.blur, 0, 0)),
+      backdropBlur: Math.max(0, clampTeleportNumber(node?.backdropBlur, 0, 0)),
+    },
+  };
+  return element;
+}
+
+function importTeleportNodes(nodes, rootOffset = { x: 0, y: 0 }) {
+  const importedElements = [];
+  const rootIds = [];
+
+  const visit = (node, parentId = null, parentIsLayout = false) => {
+    if (!node || typeof node !== 'object') return null;
+
+    let element = null;
+    if (node.kind === 'text') element = buildImportedText(node, parentIsLayout);
+    else if (node.kind === 'image') element = buildImportedImage(node, parentIsLayout);
+    else if (node.kind === 'vector') element = buildImportedVector(node, parentIsLayout);
+    else element = buildImportedFrame(node, parentIsLayout);
+
+    if (!element) return null;
+    element.parentId = parentId;
+    element.children = [];
+    importedElements.push(element);
+
+    const childNodes = Array.isArray(node.children) ? node.children : [];
+    childNodes.forEach((childNode) => {
+      const childElement = visit(childNode, element.id, !!node.layout);
+      if (!childElement) return;
+      element.children.push(childElement.id);
+    });
+
+    if (!parentId) {
+      element.base.x = clampTeleportNumber(element.base.x, 0) + clampTeleportNumber(rootOffset.x, 0);
+      element.base.y = clampTeleportNumber(element.base.y, 0) + clampTeleportNumber(rootOffset.y, 0);
+      rootIds.push(element.id);
+    }
+
+    return element;
+  };
+
+  (Array.isArray(nodes) ? nodes : []).forEach((node) => visit(node, null, false));
+  return { importedElements, rootIds };
 }
 
 function collectDescendantIds(allEls, rootId) {
@@ -626,6 +987,12 @@ function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onCut, onPaste
 
 function ComponentCreateModal({ defaultName, onCancel, onSubmit }) {
   const [name, setName] = useState(defaultName || 'Component');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  useEffect(() => {
+    setName(defaultName || 'Component');
+    setErrorMessage('');
+  }, [defaultName]);
 
   return (
     <div className="fb-overlay-modal" onMouseDown={(e) => e.target === e.currentTarget && onCancel()}>
@@ -640,14 +1007,21 @@ function ComponentCreateModal({ defaultName, onCancel, onSubmit }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') onSubmit(name);
+              if (e.key === 'Enter') {
+                const result = onSubmit(name);
+                setErrorMessage(result?.error || '');
+              }
               if (e.key === 'Escape') onCancel();
             }}
           />
+          {errorMessage ? <div className="fb-artboard-bp-note" style={{ marginTop: 10, color: '#fda4af' }}>{errorMessage}</div> : null}
         </div>
         <div className="fb-overlay-modal__actions">
           <button type="button" className="fb-secondary-btn" onClick={onCancel}>Cancel</button>
-          <button type="button" className="fb-primary-btn" onClick={() => onSubmit(name)}>Create</button>
+          <button type="button" className="fb-primary-btn" onClick={() => {
+            const result = onSubmit(name);
+            setErrorMessage(result?.error || '');
+          }}>Create</button>
         </div>
       </div>
     </div>
@@ -2337,7 +2711,7 @@ export default function InfiniteCanvas() {
   }, [addElements, getParentPlacementFromClient, getPlacementFromClient, pushHistory]);
 
   const pasteSvgMarkupAt = useCallback(({ markup, clientX = null, clientY = null, bpId = null }) => {
-    const sanitizedMarkup = sanitizeSvgMarkup(extractSvgMarkup(markup));
+    const sanitizedMarkup = sanitizeSvgMarkup(extractSvgMarkup(markup), { forceCurrentColor: false });
     if (!sanitizedMarkup) return false;
     const placement = getPlacementFromClient(
       clientX ?? lastPointerClientRef.current.x,
@@ -2359,6 +2733,51 @@ export default function InfiniteCanvas() {
     pushHistory();
     return true;
   }, [addElement, getPlacementFromClient, pushHistory, setArtboardSel]);
+
+  const importTeleportPayloadAt = useCallback(({ payload, clientX = null, clientY = null }) => {
+    if (!payload?.nodes?.length) return false;
+    const state = useEditorStore.getState();
+    const fallbackBpId = state.selection?.bpId ?? 'desktop';
+    const placement = getPlacementFromClient(
+      clientX ?? lastPointerClientRef.current.x,
+      clientY ?? lastPointerClientRef.current.y,
+      fallbackBpId,
+    ) ?? { bpId: fallbackBpId, x: 40, y: 40 };
+
+    const { importedElements, rootIds } = importTeleportNodes(payload.nodes, {
+      x: placement.x,
+      y: placement.y,
+    });
+    if (!importedElements.length || !rootIds.length) return false;
+
+    if (placement.bpId !== 'desktop') {
+      importedElements.forEach((element) => {
+        const nextOverrides = {
+          ...(element.overrides ?? {}),
+          [placement.bpId]: {
+            ...(element.overrides?.[placement.bpId] ?? {}),
+            hidden: false,
+          },
+        };
+        if (rootIds.includes(element.id)) {
+          nextOverrides[placement.bpId] = {
+            ...nextOverrides[placement.bpId],
+            x: element.base.x,
+            y: element.base.y,
+          };
+        }
+        element.overrides = nextOverrides;
+        element.base.hidden = true;
+      });
+    }
+
+    mergeTeleportStylesIntoAssets(payload);
+    addElements(importedElements);
+    useEditorStore.getState().setSelection({ elementId: rootIds[0], bpId: placement.bpId });
+    setArtboardSel(null);
+    pushHistory();
+    return true;
+  }, [addElements, getPlacementFromClient, pushHistory, setArtboardSel]);
 
   const resolveHoveredElementId = useCallback((clientX, clientY) => {
     const container = containerRef.current;
@@ -2751,6 +3170,14 @@ export default function InfiniteCanvas() {
 
       const clipboardData = e.clipboardData;
       const plainText = clipboardData?.getData('text/plain') ?? '';
+      const teleportPayload = parseTeleportClipboardPayload(plainText);
+      if (teleportPayload) {
+        if (importTeleportPayloadAt({ payload: teleportPayload, clientX: lastPointerClientRef.current.x, clientY: lastPointerClientRef.current.y })) {
+          e.preventDefault();
+        }
+        return;
+      }
+
       const htmlText = clipboardData?.getData('text/html') ?? '';
       const svgMarkup = extractSvgMarkup(plainText) || extractSvgMarkup(htmlText);
 
@@ -2785,7 +3212,7 @@ export default function InfiniteCanvas() {
       window.removeEventListener('paste', onPaste);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [canPasteIntoFrame, commitPenDraft, copyElementToClipboard, cutElementToClipboard, deleteElement, pasteClipboardAt, pasteSvgMarkupAt, penDraft, pushHistory]);
+  }, [canPasteIntoFrame, commitPenDraft, copyElementToClipboard, cutElementToClipboard, deleteElement, importTeleportPayloadAt, pasteClipboardAt, pasteSvgMarkupAt, penDraft, pushHistory]);
 
   // ── Initial fit-to-canvas ─────────────────────────────────
   useEffect(() => {
@@ -3451,6 +3878,8 @@ export default function InfiniteCanvas() {
         ? createImage(localX, localY)
         : drawType === 'video'
           ? createVideo(localX, localY)
+        : drawType === 'embed'
+          ? createEmbed(localX, localY)
         : drawType === 'scroll-sequence'
           ? createScrollSequence(localX, localY)
         : drawType === 'text'
@@ -4451,6 +4880,10 @@ export default function InfiniteCanvas() {
       const el = createVideo(elX, elY);
       addElement(el, null, targetBpId);
       pushHistory();
+    } else if (type === 'embed') {
+      const el = createEmbed(elX, elY);
+      addElement(el, null, targetBpId);
+      pushHistory();
     } else if (type === 'scroll-sequence') {
       const el = createScrollSequence(elX, elY);
       addElement(el, null, targetBpId);
@@ -4476,6 +4909,13 @@ export default function InfiniteCanvas() {
       return;
     }
     const targetBpId = e.target.closest('.fb-artboard[data-bp]')?.dataset.bp ?? useEditorStore.getState().selection?.bpId ?? 'desktop';
+    const assetPayload = parseAssetDragPayload(e.dataTransfer);
+    const assetStyleUpdates = getAssetStyleUpdatesForElement(targetElement, assetPayload);
+    if (assetStyleUpdates) {
+      useEditorStore.getState().updateElementStyles(targetElementId, targetBpId, assetStyleUpdates);
+      pushHistory();
+      return;
+    }
     const localPlacement = getParentPlacementFromClient(e.clientX, e.clientY, targetBpId, targetElementId);
     const localX = localPlacement?.x ?? 20;
     const localY = localPlacement?.y ?? 20;
@@ -4494,6 +4934,10 @@ export default function InfiniteCanvas() {
       pushHistory();
     } else if (type === 'video') {
       const el = createVideo(localX, localY);
+      addElement(el, targetElementId, targetBpId);
+      pushHistory();
+    } else if (type === 'embed') {
+      const el = createEmbed(localX, localY);
       addElement(el, targetElementId, targetBpId);
       pushHistory();
     } else if (type === 'scroll-sequence') {
@@ -4997,11 +5441,12 @@ export default function InfiniteCanvas() {
           onCancel={() => setComponentModal(null)}
           onSubmit={(name) => {
             const result = createComponentFromElement(componentModal.elementId, name);
-            setComponentModal(null);
             if (result?.componentId) {
+              setComponentModal(null);
               pushHistory();
               openComponentEditor(result.componentId);
             }
+            return result;
           }}
         />
       )}

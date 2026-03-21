@@ -1,0 +1,24 @@
+{
+  "name": "Atomiq Teleport",
+  "id": "1617269431610166615",
+  "api": "1.0.0",
+  "main": "code.js",
+  "capabilities": [],
+  "enableProposedApi": false,
+  "documentAccess": "dynamic-page",
+  "editorType": [
+    "figma"
+  ],
+  "ui": "ui.html",
+  "menu": [
+    {
+      "name": "Open Teleport",
+      "command": "open"
+    }
+  ],
+  "networkAccess": {
+    "allowedDomains": [
+      "none"
+    ]
+  }
+}

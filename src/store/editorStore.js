@@ -19,6 +19,12 @@ function makeId(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+export const ASSET_STORAGE_COMPONENT_ID = '__fb_asset_storage__';
+
+export function isAssetStorageComponentId(componentId) {
+  return componentId === ASSET_STORAGE_COMPONENT_ID;
+}
+
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -203,10 +209,12 @@ function sanitizeLayoutUpdates(updates) {
 function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
   return elements.map((el) => {
     if (el.id !== elementId) return el;
+    const syncedName = typeof safeUpdates?.name === 'string' ? safeUpdates.name : null;
     if (bpId === 'desktop') {
       if (el.type === 'text') {
         return pruneElementBreakpointOverrides({
           ...el,
+          ...(syncedName != null ? { name: syncedName } : {}),
           base: {
             ...el.base,
             ...safeUpdates,
@@ -214,7 +222,11 @@ function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
           },
         });
       }
-      return pruneElementBreakpointOverrides({ ...el, base: { ...el.base, ...safeUpdates } });
+      return pruneElementBreakpointOverrides({
+        ...el,
+        ...(syncedName != null ? { name: syncedName } : {}),
+        base: { ...el.base, ...safeUpdates },
+      });
     }
     const ov = el.overrides?.[bpId] ?? {};
     if (el.type === 'text') {
@@ -532,8 +544,10 @@ function removeVariableReferencesFromFlow(flow, variableScope, variableId) {
   };
 }
 
-const ELEMENT_ANIMATION_TYPES = new Set(['enter', 'scroll', 'scroll-variant']);
+const ELEMENT_ANIMATION_TYPES = new Set(['enter', 'scroll', 'scroll-variant', 'loop']);
 const ELEMENT_ANIMATION_PLAYBACK = new Set(['once', 'replay']);
+const LOOP_ANIMATION_TYPES = new Set(['loop', 'mirror']);
+const LOOP_ANIMATION_OFFSCREEN = new Set(['play', 'pause']);
 
 const ENTER_EFFECT_PRESETS = {
   fadeUp: { opacity: 0, scale: 1, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: 0, offsetY: 40 },
@@ -611,20 +625,26 @@ function normalizeScrollVariantTargets(targets, legacyTargetVariantId = null, le
   return normalized;
 }
 
+function normalizeLoopEffect(effect) {
+  return normalizeEnterEffect(effect, 'fadeUp');
+}
+
 function normalizeElementAnimation(animation, index = 0) {
   const type = ELEMENT_ANIMATION_TYPES.has(animation?.type) ? animation.type : 'enter';
   const preset = typeof animation?.preset === 'string' && animation.preset
     ? animation.preset
-    : (type === 'scroll-variant' ? 'custom' : 'fadeUp');
+    : (type === 'scroll-variant' || type === 'loop' ? 'custom' : 'fadeUp');
   const transitionFallback = type === 'scroll-variant'
     ? { type: 'ease', duration: 0.45, easePreset: 'easeInOut' }
-    : { type: 'ease', duration: 0.7, easePreset: 'easeInOut' };
+    : (type === 'loop'
+      ? { type: 'ease', duration: 1.2, easePreset: 'linear', bezier: { x1: 0, y1: 0, x2: 1, y2: 1 } }
+      : { type: 'ease', duration: 0.7, easePreset: 'easeInOut' });
   const base = {
     id: typeof animation?.id === 'string' && animation.id ? animation.id : makeId('anim'),
     type,
     name: typeof animation?.name === 'string' && animation.name.trim()
       ? animation.name.trim()
-      : (type === 'enter' ? 'Appear' : (type === 'scroll' ? 'Scroll animation' : 'Scroll variant')),
+      : (type === 'enter' ? 'Appear' : (type === 'scroll' ? 'Scroll animation' : (type === 'loop' ? 'Loop animation' : 'Scroll variant'))),
     preset,
     transition: normalizeAnimationTransition(animation?.transition, transitionFallback),
   };
@@ -650,6 +670,16 @@ function normalizeElementAnimation(animation, index = 0) {
       playback: ELEMENT_ANIMATION_PLAYBACK.has(animation?.playback) ? animation.playback : 'once',
       effect: normalizeEnterEffect(animation?.effect, preset),
       endState: normalizeAnimationPatchState(animation?.endState),
+    };
+  }
+
+  if (type === 'loop') {
+    return {
+      ...base,
+      loopType: LOOP_ANIMATION_TYPES.has(animation?.loopType) ? animation.loopType : 'loop',
+      offscreenBehavior: LOOP_ANIMATION_OFFSCREEN.has(animation?.offscreenBehavior) ? animation.offscreenBehavior : 'pause',
+      delay: clampFinite(animation?.delay, 0, 0, 60),
+      effect: normalizeLoopEffect(animation?.effect),
     };
   }
 
@@ -832,6 +862,7 @@ function getElementIdPrefix(type) {
   if (type === 'icon') return 'ico';
   if (type === 'video') return 'vid';
   if (type === 'scroll-sequence') return 'seq';
+  if (type === 'embed') return 'emb';
   return 'fr';
 }
 
@@ -875,6 +906,16 @@ function normalizeVideoFields(source = {}) {
     videoMuted: source?.videoMuted === true,
     videoAutoplay: source?.videoAutoplay === true,
     videoDisableAutoplayInBuilder: source?.videoDisableAutoplayInBuilder === true,
+  };
+}
+
+function normalizeEmbedFields(source = {}) {
+  const embedMode = ['html', 'shortcode', 'php', 'react'].includes(source?.embedMode)
+    ? source.embedMode
+    : 'html';
+  return {
+    embedMode,
+    embedCode: typeof source?.embedCode === 'string' ? source.embedCode : '',
   };
 }
 
@@ -1076,9 +1117,39 @@ function normalizeScrollSequenceElementFields(element) {
   };
 }
 
+function normalizeEmbedElementFields(element) {
+  if (!element || element.type !== 'embed') return element;
+
+  const normalizedBase = {
+    ...(element.base ?? {}),
+    ...normalizeEmbedFields(element.base ?? {}),
+  };
+  const normalizedOverrides = { ...(element.overrides ?? {}) };
+
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const bpOverride = normalizedOverrides[bpId];
+    if (!bpOverride) return;
+    const hasEmbedField = bpOverride.embedMode != null || bpOverride.embedCode != null;
+    if (!hasEmbedField) return;
+    normalizedOverrides[bpId] = {
+      ...bpOverride,
+      ...normalizeEmbedFields({
+        ...normalizedBase,
+        ...bpOverride,
+      }),
+    };
+  });
+
+  return {
+    ...element,
+    base: normalizedBase,
+    overrides: normalizedOverrides,
+  };
+}
+
 function normalizeElementDynamicFields(element) {
   const normalizedElement = pruneElementBreakpointOverrides(
-    normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element))))
+    normalizeEmbedElementFields(normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element)))))
   );
   return {
     ...normalizedElement,
@@ -1224,6 +1295,39 @@ function makeComponentPrimaryRoot(config = {}) {
   };
 }
 
+function makeAssetStorageComponent() {
+  const root = makeComponentPrimaryRoot({
+    width: 2400,
+    height: 1600,
+    zIndex: 1,
+  });
+  root.base.styles = {
+    ...root.base.styles,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderColor: 'transparent',
+    display: null,
+    overflow: 'visible',
+  };
+
+  const primaryVariantId = makeId('cmp-var');
+  return normalizeStoredComponent({
+    id: ASSET_STORAGE_COMPONENT_ID,
+    name: 'Asset Storage',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    defaultVariantId: primaryVariantId,
+    variants: [{
+      id: primaryVariantId,
+      name: 'Primary',
+      mode: 'default',
+      snapshot: [root],
+    }],
+    snapshot: [root],
+    controls: [],
+  });
+}
+
 function ensureComponentPrimaryRoot(snapshot = []) {
   const normalized = deepClone(snapshot ?? []);
   const root = getSnapshotRoot(normalized);
@@ -1293,6 +1397,239 @@ const COMPONENT_VARIANT_STATE_LABELS = {
   hover: 'Hover',
   pressed: 'Pressed',
 };
+const COMPONENT_CONTROL_TYPES = new Set(['text', 'textarea', 'number', 'boolean', 'select', 'color', 'image', 'url']);
+const COMPONENT_CONTROL_BINDABLE_PROPERTIES = new Set([
+  'text',
+  'src',
+  'hidden',
+  'variant',
+  'styles.backgroundColor',
+  'styles.color',
+  'styles.borderRadius',
+  'styles.borderWidth',
+  'styles.opacity',
+]);
+
+function normalizeComponentControlOption(option, index = 0) {
+  if (typeof option === 'string') {
+    const value = option.trim();
+    return { label: value || `Option ${index + 1}`, value: value || `option-${index + 1}` };
+  }
+
+  const rawValue = option?.value;
+  const value = typeof rawValue === 'string'
+    ? rawValue.trim()
+    : `${rawValue ?? ''}`.trim();
+  const rawLabel = typeof option?.label === 'string' ? option.label.trim() : '';
+
+  return {
+    label: rawLabel || value || `Option ${index + 1}`,
+    value: value || `option-${index + 1}`,
+  };
+}
+
+function normalizeComponentControlValue(type, value, options = []) {
+  if (type === 'boolean') return value === true;
+  if (type === 'number') return clampFinite(value, 0);
+  if (type === 'color') {
+    const next = typeof value === 'string' ? value.trim() : '';
+    return next || '#000000';
+  }
+
+  const next = typeof value === 'string'
+    ? value
+    : (value == null ? '' : `${value}`);
+
+  if (type === 'select') {
+    const match = options.find((option) => option.value === next);
+    return match?.value ?? options[0]?.value ?? '';
+  }
+
+  return next;
+}
+
+function normalizeComponentControlBinding(binding) {
+  const elementId = typeof binding?.elementId === 'string' && binding.elementId.trim()
+    ? binding.elementId.trim()
+    : null;
+  const property = typeof binding?.property === 'string' && COMPONENT_CONTROL_BINDABLE_PROPERTIES.has(binding.property)
+    ? binding.property
+    : null;
+  if (!elementId || !property) return null;
+  return { elementId, property };
+}
+
+function normalizeComponentControl(control, index = 0) {
+  const type = COMPONENT_CONTROL_TYPES.has(control?.type) ? control.type : 'text';
+  const options = type === 'select'
+    ? (Array.isArray(control?.options) ? control.options : []).map((option, optionIndex) => normalizeComponentControlOption(option, optionIndex))
+    : [];
+  const dedupedOptions = options.filter((option, optionIndex, allOptions) => allOptions.findIndex((candidate) => candidate.value === option.value) === optionIndex);
+  const bindings = (Array.isArray(control?.bindings) ? control.bindings : [])
+    .map(normalizeComponentControlBinding)
+    .filter(Boolean);
+
+  return {
+    id: typeof control?.id === 'string' && control.id.trim() ? control.id.trim() : makeId('cmp-ctrl'),
+    type,
+    label: typeof control?.label === 'string' && control.label.trim() ? control.label.trim() : `Control ${index + 1}`,
+    defaultValue: normalizeComponentControlValue(type, control?.defaultValue, dedupedOptions),
+    options: dedupedOptions,
+    bindings,
+  };
+}
+
+function normalizeComponentControls(controls) {
+  const seen = new Set();
+  return (Array.isArray(controls) ? controls : [])
+    .map((control, index) => normalizeComponentControl(control, index))
+    .filter((control) => {
+      if (seen.has(control.id)) return false;
+      seen.add(control.id);
+      return true;
+    });
+}
+
+function normalizeComponentInstanceProps(component, props) {
+  const normalizedProps = isPlainObject(props) ? props : {};
+  const nextProps = {};
+  (component?.controls ?? []).forEach((control) => {
+    if (!Object.prototype.hasOwnProperty.call(normalizedProps, control.id)) return;
+    nextProps[control.id] = normalizeComponentControlValue(control.type, normalizedProps[control.id], control.options ?? []);
+  });
+  return nextProps;
+}
+
+function getComponentControlValue(control, props = {}) {
+  if (Object.prototype.hasOwnProperty.call(props, control.id)) {
+    return normalizeComponentControlValue(control.type, props[control.id], control.options ?? []);
+  }
+  return normalizeComponentControlValue(control.type, control.defaultValue, control.options ?? []);
+}
+
+function setValueAtPath(target, path, value) {
+  if (!target || !Array.isArray(path) || !path.length) return;
+  let cursor = target;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index];
+    if (!isPlainObject(cursor[key])) cursor[key] = {};
+    cursor = cursor[key];
+  }
+  cursor[path[path.length - 1]] = value;
+}
+
+function applyComponentBindingValue(element, binding, control, value) {
+  if (!element?.base || !binding?.property) return;
+  if (binding.property === 'variant') return;
+
+  if (binding.property === 'text') {
+    const nextText = typeof value === 'string' ? value : `${value ?? ''}`;
+    element.base.text = nextText;
+    if (typeof element.base.richTextHtml === 'string') {
+      element.base.richTextHtml = plainTextToRichTextHtml(nextText || 'Text');
+    }
+    return;
+  }
+
+  if (binding.property === 'src') {
+    element.base.src = typeof value === 'string' ? value : `${value ?? ''}`;
+    return;
+  }
+
+  if (binding.property === 'hidden') {
+    element.base.hidden = value === true;
+    return;
+  }
+
+  if (!binding.property.startsWith('styles.')) return;
+
+  const styleKey = binding.property.replace(/^styles\./, '');
+  const nextValue = control.type === 'number'
+    ? clampFinite(value, element.base?.styles?.[styleKey] ?? 0)
+    : (control.type === 'boolean' ? value === true : value);
+  setValueAtPath(element.base, ['styles', styleKey], nextValue);
+}
+
+function applyComponentControlPropsToSnapshot(snapshot, component, props = {}) {
+  if (!Array.isArray(snapshot) || !snapshot.length || !(component?.controls ?? []).length) return deepClone(snapshot ?? []);
+
+  const nextSnapshot = deepClone(snapshot);
+  const elementMap = new Map(nextSnapshot.map((entry) => [entry.id, entry]));
+
+  component.controls.forEach((control) => {
+    const value = getComponentControlValue(control, props);
+    (control.bindings ?? []).forEach((binding) => {
+      const target = elementMap.get(binding.elementId);
+      if (!target) return;
+      applyComponentBindingValue(target, binding, control, value);
+    });
+  });
+
+  return nextSnapshot;
+}
+
+function resolveComponentInstanceVariantId(component, fallbackVariantId, props = {}) {
+  let nextVariantId = getComponentVariant(component, fallbackVariantId)?.id
+    ?? component?.defaultVariantId
+    ?? component?.variants?.[0]?.id
+    ?? null;
+
+  (component?.controls ?? []).forEach((control) => {
+    if (!Object.prototype.hasOwnProperty.call(props, control.id)) return;
+    const hasVariantBinding = (control.bindings ?? []).some((binding) => binding.property === 'variant');
+    if (!hasVariantBinding) return;
+    const requestedVariantId = typeof props[control.id] === 'string' ? props[control.id] : null;
+    if (!requestedVariantId) return;
+    const matchedVariant = getComponentVariant(component, requestedVariantId);
+    if (matchedVariant?.id) nextVariantId = matchedVariant.id;
+  });
+
+  return nextVariantId;
+}
+
+function buildComponentInstanceSubtree(component, {
+  rootEl = null,
+  targetRootId = null,
+  targetParentId = null,
+  rootPosition = null,
+  bpId = 'desktop',
+  variantId = null,
+  props = null,
+  role = 'instance',
+} = {}) {
+  if (!component?.variants?.length) return { instantiated: [], root: null, variant: null, props: {} };
+
+  const nextProps = normalizeComponentInstanceProps(component, props ?? rootEl?.componentInstance?.props ?? {});
+  const nextVariantId = resolveComponentInstanceVariantId(
+    component,
+    variantId ?? rootEl?.componentInstance?.variantId ?? component.defaultVariantId,
+    nextProps,
+  );
+  const variant = getComponentVariant(component, nextVariantId);
+  const composedSnapshot = composeVariantSnapshot(component, variant?.id ?? component?.defaultVariantId);
+  if (!variant || !composedSnapshot.length) return { instantiated: [], root: null, variant: null, props: nextProps };
+
+  const resolvedSnapshot = applyComponentControlPropsToSnapshot(composedSnapshot, component, nextProps);
+  const instantiated = instantiateComponentSnapshot(resolvedSnapshot, {
+    targetRootId,
+    targetParentId,
+    rootPosition,
+    bpId,
+    componentInstance: {
+      ...(rootEl?.componentInstance ?? {}),
+      componentId: component.id,
+      variantId: variant.id,
+      role: rootEl?.componentInstance?.role ?? role,
+      props: nextProps,
+    },
+  });
+  return {
+    instantiated,
+    root: getSnapshotRoot(instantiated),
+    variant,
+    props: nextProps,
+  };
+}
 
 function getComponentVariantStateLabel(mode) {
   return COMPONENT_VARIANT_STATE_LABELS[mode] ?? 'State';
@@ -1462,10 +1799,12 @@ function normalizeStoredComponent(component) {
   const defaultVariantId = sanitizedVariants.some((variant) => variant.id === component?.defaultVariantId && isDefaultComponentVariant(variant))
     ? component.defaultVariantId
     : sanitizedVariants.find(isDefaultComponentVariant)?.id ?? sanitizedVariants[0]?.id ?? null;
+  const controls = normalizeComponentControls(component?.controls);
 
   return {
     ...component,
     defaultVariantId,
+    controls,
     variants: sanitizedVariants,
     snapshot: sanitizedVariants[0]?.snapshot ?? [],
   };
@@ -1762,6 +2101,7 @@ function buildComponentLibraryForPersistence(state) {
       ...component,
       updatedAt: Date.now(),
       defaultVariantId: component.defaultVariantId ?? syncedVariants[0]?.id ?? null,
+      controls: state.componentEditor.controls ?? component.controls ?? [],
       variants: syncedVariants,
       snapshot: syncedVariants[0]?.snapshot ?? [],
     });
@@ -1811,6 +2151,7 @@ function makeEmptyComponentEditor() {
     isOpen: false,
     componentId: null,
     activeVariantId: null,
+    controls: [],
     variants: [],
     page: makeComponentEditorPage(),
     breakpointDefs: deepClone(COMPONENT_EDITOR_BREAKPOINTS),
@@ -1974,6 +2315,32 @@ export function createScrollSequence(x = 80, y = 80, name) {
         backgroundColor: '#050816',
         borderRadius: 16, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
         opacity: 1, mixBlendMode: 'normal', objectFit: 'cover', overflow: 'hidden', boxShadow: '', zIndex: 1,
+      },
+    },
+    animations: makeDefaultElementAnimations(),
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
+export function createEmbed(x = 80, y = 80, name) {
+  return {
+    id: `emb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'embed',
+    name: name || 'Embed',
+    parentId: null,
+    children: [],
+    base: {
+      x, y, width: 360, height: 220, rotation: 0, locked: false, hidden: false,
+      widthMode: 'fixed', heightMode: 'fixed',
+      lockAspectRatio: false,
+      minW: null, maxW: null, minH: null, maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      embedMode: 'html',
+      embedCode: '',
+      styles: {
+        backgroundColor: '#ffffff',
+        borderRadius: 12, borderWidth: 1, borderColor: 'rgba(15, 23, 42, 0.08)', borderStyle: 'solid',
+        opacity: 1, mixBlendMode: 'normal', overflow: 'hidden', boxShadow: '', zIndex: 1,
       },
     },
     animations: makeDefaultElementAnimations(),
@@ -3134,6 +3501,10 @@ export const useEditorStore = create((set, get) => {
     // ── Color styles (site-wide) ───────────────────────────
     colorStyles: [],
     setColorStyles: (styles) => set({ colorStyles: styles }),
+    textStyles: [],
+    setTextStyles: (styles) => set({ textStyles: Array.isArray(styles) ? styles : [] }),
+    elementStyles: [],
+    setElementStyles: (styles) => set({ elementStyles: Array.isArray(styles) ? styles : [] }),
 
     // ── Variables (page + site-wide) ──────────────────────
     globalVariables: [],
@@ -3408,6 +3779,29 @@ export const useEditorStore = create((set, get) => {
     components: [],
     setComponents: (components) => set({ components }),
 
+    ensureAssetStorageComponent() {
+      const currentComponents = get().components ?? [];
+      const existing = currentComponents.find((component) => isAssetStorageComponentId(component.id)) ?? null;
+      const fallback = makeAssetStorageComponent();
+      const normalized = existing ? normalizeStoredComponent(existing) : fallback;
+      const hasPrimaryRoot = !!getSnapshotRoot(normalized.snapshot ?? normalized.variants?.[0]?.snapshot ?? []);
+      const nextComponent = hasPrimaryRoot ? normalized : fallback;
+      const changed = !existing || JSON.stringify(existing) !== JSON.stringify(nextComponent);
+      if (changed) {
+        const nextComponents = upsertComponent(currentComponents, nextComponent);
+        set({ components: nextComponents });
+        get().saveComponents(nextComponents);
+      }
+      return nextComponent.id;
+    },
+
+    openAssetStorage() {
+      const componentId = get().ensureAssetStorageComponent();
+      if (!componentId) return;
+      get().openComponentEditor(componentId);
+      set({ leftTab: 'components' });
+    },
+
     async loadComponents() {
       try {
         if (window.fbData?.restUrl) {
@@ -3451,7 +3845,20 @@ export const useEditorStore = create((set, get) => {
     createComponentFromElement(elementId, name) {
       const elements = get().pages.find(p => p.id === get().currentPageId)?.elements ?? [];
       const rootEl = findEl(elements, elementId);
-      if (!rootEl) return null;
+      if (!rootEl) return { error: 'Selected layer no longer exists.' };
+      if (rootEl.componentRoot) return { error: 'This layer is already a component root.' };
+      if (rootEl.componentInstance) return { error: 'Detach or edit the component source before creating a new component from an instance root.' };
+      if (get().activeSurface === 'page') {
+        let ancestorId = rootEl.parentId ?? null;
+        while (ancestorId) {
+          const ancestor = findEl(elements, ancestorId);
+          if (!ancestor) break;
+          if (ancestor.componentInstance) {
+            return { error: 'Cannot create a component from a layer inside another component instance.' };
+          }
+          ancestorId = ancestor.parentId ?? null;
+        }
+      }
       const activeBpId = get().selection?.bpId ?? 'desktop';
       const resolvedRoot = resolveElement(rootEl, activeBpId);
 
@@ -3468,6 +3875,7 @@ export const useEditorStore = create((set, get) => {
         createdAt: now,
         updatedAt: now,
         defaultVariantId: primaryVariant.id,
+        controls: [],
         variants: [primaryVariant],
         snapshot: primaryVariant.snapshot,
       };
@@ -3494,17 +3902,12 @@ export const useEditorStore = create((set, get) => {
 
     insertComponentInstance(componentId, { x = 80, y = 80, bpId = 'desktop', parentId = null } = {}) {
       const component = get().components.find(item => item.id === componentId);
-      const variant = getComponentVariant(component, component?.defaultVariantId);
-      const composedSnapshot = composeVariantSnapshot(component, variant?.id ?? component?.defaultVariantId);
-      if (!variant || !composedSnapshot.length) return null;
-
-      const instantiated = instantiateComponentSnapshot(composedSnapshot, {
+      const { instantiated, root } = buildComponentInstanceSubtree(component, {
         targetParentId: parentId,
         rootPosition: { x, y },
         bpId,
-        componentInstance: { componentId, variantId: variant.id, role: 'instance' },
+        role: 'instance',
       });
-      const root = getSnapshotRoot(instantiated);
       if (!root) return null;
 
       withPage((els) => {
@@ -3530,15 +3933,14 @@ export const useEditorStore = create((set, get) => {
         let nextEls = els;
         const roots = nextEls.filter(el => el.componentInstance?.componentId === componentId);
         roots.forEach((rootEl) => {
-          const variant = getComponentVariant(component, rootEl.componentInstance?.variantId ?? component.defaultVariantId);
-          const composedSnapshot = composeVariantSnapshot(component, variant?.id ?? component.defaultVariantId);
-          if (!variant || !composedSnapshot.length) return;
-          const instantiated = instantiateComponentSnapshot(composedSnapshot, {
+          const { instantiated, root: rootNext } = buildComponentInstanceSubtree(component, {
+            rootEl,
             targetRootId: rootEl.id,
             targetParentId: rootEl.parentId ?? null,
-            componentInstance: { ...(rootEl.componentInstance ?? {}), componentId, variantId: variant.id },
+            variantId: rootEl.componentInstance?.variantId ?? component.defaultVariantId,
+            props: rootEl.componentInstance?.props ?? {},
+            role: rootEl.componentInstance?.role ?? 'instance',
           });
-          const rootNext = getSnapshotRoot(instantiated);
           if (!rootNext) return;
           const patched = instantiated.map(el => (
             el.id === rootNext.id ? preserveComponentRootPlacement(el, rootEl) : el
@@ -3555,17 +3957,16 @@ export const useEditorStore = create((set, get) => {
       if (!rootEl || !componentId) return;
 
       const component = get().components.find((item) => item.id === componentId);
-      const variant = getComponentVariant(component, variantId);
-      const composedSnapshot = composeVariantSnapshot(component, variant?.id ?? component?.defaultVariantId);
-      if (!variant || !composedSnapshot.length) return;
 
       withPage((els) => {
-        const instantiated = instantiateComponentSnapshot(composedSnapshot, {
+        const { instantiated, root: rootNext } = buildComponentInstanceSubtree(component, {
+          rootEl,
           targetRootId: rootEl.id,
           targetParentId: rootEl.parentId ?? null,
-          componentInstance: { ...(rootEl.componentInstance ?? {}), componentId, variantId: variant.id },
+          variantId,
+          props: rootEl.componentInstance?.props ?? {},
+          role: rootEl.componentInstance?.role ?? 'instance',
         });
-        const rootNext = getSnapshotRoot(instantiated);
         if (!rootNext) return els;
         const patched = instantiated.map((el) => (
           el.id === rootNext.id ? preserveComponentRootPlacement(el, rootEl) : el
@@ -3579,6 +3980,39 @@ export const useEditorStore = create((set, get) => {
         return {
           selection: buildSelection(current.elementIds, current.bpId, elementId),
         };
+      });
+    },
+
+    updateComponentInstanceProp(elementId, controlId, value) {
+      const rootEl = findEl(getEls(), elementId);
+      const componentId = rootEl?.componentInstance?.componentId;
+      if (!rootEl || !componentId || typeof controlId !== 'string' || !controlId) return;
+
+      const component = get().components.find((item) => item.id === componentId);
+      const control = component?.controls?.find((entry) => entry.id === controlId) ?? null;
+      if (!component || !control) return;
+
+      const currentProps = normalizeComponentInstanceProps(component, rootEl.componentInstance?.props ?? {});
+      const nextValue = normalizeComponentControlValue(control.type, value, control.options ?? []);
+      const nextProps = {
+        ...currentProps,
+        [controlId]: nextValue,
+      };
+
+      withPage((els) => {
+        const { instantiated, root: rootNext } = buildComponentInstanceSubtree(component, {
+          rootEl,
+          targetRootId: rootEl.id,
+          targetParentId: rootEl.parentId ?? null,
+          variantId: rootEl.componentInstance?.variantId ?? component.defaultVariantId,
+          props: nextProps,
+          role: rootEl.componentInstance?.role ?? 'instance',
+        });
+        if (!rootNext) return els;
+        const patched = instantiated.map((el) => (
+          el.id === rootNext.id ? preserveComponentRootPlacement(el, rootEl) : el
+        ));
+        return replaceSubtree(els, rootEl.id, patched);
       });
     },
 
@@ -3646,6 +4080,7 @@ export const useEditorStore = create((set, get) => {
         isOpen: true,
         componentId,
         activeVariantId: initialVariantId,
+        controls: deepClone(normalizedComponent.controls ?? []),
         variants: deepClone(normalizedComponent.variants ?? []),
         page: {
           ...makeComponentEditorPage(),
@@ -3716,6 +4151,60 @@ export const useEditorStore = create((set, get) => {
                 interaction: nextInteraction,
               };
             }),
+          },
+        };
+      });
+    },
+
+    addComponentEditorControl(initialControl = {}) {
+      let createdId = null;
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        const nextControl = normalizeComponentControl({
+          label: 'New Control',
+          type: 'text',
+          defaultValue: '',
+          bindings: [],
+          ...initialControl,
+        }, (state.componentEditor.controls ?? []).length);
+        createdId = nextControl.id;
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            controls: [...(state.componentEditor.controls ?? []), nextControl],
+          },
+        };
+      });
+      return createdId;
+    },
+
+    updateComponentEditorControl(controlId, updates) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        const controls = state.componentEditor.controls ?? [];
+        const index = controls.findIndex((control) => control.id === controlId);
+        if (index === -1) return state;
+        const nextControls = controls.map((control, controlIndex) => (
+          control.id === controlId
+            ? normalizeComponentControl({ ...control, ...updates }, controlIndex)
+            : normalizeComponentControl(control, controlIndex)
+        ));
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            controls: nextControls,
+          },
+        };
+      });
+    },
+
+    removeComponentEditorControl(controlId) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            controls: (state.componentEditor.controls ?? []).filter((control) => control.id !== controlId),
           },
         };
       });
@@ -3824,6 +4313,7 @@ export const useEditorStore = create((set, get) => {
               ...component,
               updatedAt: Date.now(),
               defaultVariantId: component.defaultVariantId ?? syncedVariants[0]?.id ?? null,
+              controls: current.controls ?? component.controls ?? [],
               variants: syncedVariants,
               snapshot: syncedVariants[0]?.snapshot ?? [],
             })
@@ -3890,6 +4380,7 @@ export const useEditorStore = create((set, get) => {
             ...editor,
             isOpen: true,
             activeVariantId: nextActiveVariantId,
+            controls: deepClone(normalizedComponent.controls ?? []),
             variants: deepClone(normalizedComponent.variants ?? []),
             page: {
               ...editor.page,
@@ -3945,6 +4436,72 @@ export const useEditorStore = create((set, get) => {
         }
       } catch (e) {
         console.error('[FrameBuilder] saveColorStyles failed', e);
+      }
+    },
+
+    async loadTextStyles() {
+      try {
+        if (window.fbData?.restUrl) {
+          const data = await requestWordPressEndpoint('text-styles', 'framebuilder_get_text_styles');
+          if (data.success && Array.isArray(data.styles)) {
+            set({ textStyles: data.styles });
+          }
+        } else {
+          const stored = localStorage.getItem('fb_text_styles');
+          if (stored) set({ textStyles: JSON.parse(stored) });
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] loadTextStyles failed', e);
+      }
+    },
+
+    async saveTextStyles(styles) {
+      const nextStyles = Array.isArray(styles) ? styles : [];
+      set({ textStyles: nextStyles });
+      try {
+        if (window.fbData?.restUrl) {
+          await requestWordPressEndpoint('text-styles', 'framebuilder_save_text_styles', {
+            method: 'POST',
+            body: { styles: nextStyles },
+          });
+        } else {
+          localStorage.setItem('fb_text_styles', JSON.stringify(nextStyles));
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] saveTextStyles failed', e);
+      }
+    },
+
+    async loadElementStyles() {
+      try {
+        if (window.fbData?.restUrl) {
+          const data = await requestWordPressEndpoint('element-styles', 'framebuilder_get_element_styles');
+          if (data.success && Array.isArray(data.styles)) {
+            set({ elementStyles: data.styles });
+          }
+        } else {
+          const stored = localStorage.getItem('fb_element_styles');
+          if (stored) set({ elementStyles: JSON.parse(stored) });
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] loadElementStyles failed', e);
+      }
+    },
+
+    async saveElementStyles(styles) {
+      const nextStyles = Array.isArray(styles) ? styles : [];
+      set({ elementStyles: nextStyles });
+      try {
+        if (window.fbData?.restUrl) {
+          await requestWordPressEndpoint('element-styles', 'framebuilder_save_element_styles', {
+            method: 'POST',
+            body: { styles: nextStyles },
+          });
+        } else {
+          localStorage.setItem('fb_element_styles', JSON.stringify(nextStyles));
+        }
+      } catch (e) {
+        console.error('[FrameBuilder] saveElementStyles failed', e);
       }
     },
 
@@ -4138,6 +4695,17 @@ export const useEditorStore = create((set, get) => {
         : null,
     }),
     closeAnimationEditor: () => set({ animationEditor: null }),
+    loopAnimationPreview: null,
+    openLoopAnimationPreview: (payload) => set({
+      loopAnimationPreview: payload && payload.elementId && payload.animationId
+        ? {
+            elementId: payload.elementId,
+            bpId: payload.bpId ?? 'desktop',
+            animationId: payload.animationId,
+          }
+        : null,
+    }),
+    closeLoopAnimationPreview: () => set({ loopAnimationPreview: null }),
     scrollSequenceRangeEditor: null,
     openScrollSequenceRangeEditor: (payload) => set({
       scrollSequenceRangeEditor: payload && payload.elementId
@@ -4373,7 +4941,14 @@ export const useEditorStore = create((set, get) => {
     /** Update base (desktop) non-style props: name, locked, etc. */
     updateElementBase(elementId, updates) {
       withPage(els =>
-        els.map(el => el.id === elementId ? { ...el, base: { ...el.base, ...updates } } : el)
+        els.map((el) => {
+          if (el.id !== elementId) return el;
+          return {
+            ...el,
+            ...(typeof updates?.name === 'string' ? { name: updates.name } : {}),
+            base: { ...el.base, ...updates },
+          };
+        })
       );
     },
 

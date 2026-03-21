@@ -1,6 +1,42 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
+import { createPortal } from 'react-dom';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
 import { UIIcons } from '../components/UIIcons';
+
+function LayerComponentCreateModal({ defaultName, errorMessage = '', onCancel, onSubmit }) {
+  const [name, setName] = useState(defaultName || 'Component');
+
+  useEffect(() => {
+    setName(defaultName || 'Component');
+  }, [defaultName]);
+
+  return (
+    <div className="fb-overlay-modal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <div className="fb-overlay-modal__card" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+        <div className="fb-overlay-modal__head">Create component</div>
+        <div className="fb-overlay-modal__body">
+          <label className="fb-overlay-modal__label">Component name</label>
+          <input
+            className="fb-prop-input"
+            autoFocus
+            type="text"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') onSubmit(name);
+              if (event.key === 'Escape') onCancel();
+            }}
+          />
+          {errorMessage ? <div className="fb-artboard-bp-note" style={{ marginTop: 10, color: '#fda4af' }}>{errorMessage}</div> : null}
+        </div>
+        <div className="fb-overlay-modal__actions">
+          <button type="button" className="fb-secondary-btn" onClick={onCancel}>Cancel</button>
+          <button type="button" className="fb-primary-btn" onClick={() => onSubmit(name)}>Create</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const Icons = {
   frame: (
@@ -28,6 +64,13 @@ const Icons = {
   image: (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
       <path d="M2.5 2h11A1.5 1.5 0 0 1 15 3.5v9A1.5 1.5 0 0 1 13.5 14h-11A1.5 1.5 0 0 1 1 12.5v-9A1.5 1.5 0 0 1 2.5 2Zm.3 10h10.4L10 8.5 8 10.6 5.6 8.2 2.8 12ZM5.5 5a1.2 1.2 0 1 0 0 2.4A1.2 1.2 0 0 0 5.5 5Z"/>
+    </svg>
+  ),
+  embed: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5.5 4 2.5 8l3 4" />
+      <path d="M10.5 4 13.5 8l-3 4" />
+      <path d="M8.9 2.5 7 13.5" />
     </svg>
   ),
   icon: (
@@ -103,7 +146,7 @@ function checkOffCanvas(el, bpId, bpDef) {
   return (r.x + r.width <= 0 || r.x >= bpDef.width || r.y + r.height <= 0 || r.y >= bpDef.height);
 }
 
-function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }) {
+function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, offCanvas = false }) {
   const selection         = useEditorStore(s => s.selection);
   const setSelection      = useEditorStore(s => s.setSelection);
   const toggleSelection   = useEditorStore(s => s.toggleSelection);
@@ -114,6 +157,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
   const updateElementBase = useEditorStore(s => s.updateElementBase);
   const openComponentEditor = useEditorStore(s => s.openComponentEditor);
   const activeSurface       = useEditorStore(s => s.activeSurface);
+  const loopAnimationPreview = useEditorStore(s => s.loopAnimationPreview);
   const components          = useEditorStore(s => s.components);
   const currentPage         = useEditorStore(s => s.pages.find((page) => page.id === s.currentPageId) ?? null);
   const globalVariables     = useEditorStore(s => s.globalVariables);
@@ -138,11 +182,20 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
   const componentMeta = el.componentInstance?.componentId
     ? components.find((component) => component.id === el.componentInstance.componentId)
     : null;
+  const elementName = (typeof el.name === 'string' && el.name.trim())
+    ? el.name.trim()
+    : ((typeof el.base?.name === 'string' && el.base.name.trim()) ? el.base.name.trim() : '');
   const displayName = activeSurface === 'component' && el.componentRoot
     ? (el.componentVariantName || 'Primary')
-    : (isMainSurfaceComponent ? (componentMeta?.name || el.base?.name || el.type) : (el.base?.name || el.type));
+    : (isMainSurfaceComponent ? (componentMeta?.name || elementName || el.type) : (elementName || el.type));
   const visibleChildren = isMainSurfaceComponent ? [] : children;
   const hasChildren = visibleChildren.length > 0;
+  const activeLoopAnimation = resolveElementAnimations(el, bpId || 'desktop').find((entry) => entry.type === 'loop') ?? null;
+  const hasLoopAnimation = !!activeLoopAnimation;
+  const loopIndicatorLive = !!activeLoopAnimation
+    && loopAnimationPreview?.elementId === el.id
+    && loopAnimationPreview?.bpId === (bpId || 'desktop')
+    && loopAnimationPreview?.animationId === activeLoopAnimation.id;
 
   useEffect(() => {
     if (isSel && itemRef.current) {
@@ -152,7 +205,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
 
   const startRename = (e) => {
     e.stopPropagation();
-    setRenameVal(el.base?.name || el.type);
+    setRenameVal(elementName || el.type);
     setRenaming(true);
   };
   const commitRename = () => {
@@ -220,6 +273,19 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setSelection({ elementId: el.id, bpId: bpId || 'desktop' });
+          onOpenContextMenu?.({
+            clientX: event.clientX,
+            clientY: event.clientY,
+            elementId: el.id,
+            bpId: bpId || 'desktop',
+            defaultName: displayName || el.type || 'Component',
+            canCreateComponent: !el.componentRoot && !el.componentInstance,
+          });
+        }}
       >
         {hasChildren ? (
           <span
@@ -265,6 +331,9 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
             {displayName}
           </span>
         )}
+        {hasLoopAnimation ? (
+          <span className={`fb-loop-indicator fb-loop-indicator--layer${loopIndicatorLive ? ' is-live' : ''}`} aria-label="Loop animation" title="Loop animation" />
+        ) : null}
         <span className={`fb-layer-vis${resolved.hidden ? ' fb-layer-vis--visible' : ''}`}
           title={resolved.hidden ? 'Show' : 'Hide'}
           onClick={(e) => {
@@ -285,6 +354,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, offCanvas = false }
               bpId={bpId}
               onReparent={onReparent}
               onReorder={onReorder}
+              onOpenContextMenu={onOpenContextMenu}
             />
           ))}
         </div>
@@ -301,10 +371,29 @@ export default function LayersPanel() {
   const ejectElement           = useEditorStore(s => s.ejectElement);
   const reorderElementInParent = useEditorStore(s => s.reorderElementInParent);
   const pushHistory            = useEditorStore(s => s.pushHistory);
+  const deleteElement          = useEditorStore(s => s.deleteElement);
+  const createComponentFromElement = useEditorStore(s => s.createComponentFromElement);
+  const openComponentEditor    = useEditorStore(s => s.openComponentEditor);
   const selection       = useEditorStore(s => s.selection);
   const artboardSel     = useEditorStore(s => s.artboardSel);
   const setArtboardSel  = useEditorStore(s => s.setArtboardSel);
   const setSelection    = useEditorStore(s => s.setSelection);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [componentModal, setComponentModal] = useState(null);
+
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+    const handleDismiss = () => setContextMenu(null);
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('pointerdown', handleDismiss);
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('pointerdown', handleDismiss);
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu]);
 
   const activeBpId = selection?.bpId ?? artboardSel ?? null;
   const rootEls = allElements.filter(e => !e.parentId);
@@ -361,6 +450,7 @@ export default function LayersPanel() {
   );
 
   return (
+    <>
     <div
       className="fb-layers-tree"
       onDragOver={(e) => e.preventDefault()}
@@ -370,7 +460,7 @@ export default function LayersPanel() {
       {activeSurface === 'component' ? (
         <>
           {rootEls.map(el => (
-            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} />
+            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
           ))}
           {rootEls.length === 0 && (
             <div className="fb-layers-empty fb-layers-empty--bp">No elements</div>
@@ -397,7 +487,7 @@ export default function LayersPanel() {
               <span className="fb-layer-artboard-dim">{bp.width}×{bp.height}</span>
             </div>
             {visibleEls.map(el => (
-              <LayerItem key={el.id} el={el} depth={0} bpId={bpId} offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} />
+              <LayerItem key={el.id} el={el} depth={0} bpId={bpId} offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
             ))}
             {visibleEls.length === 0 && (
               <div className="fb-layers-empty fb-layers-empty--bp">No elements</div>
@@ -428,13 +518,68 @@ export default function LayersPanel() {
             <span className="fb-layer-artboard-dim">{outsideEls.length}</span>
           </div>
           {outsideEls.map(el => (
-            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas onReparent={handleReparent} onReorder={handleReorder} />
+            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
           ))}
         </div>
       )}
         </>
       )}
     </div>
+    {contextMenu && typeof document !== 'undefined' ? createPortal(
+      <div
+        className="fb-context-menu"
+        style={{ left: contextMenu.clientX, top: contextMenu.clientY }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="fb-context-menu__item"
+          onClick={() => {
+            deleteElement(contextMenu.elementId);
+            pushHistory();
+            setContextMenu(null);
+          }}
+          disabled={!contextMenu.elementId}
+        >
+          Delete
+        </button>
+        <button
+          type="button"
+          className="fb-context-menu__item"
+          onClick={() => {
+            setComponentModal({ elementId: contextMenu.elementId, defaultName: contextMenu.defaultName, errorMessage: '' });
+            setContextMenu(null);
+          }}
+          disabled={!contextMenu.canCreateComponent}
+        >
+          Create Component
+        </button>
+      </div>,
+      document.body,
+    ) : null}
+    {componentModal && typeof document !== 'undefined' ? createPortal(
+      <LayerComponentCreateModal
+        defaultName={componentModal.defaultName}
+        errorMessage={componentModal.errorMessage}
+        onCancel={() => setComponentModal(null)}
+        onSubmit={(name) => {
+          const result = createComponentFromElement(componentModal.elementId, name);
+          if (result?.componentId) {
+            setComponentModal(null);
+            pushHistory();
+            openComponentEditor(result.componentId);
+            return;
+          }
+          setComponentModal((current) => current ? {
+            ...current,
+            errorMessage: result?.error || 'Could not create component from this layer.',
+          } : current);
+        }}
+      />,
+      document.body,
+    ) : null}
+    </>
   );
 }
 

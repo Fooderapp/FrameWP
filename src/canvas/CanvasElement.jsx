@@ -1,8 +1,11 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useEditorStore, resolveElement, resolveElementWithVariables, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
+import { canAssetApplyToElement, parseAssetDragPayload } from '../store/assetStyles';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
+import { getEmbedPreview } from '../components/embedUtils';
 import RichTextEditor from '../components/RichTextEditor';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
+import { getLoopAnimationStyle, useLoopAnimationPlayback } from '../components/loopAnimation';
 import { getResolvedRichTextHtml, plainTextToRichTextHtml } from '../components/richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from '../components/videoUtils';
 
@@ -128,6 +131,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const setComponentEditorActiveVariant = useEditorStore(s => s.setComponentEditorActiveVariant);
   const viewport               = useEditorStore(s => s.viewport);
   const animationEditor        = useEditorStore(s => s.animationEditor);
+  const loopAnimationPreview   = useEditorStore(s => s.loopAnimationPreview);
   const currentPage            = useEditorStore((s) => {
     if (s.activeSurface === 'component' && s.componentEditor?.isOpen) {
       return s.componentEditor.page ?? null;
@@ -173,7 +177,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const componentSelectionTargetId = componentInstanceAncestor?.id ?? id;
   const dropTargetElementId = id;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!el?.componentInstance;
-  const canDropOnto = !!onDropOntoElement
+  const canNestChildrenOnto = !!onDropOntoElement
     && el.type === 'frame'
     && !insideComponentInstanceOnPage
     && !isComponentInstanceOnPage;
@@ -444,7 +448,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   // ── Drop-onto for nesting ──────────────────────────────────
   const handleDragOver = (e) => {
-    if (canDropOnto) {
+    const assetPayload = parseAssetDragPayload(e.dataTransfer);
+    const canApplyAsset = !insideComponentInstanceOnPage
+      && !isComponentInstanceOnPage
+      && canAssetApplyToElement(el, assetPayload);
+    if (canNestChildrenOnto || canApplyAsset) {
       e.preventDefault();
       e.stopPropagation();
       setDropOver(true);
@@ -453,7 +461,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const handleDragLeave = () => setDropOver(false);
   const handleDrop = (e) => {
     setDropOver(false);
-    if (canDropOnto) {
+    const assetPayload = parseAssetDragPayload(e.dataTransfer);
+    const canApplyAsset = !insideComponentInstanceOnPage
+      && !isComponentInstanceOnPage
+      && canAssetApplyToElement(el, assetPayload);
+    if (canNestChildrenOnto || canApplyAsset) {
       e.preventDefault();
       e.stopPropagation();
       onDropOntoElement(e, dropTargetElementId);
@@ -507,6 +519,13 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     : '';
   const rotationTransform = rotation ? `rotate(${rotation}deg)` : '';
   const composedTransform = [previewTransform, rotationTransform].filter(Boolean).join(' ') || undefined;
+  const activeLoopAnimation = el ? resolveElementAnimations(el, bpId).find((entry) => entry.type === 'loop') ?? null : null;
+  const isLoopPreviewActive = !!activeLoopAnimation
+    && loopAnimationPreview?.elementId === id
+    && loopAnimationPreview?.bpId === bpId
+    && loopAnimationPreview?.animationId === activeLoopAnimation.id;
+  const loopAnimationPlayState = useLoopAnimationPlayback(elementRef, isLoopPreviewActive, activeLoopAnimation?.offscreenBehavior);
+  const loopAnimationStyle = getLoopAnimationStyle(isLoopPreviewActive ? activeLoopAnimation : null, composedTransform ?? '', loopAnimationPlayState);
   const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
   const maskedVectorFillActive = (() => {
     const nextShapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
@@ -533,7 +552,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     maxWidth:  maxW,
     minHeight: effectiveFlowPosition ? flowMinHeight : minH,
     maxHeight: maxH,
-    transform: composedTransform,
+    transform: loopAnimationStyle ? undefined : composedTransform,
     // backgroundColor can hold a CSS gradient string — route accordingly
     backgroundColor: !maskedVectorFillActive && styles?.backgroundColor && !styles.backgroundColor.includes('gradient(')
       ? styles.backgroundColor
@@ -588,6 +607,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     cursor:  pendingDraw ? 'crosshair' : interactionLocked ? 'not-allowed' : 'move',
     boxSizing: 'border-box',
     pointerEvents: undefined,
+    ...(loopAnimationStyle ?? {}),
   };
 
   const textStyle = el.type === 'text' ? {
@@ -639,7 +659,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     '--fb-text-stroke-width': `${effectiveTextStrokeWidth * builderTextStrokeRenderScale}px`,
     '--fb-text-stroke-color': strokeColor,
   } : null;
-  const iconMarkup = el.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '') : '';
+  const iconMarkup = el.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '', { forceCurrentColor: false }) : '';
   const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
   const vectorShapeData = ['line', 'path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(el) : null;
   const vectorFillValue = vectorShapeData?.kind !== 'line' && vectorShapeData?.closed
@@ -681,6 +701,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     : null;
   const scrollSequencePreview = el.type === 'scroll-sequence'
     ? getScrollSequencePreview(resolved)
+    : null;
+  const embedPreview = el.type === 'embed'
+    ? getEmbedPreview(resolved)
     : null;
 
   useLayoutEffect(() => {
@@ -919,6 +942,70 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
               ) : null}
             </div>
           </>
+        );
+      })()}
+      {el.type === 'embed' && (() => {
+        const mode = embedPreview?.mode ?? 'html';
+        const code = embedPreview?.code ?? '';
+        if (mode === 'html' && embedPreview?.hasPreview) {
+          return (
+            <iframe
+              srcDoc={embedPreview.srcDoc}
+              title={el.name || 'Embed'}
+              sandbox=""
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                border: 0,
+                background: 'transparent',
+                pointerEvents: 'none',
+                userSelect: 'none',
+              }}
+            />
+          );
+        }
+
+        const empty = !code.trim();
+        const title = empty
+          ? 'Embed'
+          : mode === 'shortcode'
+            ? 'Shortcode preview renders on publish'
+            : mode === 'php'
+              ? 'PHP is stored but not executed in the builder'
+              : 'React code is stored but not compiled in the builder';
+        const badge = empty ? 'Add code' : mode === 'shortcode' ? 'WP' : mode.toUpperCase();
+        return (
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 18,
+            border: '1.5px dashed rgba(120,120,160,0.32)',
+            borderRadius: 'inherit',
+            background: 'linear-gradient(180deg, rgba(248,250,252,0.92), rgba(241,245,249,0.88))',
+            color: '#0f172a',
+            pointerEvents: 'none',
+          }}>
+            <div style={{ display: 'grid', gap: 8, width: '100%', maxWidth: 240 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 700 }}>{title}</span>
+                <span style={{ padding: '4px 8px', borderRadius: 999, background: 'rgba(15,23,42,0.08)', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em' }}>{badge}</span>
+              </div>
+              <div style={{
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                fontSize: 10.5,
+                lineHeight: 1.5,
+                color: 'rgba(15,23,42,0.72)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                maxHeight: 110,
+                overflow: 'hidden',
+              }}>
+                {empty ? 'Paste HTML, a shortcode, PHP, or React snippet in Properties.' : code}
+              </div>
+            </div>
+          </div>
         );
       })()}
       {hasGradientFrameStroke && styles?.borderWidth > 0 ? (

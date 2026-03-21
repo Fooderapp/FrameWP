@@ -8,7 +8,7 @@ function escapeHtml(value) {
 }
 
 const ALLOWED_TAGS = new Set(['br', 'strong', 'b', 'em', 'i', 'u', 'span']);
-const ALLOWED_STYLE_KEYS = new Set(['font-weight', 'font-style', 'text-decoration', 'font-size', 'color', 'font-family']);
+const ALLOWED_STYLE_KEYS = new Set(['font-weight', 'font-style', 'text-decoration', 'font-size', 'color', 'font-family', 'text-transform', 'letter-spacing', 'line-height']);
 const BLOCK_TO_BREAK_TAGS = new Set(['div', 'p']);
 
 function sanitizeStyleValue(styleKey, styleValue) {
@@ -33,6 +33,11 @@ function sanitizeStyleValue(styleKey, styleValue) {
     return decorations.length ? decorations.join(' ') : '';
   }
 
+  if (styleKey === 'text-transform') {
+    if (/^(none|uppercase|lowercase|capitalize)$/i.test(normalizedValue)) return normalizedValue.toLowerCase();
+    return '';
+  }
+
   if (styleKey === 'font-size') {
     const parsed = parseFloat(normalizedValue);
     if (!Number.isFinite(parsed)) return '';
@@ -40,6 +45,23 @@ function sanitizeStyleValue(styleKey, styleValue) {
     if (unit && unit !== 'px') return '';
     const clamped = Math.max(8, Math.min(144, parsed));
     return `${Math.round(clamped * 10) / 10}px`;
+  }
+
+  if (styleKey === 'letter-spacing') {
+    const parsed = parseFloat(normalizedValue);
+    if (!Number.isFinite(parsed)) return '';
+    const unit = normalizedValue.replace(`${parsed}`, '').trim().toLowerCase();
+    if (unit && unit !== 'px' && unit !== 'em') return '';
+    return `${Math.round(parsed * 1000) / 1000}${unit || 'px'}`;
+  }
+
+  if (styleKey === 'line-height') {
+    const parsed = parseFloat(normalizedValue);
+    if (!Number.isFinite(parsed)) return '';
+    const unit = normalizedValue.replace(`${parsed}`, '').trim().toLowerCase();
+    if (unit && unit !== 'px' && unit !== 'em' && unit !== '%') return '';
+    const clamped = Math.max(0.1, Math.min(20, parsed));
+    return `${Math.round(clamped * 1000) / 1000}${unit || ''}`;
   }
 
   if (styleKey === 'color') {

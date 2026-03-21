@@ -61,6 +61,10 @@ class FrameBuilder_Exporter {
 		return in_array( $value, [ 'youtube', 'vimeo', 'upload' ], true ) ? $value : 'upload';
 	}
 
+	private function normalize_embed_mode( $value ): string {
+		return in_array( $value, [ 'html', 'shortcode', 'php', 'react' ], true ) ? $value : 'html';
+	}
+
 	private function normalize_scroll_sequence_type( $value ): string {
 		return in_array( $value, [ 'video', 'image-sequence', 'gif' ], true ) ? $value : 'video';
 	}
@@ -259,6 +263,90 @@ class FrameBuilder_Exporter {
 		$clean = preg_replace( '/\s(?:href|xlink:href)\s*=\s*("|\')\s*javascript:[^\1]*\1/i', '', $clean );
 		if ( ! is_string( $clean ) || trim( $clean ) === '' ) return '';
 		return preg_replace( '/<svg\b/i', '<svg width="100%" height="100%" preserveAspectRatio="xMidYMid meet"', $clean, 1 ) ?? '';
+	}
+
+	private function sanitize_embed_html( $markup ): string {
+		if ( ! is_string( $markup ) || trim( $markup ) === '' ) return '';
+
+		$allowed = [
+			'a' => [ 'href' => true, 'target' => true, 'rel' => true, 'class' => true, 'id' => true, 'title' => true, 'style' => true ],
+			'article' => [ 'class' => true, 'id' => true, 'title' => true, 'style' => true ],
+			'aside' => [ 'class' => true, 'id' => true, 'title' => true, 'style' => true ],
+			'audio' => [ 'src' => true, 'controls' => true, 'autoplay' => true, 'loop' => true, 'muted' => true, 'preload' => true, 'class' => true, 'style' => true ],
+			'b' => [ 'class' => true, 'style' => true ],
+			'blockquote' => [ 'class' => true, 'style' => true ],
+			'br' => [],
+			'button' => [ 'type' => true, 'name' => true, 'value' => true, 'class' => true, 'style' => true ],
+			'canvas' => [ 'width' => true, 'height' => true, 'class' => true, 'style' => true ],
+			'caption' => [ 'class' => true, 'style' => true ],
+			'code' => [ 'class' => true, 'style' => true ],
+			'col' => [ 'span' => true, 'width' => true, 'style' => true ],
+			'colgroup' => [ 'span' => true, 'style' => true ],
+			'dd' => [ 'class' => true, 'style' => true ],
+			'details' => [ 'open' => true, 'class' => true, 'style' => true ],
+			'div' => [ 'class' => true, 'id' => true, 'title' => true, 'style' => true ],
+			'dl' => [ 'class' => true, 'style' => true ],
+			'dt' => [ 'class' => true, 'style' => true ],
+			'em' => [ 'class' => true, 'style' => true ],
+			'figcaption' => [ 'class' => true, 'style' => true ],
+			'figure' => [ 'class' => true, 'style' => true ],
+			'footer' => [ 'class' => true, 'style' => true ],
+			'form' => [ 'action' => true, 'method' => true, 'target' => true, 'class' => true, 'style' => true ],
+			'h1' => [ 'class' => true, 'style' => true ],
+			'h2' => [ 'class' => true, 'style' => true ],
+			'h3' => [ 'class' => true, 'style' => true ],
+			'h4' => [ 'class' => true, 'style' => true ],
+			'h5' => [ 'class' => true, 'style' => true ],
+			'h6' => [ 'class' => true, 'style' => true ],
+			'header' => [ 'class' => true, 'style' => true ],
+			'hr' => [ 'class' => true, 'style' => true ],
+			'i' => [ 'class' => true, 'style' => true ],
+			'iframe' => [ 'src' => true, 'loading' => true, 'allow' => true, 'allowfullscreen' => true, 'referrerpolicy' => true, 'sandbox' => true, 'frameborder' => true, 'width' => true, 'height' => true, 'class' => true, 'style' => true ],
+			'img' => [ 'src' => true, 'alt' => true, 'loading' => true, 'decoding' => true, 'srcset' => true, 'sizes' => true, 'width' => true, 'height' => true, 'class' => true, 'style' => true ],
+			'input' => [ 'type' => true, 'name' => true, 'value' => true, 'placeholder' => true, 'checked' => true, 'disabled' => true, 'readonly' => true, 'min' => true, 'max' => true, 'step' => true, 'class' => true, 'style' => true ],
+			'label' => [ 'for' => true, 'class' => true, 'style' => true ],
+			'li' => [ 'class' => true, 'style' => true ],
+			'main' => [ 'class' => true, 'style' => true ],
+			'nav' => [ 'class' => true, 'style' => true ],
+			'ol' => [ 'class' => true, 'style' => true ],
+			'option' => [ 'value' => true, 'selected' => true, 'class' => true, 'style' => true ],
+			'p' => [ 'class' => true, 'style' => true ],
+			'picture' => [ 'class' => true, 'style' => true ],
+			'pre' => [ 'class' => true, 'style' => true ],
+			'section' => [ 'class' => true, 'style' => true ],
+			'select' => [ 'name' => true, 'multiple' => true, 'disabled' => true, 'class' => true, 'style' => true ],
+			'small' => [ 'class' => true, 'style' => true ],
+			'source' => [ 'src' => true, 'srcset' => true, 'type' => true, 'media' => true ],
+			'span' => [ 'class' => true, 'id' => true, 'title' => true, 'style' => true ],
+			'strong' => [ 'class' => true, 'style' => true ],
+			'style' => [ 'type' => true ],
+			'sub' => [ 'class' => true, 'style' => true ],
+			'summary' => [ 'class' => true, 'style' => true ],
+			'sup' => [ 'class' => true, 'style' => true ],
+			'table' => [ 'class' => true, 'style' => true ],
+			'tbody' => [ 'class' => true, 'style' => true ],
+			'td' => [ 'colspan' => true, 'rowspan' => true, 'class' => true, 'style' => true ],
+			'textarea' => [ 'name' => true, 'placeholder' => true, 'rows' => true, 'cols' => true, 'readonly' => true, 'disabled' => true, 'class' => true, 'style' => true ],
+			'tfoot' => [ 'class' => true, 'style' => true ],
+			'th' => [ 'colspan' => true, 'rowspan' => true, 'scope' => true, 'class' => true, 'style' => true ],
+			'thead' => [ 'class' => true, 'style' => true ],
+			'tr' => [ 'class' => true, 'style' => true ],
+			'u' => [ 'class' => true, 'style' => true ],
+			'ul' => [ 'class' => true, 'style' => true ],
+			'video' => [ 'src' => true, 'controls' => true, 'autoplay' => true, 'loop' => true, 'muted' => true, 'playsinline' => true, 'poster' => true, 'preload' => true, 'class' => true, 'style' => true ],
+		];
+
+		$clean = wp_kses( $markup, $allowed );
+		$clean = preg_replace( '/\son[a-z-]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', '', $clean );
+		$clean = preg_replace( '/\s(?:href|src|action)\s*=\s*("|\')\s*javascript:[^\1]*\1/i', '', $clean );
+		$clean = preg_replace( '/style\s*=\s*("|\')(?:[^\1]*?(?:expression\s*\(|javascript:|behavior:)[^\1]*)\1/i', '', $clean );
+		return is_string( $clean ) ? trim( $clean ) : '';
+	}
+
+	private function build_embed_srcdoc( string $markup ): string {
+		$clean = $this->sanitize_embed_html( $markup );
+		if ( '' === $clean ) return '';
+		return '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_blank"><style>html,body{margin:0;padding:0;min-height:100%;}*,*::before,*::after{box-sizing:border-box;}body{font-family:Arial,sans-serif;}</style></head><body>' . $clean . '</body></html>';
 	}
 
 	private function plain_text_to_rich_text_html( string $text ): string {
@@ -934,6 +1022,28 @@ class FrameBuilder_Exporter {
 					$img_style = 'position:absolute;inset:0;width:100%;height:100%;object-fit:' . $object_fit . ';border-radius:inherit;';
 					$html .= '<img data-fb-scroll-sequence-media="gif" src="' . $gif_url . '" alt="" style="' . esc_attr( $img_style ) . '" loading="eager">';
 				}
+			}
+		}
+
+		if ( ( $el['type'] ?? '' ) === 'embed' ) {
+			$embed_mode = $this->normalize_embed_mode( $resolved['embedMode'] ?? 'html' );
+			$embed_code = isset( $resolved['embedCode'] ) && is_string( $resolved['embedCode'] ) ? $resolved['embedCode'] : '';
+			if ( 'html' === $embed_mode ) {
+				$srcdoc = $this->build_embed_srcdoc( $embed_code );
+				if ( '' !== $srcdoc ) {
+					$html .= '<iframe srcdoc="' . esc_attr( $srcdoc ) . '" title="' . esc_attr( $el['name'] ?? 'Embed' ) . '" sandbox="" style="position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent;"></iframe>';
+				}
+			} elseif ( 'shortcode' === $embed_mode ) {
+				$shortcode_output = do_shortcode( shortcode_unautop( $embed_code ) );
+				if ( is_string( $shortcode_output ) && '' !== trim( $shortcode_output ) ) {
+					$html .= '<div class="fb-embed-shortcode" style="position:absolute;inset:0;width:100%;height:100%;overflow:auto;">' . $shortcode_output . '</div>';
+				}
+			} else {
+				$html .= '<div class="fb-embed-placeholder" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:18px;border:1.5px dashed rgba(120,120,160,0.32);border-radius:inherit;background:linear-gradient(180deg, rgba(248,250,252,0.92), rgba(241,245,249,0.88));color:#0f172a;">';
+				$html .= '<div style="display:grid;gap:8px;width:100%;max-width:240px;">';
+				$html .= '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;"><span style="font-size:12px;font-weight:700;">' . esc_html( strtoupper( $embed_mode ) . ' is stored but not executed' ) . '</span><span style="padding:4px 8px;border-radius:999px;background:rgba(15,23,42,0.08);font-size:10px;font-weight:800;letter-spacing:0.08em;">' . esc_html( strtoupper( $embed_mode ) ) . '</span></div>';
+				$html .= '<pre style="margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;color:rgba(15,23,42,0.72);white-space:pre-wrap;word-break:break-word;max-height:110px;overflow:hidden;">' . esc_html( $embed_code ) . '</pre>';
+				$html .= '</div></div>';
 			}
 		}
 
@@ -2910,6 +3020,91 @@ class FrameBuilder_Exporter {
 		setNodeBackdropFilter(node, baseState.backdropFilter);
 		(baseState.textNode || baseState.iconNode || node).style.color = baseState.color;
 	};
+	var clampLoopNumber = function(value, fallback, min, max) {
+		var numericValue = typeof value === 'number' ? value : parseFloat(value);
+		if (!isFinite(numericValue)) numericValue = fallback;
+		if (typeof min === 'number') numericValue = Math.max(min, numericValue);
+		if (typeof max === 'number') numericValue = Math.min(max, numericValue);
+		return numericValue;
+	};
+	var ensureLoopAnimationStyles = function() {
+		if (document.getElementById('fb-loop-animation-style')) return;
+		var styleNode = document.createElement('style');
+		styleNode.id = 'fb-loop-animation-style';
+		styleNode.textContent = '@keyframes fb-loop-animation{0%{opacity:var(--fb-loop-opacity-from,1);transform:var(--fb-loop-transform-from,none);}100%{opacity:1;transform:var(--fb-loop-transform-to,none);}}';
+		document.head.appendChild(styleNode);
+	};
+	var getLoopAnimationTiming = function(transition) {
+		if (!transition || transition.type === 'instant') return 'linear';
+		if (transition.type === 'realistic') {
+			if (transition.springMode === 'physics') return 'cubic-bezier(0.16, 1, 0.3, 1)';
+			var bounce = clampLoopNumber(transition.bounce, 0.2, 0, 1);
+			return 'cubic-bezier(0.2, ' + Math.max(0.55, 1 - (bounce * 0.35)) + ', 0.2, ' + Math.min(1.45, 1 + (bounce * 0.45)) + ')';
+		}
+		var bezier = transition.bezier || { x1: 0.44, y1: 0, x2: 0.56, y2: 1 };
+		return 'cubic-bezier(' + clampLoopNumber(bezier.x1, 0.44, 0, 1) + ', ' + clampLoopNumber(bezier.y1, 0, -2, 2) + ', ' + clampLoopNumber(bezier.x2, 0.56, 0, 1) + ', ' + clampLoopNumber(bezier.y2, 1, -2, 2) + ')';
+	};
+	var buildLoopTransform = function(effect, baseRotation) {
+		var transforms = [];
+		if (baseRotation) transforms.push('rotate(' + baseRotation + 'deg)');
+		var offsetX = clampLoopNumber(effect && effect.offsetX, 0, -4000, 4000);
+		var offsetY = clampLoopNumber(effect && effect.offsetY, 0, -4000, 4000);
+		if (offsetX !== 0 || offsetY !== 0) transforms.push('translate(' + offsetX + 'px, ' + offsetY + 'px)');
+		var scale = clampLoopNumber(effect && effect.scale, 1, 0.1, 4);
+		if (scale !== 1) transforms.push('scale(' + scale + ')');
+		var skewX = clampLoopNumber(effect && effect.skewX, 0, -180, 180);
+		var skewY = clampLoopNumber(effect && effect.skewY, 0, -180, 180);
+		if (skewX !== 0 || skewY !== 0) transforms.push('skew(' + skewX + 'deg, ' + skewY + 'deg)');
+		if (effect && effect.rotateMode === '3d') {
+			transforms.push('perspective(1000px)');
+			var rotateX = clampLoopNumber(effect.rotateX, 0, -1080, 1080);
+			var rotateY = clampLoopNumber(effect.rotateY, 0, -1080, 1080);
+			var rotateZ = clampLoopNumber(effect.rotate, 0, -1080, 1080);
+			if (rotateX !== 0) transforms.push('rotateX(' + rotateX + 'deg)');
+			if (rotateY !== 0) transforms.push('rotateY(' + rotateY + 'deg)');
+			if (rotateZ !== 0) transforms.push('rotateZ(' + rotateZ + 'deg)');
+		} else {
+			var rotate = clampLoopNumber(effect && effect.rotate, 0, -1080, 1080);
+			if (rotate !== 0) transforms.push('rotate(' + rotate + 'deg)');
+		}
+		return transforms.length ? transforms.join(' ') : 'none';
+	};
+	var clearLoopAnimation = function(node) {
+		if (!node) return;
+		node.style.removeProperty('--fb-loop-opacity-from');
+		node.style.removeProperty('--fb-loop-transform-from');
+		node.style.removeProperty('--fb-loop-transform-to');
+		node.style.animationName = '';
+		node.style.animationDuration = '';
+		node.style.animationTimingFunction = '';
+		node.style.animationDelay = '';
+		node.style.animationIterationCount = '';
+		node.style.animationDirection = '';
+		node.style.animationFillMode = '';
+		node.style.animationPlayState = '';
+		node.style.transformStyle = '';
+		node.style.willChange = '';
+	};
+	var applyLoopAnimation = function(node, animation, playState) {
+		if (!node || !animation) return;
+		ensureLoopAnimationStyles();
+		var baseState = getAnimationBaseState(node);
+		var effect = animation && animation.effect ? animation.effect : {};
+		var transition = normalizeAnimationTransition(animation && animation.transition, { duration: 0.8, easePreset: 'easeInOut' });
+		node.style.setProperty('--fb-loop-opacity-from', String(clampLoopNumber(effect.opacity, 1, 0, 1)));
+		node.style.setProperty('--fb-loop-transform-from', buildLoopTransform(effect, baseState.rotation || 0));
+		node.style.setProperty('--fb-loop-transform-to', baseState.rotation ? ('rotate(' + baseState.rotation + 'deg)') : 'none');
+		node.style.animationName = 'fb-loop-animation';
+		node.style.animationDuration = (getTransitionDurationMs(transition) / 1000) + 's';
+		node.style.animationTimingFunction = getLoopAnimationTiming(transition);
+		node.style.animationDelay = clampLoopNumber(animation.delay, 0, 0, 60) + 's';
+		node.style.animationIterationCount = 'infinite';
+		node.style.animationDirection = animation.loopType === 'mirror' ? 'alternate' : 'normal';
+		node.style.animationFillMode = 'both';
+		node.style.animationPlayState = playState === 'paused' ? 'paused' : 'running';
+		node.style.transformStyle = effect.rotateMode === '3d' ? 'preserve-3d' : '';
+		node.style.willChange = 'transform, opacity';
+	};
 	var shouldAnimateDimensionOverride = function(baseCssValue, endLayout, dimensionKey, modeKey, pctKey) {
 		if (!Object.prototype.hasOwnProperty.call(endLayout, dimensionKey)) return false;
 		if (Object.prototype.hasOwnProperty.call(endLayout, modeKey) || Object.prototype.hasOwnProperty.call(endLayout, pctKey)) return true;
@@ -3074,6 +3269,7 @@ class FrameBuilder_Exporter {
 		node.dataset.fbAnimationsBound = '1';
 		var enterPlayed = new Set();
 		var scrollPlaybackState = { maxProgress: 0 };
+		var loopVisibilityState = { isVisible: true };
 		var scrollMetrics = null;
 		var scrollMetricsKey = '';
 		var refreshScrollMetrics = function(animation) {
@@ -3110,6 +3306,26 @@ class FrameBuilder_Exporter {
 			});
 		}, { threshold: 0.18 });
 		enterObserver.observe(node);
+		var updateLoopAnimation = function() {
+			var animation = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
+				return entry && entry.type === 'loop';
+			}) || null;
+			if (!animation) {
+				clearLoopAnimation(node);
+				return;
+			}
+			var playState = animation.offscreenBehavior === 'pause' && !loopVisibilityState.isVisible ? 'paused' : 'running';
+			applyLoopAnimation(node, animation, playState);
+		};
+		if (typeof IntersectionObserver !== 'undefined') {
+			var loopObserver = new IntersectionObserver(function(entries) {
+				entries.forEach(function(entry) {
+					loopVisibilityState.isVisible = entry.isIntersecting !== false;
+					updateLoopAnimation();
+				});
+			}, { threshold: 0.01 });
+			loopObserver.observe(node);
+		}
 		var scrollFrame = null;
 		var updateScrollAnimations = function() {
 			scrollFrame = null;
@@ -3120,6 +3336,7 @@ class FrameBuilder_Exporter {
 				refreshScrollMetrics(null);
 				scrollPlaybackState.maxProgress = 0;
 				restoreAnimationBaseState(node);
+				updateLoopAnimation();
 				return;
 			}
 			var nextMetricsKey = [getCurrentBreakpoint(), animation.id, animation.startOffsetPx, animation.endOffsetPx, animation.start, animation.end].join(':');
@@ -3134,6 +3351,7 @@ class FrameBuilder_Exporter {
 				scrollPlaybackState.maxProgress = 0;
 			}
 			applyScrollAnimation(node, animation, progress);
+			updateLoopAnimation();
 		};
 		var requestScrollUpdate = function() {
 			if (scrollFrame) return;
