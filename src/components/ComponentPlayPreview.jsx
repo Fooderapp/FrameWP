@@ -740,6 +740,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     opacity: resolved?.hidden ? 0 : styles?.opacity,
     overflow: styles?.overflow,
     boxShadow: styles?.boxShadow,
+    mixBlendMode: styles?.mixBlendMode && styles.mixBlendMode !== 'normal' ? styles.mixBlendMode : undefined,
     filter: (styles?.blur ?? 0) > 0 ? `blur(${styles.blur}px)` : undefined,
     backdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
     WebkitBackdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,

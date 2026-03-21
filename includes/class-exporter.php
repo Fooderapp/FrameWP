@@ -786,6 +786,7 @@ class FrameBuilder_Exporter {
 			'backgroundColor' => 'background-color',
 			'borderRadius'    => 'border-radius',
 			'opacity'         => 'opacity',
+			'mixBlendMode'    => 'mix-blend-mode',
 			'overflow'        => 'overflow',
 			'boxShadow'       => 'box-shadow',
 			'zIndex'          => 'z-index',
@@ -1171,7 +1172,7 @@ class FrameBuilder_Exporter {
 
 		$allowed_props = [
 			'backgroundColor', 'borderRadius', 'borderWidth', 'borderColor', 'borderStyle',
-			'opacity', 'overflow', 'display', 'flexDirection', 'flexWrap', 'gap',
+			'opacity', 'mixBlendMode', 'overflow', 'display', 'flexDirection', 'flexWrap', 'gap',
 			'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
 			'alignItems', 'justifyContent', 'boxShadow', 'zIndex',
 		];
@@ -1964,7 +1965,13 @@ class FrameBuilder_Exporter {
 (function(){
 	var gsap = window.gsap || null;
 	var Flip = window.Flip || (gsap && gsap.plugins ? gsap.plugins.Flip : null) || null;
-	if (gsap && Flip && gsap.registerPlugin) gsap.registerPlugin(Flip);
+	var ScrollTrigger = window.ScrollTrigger || (gsap && gsap.plugins ? gsap.plugins.ScrollTrigger : null) || null;
+	if (gsap && gsap.registerPlugin) {
+		var runtimePlugins = [];
+		if (Flip) runtimePlugins.push(Flip);
+		if (ScrollTrigger) runtimePlugins.push(ScrollTrigger);
+		if (runtimePlugins.length) gsap.registerPlugin.apply(gsap, runtimePlugins);
+	}
 	var scope = document.querySelector('.fb-page.__FB_BUILD_ID__');
 	if (!scope) return;
 	var embeddedPageVariables = __FB_PAGE_VARIABLES__ || [];
@@ -2604,7 +2611,7 @@ class FrameBuilder_Exporter {
 	};
 	var getNodeMarkerBoard = function(node) {
 		if (!node || !node.closest) return null;
-		return node.closest('.fb-bp') || node.closest('.fb-bp-inner') || node.parentElement || null;
+		return node.closest('.fb-bp-inner') || node.closest('.fb-bp') || node.parentElement || null;
 	};
 	var isStickyNodeElement = function(node) {
 		if (!node) return false;
@@ -2671,6 +2678,9 @@ class FrameBuilder_Exporter {
 		var markerRatio = clamp(parseNumber(ratioValue, fallback), 0, 1);
 		return (markerRatio * context.boardHeight) - context.naturalTop;
 	};
+	var resolveScrollSequenceMarkerOffsetPxFromContext = function(context, ratioValue, offsetPxValue, fallback) {
+		return Math.max(0, resolveMarkerOffsetPxFromContext(context, ratioValue, offsetPxValue, fallback));
+	};
 	var resolveMarkerLocalYFromContext = function(context, ratioValue, offsetPxValue, fallback) {
 		if (!context) return 0;
 		return context.naturalTop + resolveMarkerOffsetPxFromContext(context, ratioValue, offsetPxValue, fallback);
@@ -2697,8 +2707,8 @@ class FrameBuilder_Exporter {
 		if (!context) return null;
 		return {
 			context: context,
-			startOffsetPx: resolveMarkerOffsetPxFromContext(context, start, startOffsetPx, 0.2),
-			endOffsetPx: resolveMarkerOffsetPxFromContext(context, end, endOffsetPx, 0.68)
+			startOffsetPx: resolveScrollSequenceMarkerOffsetPxFromContext(context, start, startOffsetPx, 0.2),
+			endOffsetPx: resolveScrollSequenceMarkerOffsetPxFromContext(context, end, endOffsetPx, 0.68)
 		};
 	};
 	var getScrollAnimationProgressFromMetrics = function(metrics) {
@@ -2784,11 +2794,12 @@ class FrameBuilder_Exporter {
 		var scrollFrame = null;
 		var metrics = null;
 		var refreshMetrics = function() {
+			refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
 			metrics = buildScrollAnimationMetrics(node, config.start, config.end, config.startOffsetPx, config.endOffsetPx);
 		};
 		var updateSequence = function() {
 			scrollFrame = null;
-			if (!metrics) refreshMetrics();
+			refreshMetrics();
 			var progress = getScrollAnimationProgressFromMetrics(metrics);
 			node.style.setProperty('--fb-scroll-sequence-progress', String(progress));
 			if (type === 'video') {
@@ -2819,7 +2830,6 @@ class FrameBuilder_Exporter {
 			scrollFrame = window.requestAnimationFrame(updateSequence);
 		};
 		var handleResize = function() {
-			refreshNaturalMarkerAnchor(node, getNodeMarkerBoard(node));
 			refreshMetrics();
 			requestUpdate();
 		};

@@ -2,6 +2,14 @@ import React from 'react';
 import { useEditorStore } from '../store/editorStore';
 import { IconButton, UIIcons } from '../components/UIIcons';
 
+function AtomLogo() {
+  return (
+    <svg width="382" height="356" viewBox="0 0 382 356" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+      <path d="M222.879 47.7959L186.252 111.233L247.601 75.8145L381.101 307.044L298.315 354.84L267 300.6V356H0V260.407H57.1318L6.59277 231.229L140.093 0L222.879 47.7959ZM100.128 260.407H243.795L171.961 135.987L100.128 260.407Z" fill="currentColor"/>
+    </svg>
+  );
+}
+
 export default function TopBar() {
   const viewport       = useEditorStore(s => s.viewport);
   const setViewport    = useEditorStore(s => s.setViewport);
@@ -69,6 +77,9 @@ export default function TopBar() {
           <span>WordPress</span>
         </button>
         <div className="fb-topbar__project">
+          <span className="fb-topbar__brandmark">
+            <AtomLogo />
+          </span>
           <span className="fb-topbar__brand">Atom</span>
         </div>
       </div>

@@ -3014,7 +3014,7 @@ export default function PropertiesPanel() {
 
         <Section title="Cursor" defaultOpen={false} />
 
-        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
+        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Opacity</span>
             <div className="fb-slider-field">
@@ -3058,6 +3058,34 @@ export default function PropertiesPanel() {
               </button>
             </div>
           ) : null}
+
+          {!isComponentInstanceOnPage && (
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Blend</span>
+            <select
+              className="fb-prop-input"
+              value={s.mixBlendMode ?? 'normal'}
+              onChange={e => { updS('mixBlendMode', e.target.value); commit(); }}
+            >
+              <option value="normal">Normal</option>
+              <option value="multiply">Multiply</option>
+              <option value="screen">Screen</option>
+              <option value="overlay">Overlay</option>
+              <option value="darken">Darken</option>
+              <option value="lighten">Lighten</option>
+              <option value="color-dodge">Color Dodge</option>
+              <option value="color-burn">Color Burn</option>
+              <option value="hard-light">Hard Light</option>
+              <option value="soft-light">Soft Light</option>
+              <option value="difference">Difference</option>
+              <option value="exclusion">Exclusion</option>
+              <option value="hue">Hue</option>
+              <option value="saturation">Saturation</option>
+              <option value="color">Color</option>
+              <option value="luminosity">Luminosity</option>
+            </select>
+          </div>
+          )}
 
           {!isComponentInstanceOnPage && (
           <div className="fb-prop-row">
@@ -3304,103 +3332,138 @@ export default function PropertiesPanel() {
           </Section>
         )}
 
-        {element.type === 'scroll-sequence' && (
-          <Section title="Scroll Sequence" action={<ResetBtn show={isOv('scrollSequenceType','scrollSequenceSourceMode','scrollSequenceSrc','scrollSequenceFrames','scrollSequenceStart','scrollSequenceEnd','scrollSequenceStartOffsetPx','scrollSequenceEndOffsetPx') || isSOv('objectFit')} onReset={() => { resetOv('scrollSequenceType','scrollSequenceSourceMode','scrollSequenceSrc','scrollSequenceFrames','scrollSequenceStart','scrollSequenceEnd','scrollSequenceStartOffsetPx','scrollSequenceEndOffsetPx'); resetSOv('objectFit'); }} />}>
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Content</span>
-              <ChoiceGroup
-                value={resolved.scrollSequenceType ?? 'video'}
-                onChange={(value) => {
-                  upd('scrollSequenceType', value);
-                  if (value !== 'image-sequence') upd('scrollSequenceFrames', []);
-                  commit();
-                }}
-                options={[
-                  { value: 'video', label: 'Video' },
-                  { value: 'image-sequence', label: 'Image Seq' },
-                  { value: 'gif', label: 'GIF' },
-                ]}
-              />
-            </div>
+        {element.type === 'scroll-sequence' && (() => {
+          const sequenceType = resolved.scrollSequenceType ?? 'video';
+          const sourceMode = resolved.scrollSequenceSourceMode ?? 'library';
+          const frameCount = Array.isArray(resolved.scrollSequenceFrames) ? resolved.scrollSequenceFrames.length : 0;
+          const hasMedia = sequenceType === 'image-sequence' ? frameCount > 0 : !!resolved.scrollSequenceSrc;
+          const mediaStatus = sequenceType === 'image-sequence'
+            ? `${frameCount} ${frameCount === 1 ? 'frame' : 'frames'}`
+            : (hasMedia ? 'Source ready' : 'Source missing');
+          const sequenceLabel = sequenceType === 'image-sequence'
+            ? 'Image Sequence'
+            : (sequenceType === 'gif' ? 'GIF' : 'Video');
+          const sourceLabel = sourceMode === 'library' ? 'Media Library' : 'Direct Link';
+          const markerSummary = Number.isFinite(resolved.scrollSequenceStartOffsetPx) && Number.isFinite(resolved.scrollSequenceEndOffsetPx)
+            ? `${Math.round(resolved.scrollSequenceStartOffsetPx)} px to ${Math.round(resolved.scrollSequenceEndOffsetPx)} px`
+            : 'Artboard-linked marker positions';
 
-            <div className="fb-prop-row" style={{ marginTop: 8 }}>
-              <span className="fb-prop-label">Source</span>
-              <ChoiceGroup
-                value={resolved.scrollSequenceSourceMode ?? 'library'}
-                onChange={(value) => { upd('scrollSequenceSourceMode', value); commit(); }}
-                options={[
-                  { value: 'library', label: 'Library' },
-                  { value: 'url', label: 'Link' },
-                ]}
-              />
-            </div>
-
-            <div className="fb-prop-row" style={{ alignItems: 'flex-start', marginTop: 8 }}>
-              <span className="fb-prop-label">Media</span>
-              <div style={{ flex: 1, display: 'grid', gap: 6 }}>
-                {(resolved.scrollSequenceType ?? 'video') === 'image-sequence' ? (
-                  <ScrollSequenceFrameListEditor
-                    value={resolved.scrollSequenceFrames ?? []}
-                    sourceMode={resolved.scrollSequenceSourceMode ?? 'library'}
-                    onChange={(nextFrames) => { upd('scrollSequenceFrames', nextFrames); commit(); }}
-                  />
-                ) : ((resolved.scrollSequenceSourceMode ?? 'library') === 'library' ? (
-                  <MediaPickerButton
-                    value={resolved.scrollSequenceSrc ?? ''}
-                    onChange={(nextValue) => { upd('scrollSequenceSrc', nextValue); commit(); }}
-                    mediaType={(resolved.scrollSequenceType ?? 'video') === 'video' ? 'video' : 'image'}
-                  />
-                ) : (
-                  <input
-                    className="fb-prop-input"
-                    type="url"
-                    value={resolved.scrollSequenceSrc ?? ''}
-                    placeholder={(resolved.scrollSequenceType ?? 'video') === 'video' ? 'https://example.com/video.mp4' : 'https://example.com/sequence.gif'}
-                    onChange={(event) => upd('scrollSequenceSrc', event.target.value)}
-                    onBlur={commit}
-                  />
-                ))}
-                <div className="fb-artboard-bp-note">
-                  {(resolved.scrollSequenceType ?? 'video') === 'image-sequence'
-                    ? 'Add each frame in order. Use the media library or paste direct image URLs.'
-                    : ((resolved.scrollSequenceType ?? 'video') === 'video'
-                      ? 'Use a direct MP4/WebM file from the WordPress library or a public media URL.'
-                      : 'Choose or paste a GIF source. GIF playback is shown inside the same scroll range markers.')}
+          return (
+            <Section title="Scroll Sequence" action={<ResetBtn show={isOv('scrollSequenceType','scrollSequenceSourceMode','scrollSequenceSrc','scrollSequenceFrames','scrollSequenceStart','scrollSequenceEnd','scrollSequenceStartOffsetPx','scrollSequenceEndOffsetPx') || isSOv('objectFit')} onReset={() => { resetOv('scrollSequenceType','scrollSequenceSourceMode','scrollSequenceSrc','scrollSequenceFrames','scrollSequenceStart','scrollSequenceEnd','scrollSequenceStartOffsetPx','scrollSequenceEndOffsetPx'); resetSOv('objectFit'); }} />}>
+              <div className="fb-scroll-sequence-card">
+                <div className="fb-scroll-sequence-card__header">
+                  <div className="fb-scroll-sequence-card__copy">
+                    <span className="fb-scroll-sequence-card__eyebrow">{sequenceLabel}</span>
+                    <span className="fb-scroll-sequence-card__title">{sourceLabel}</span>
+                  </div>
+                  <span className={`fb-scroll-sequence-card__badge${hasMedia ? ' is-ready' : ''}`}>{mediaStatus}</span>
+                </div>
+                <div className="fb-scroll-sequence-card__meta">
+                  <span>{sourceMode === 'library' ? 'Managed from WordPress media.' : 'Uses a direct public URL.'}</span>
+                  <span>{s.objectFit === 'contain' ? 'Fit inside frame' : 'Fill frame bounds'}</span>
                 </div>
               </div>
-            </div>
 
-            <div className="fb-prop-row" style={{ marginTop: 8 }}>
-              <span className="fb-prop-label">Mode</span>
-              <IconGroup
-                value={s.objectFit ?? 'cover'}
-                onChange={v => { updS('objectFit', v); commit(); }}
-                options={[
-                  { value: 'contain', icon: '⊡', label: 'Fit' },
-                  { value: 'cover', icon: '⛶', label: 'Fill' },
-                ]}
-              />
-            </div>
-
-            <div className="fb-prop-row" style={{ alignItems: 'center', marginTop: 8 }}>
-              <span className="fb-prop-label">Markers</span>
-              <div style={{ flex: 1, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-                <button
-                  type="button"
-                  className="fb-secondary-btn"
-                  onClick={() => openScrollSequenceRangeEditor({ elementId: element.id, bpId })}
-                >
-                  Edit Markers
-                </button>
-                <span className="fb-artboard-bp-note" style={{ margin: 0 }}>
-                  {Number.isFinite(resolved.scrollSequenceStartOffsetPx) && Number.isFinite(resolved.scrollSequenceEndOffsetPx)
-                    ? `${Math.round(resolved.scrollSequenceStartOffsetPx)} px to ${Math.round(resolved.scrollSequenceEndOffsetPx)} px`
-                    : 'Artboard-linked marker positions'}
-                </span>
+              <div className="fb-prop-row" style={{ marginTop: 10 }}>
+                <span className="fb-prop-label">Type</span>
+                <ChoiceGroup
+                  value={sequenceType}
+                  onChange={(value) => {
+                    upd('scrollSequenceType', value);
+                    if (value !== 'image-sequence') upd('scrollSequenceFrames', []);
+                    commit();
+                  }}
+                  options={[
+                    { value: 'video', label: 'Video' },
+                    { value: 'image-sequence', label: 'Image Seq' },
+                    { value: 'gif', label: 'GIF' },
+                  ]}
+                />
               </div>
-            </div>
-          </Section>
-        )}
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Input</span>
+                <ChoiceGroup
+                  value={sourceMode}
+                  onChange={(value) => { upd('scrollSequenceSourceMode', value); commit(); }}
+                  options={[
+                    { value: 'library', label: 'Library' },
+                    { value: 'url', label: 'Link' },
+                  ]}
+                />
+              </div>
+
+              <div className="fb-prop-row fb-prop-row--full fb-scroll-sequence-panel">
+                <div className="fb-scroll-sequence-panel__header">
+                  <span className="fb-prop-label">Media</span>
+                  <span className="fb-scroll-sequence-panel__hint">
+                    {sequenceType === 'image-sequence' ? 'Add frames in playback order.' : 'Choose a single source file.'}
+                  </span>
+                </div>
+                <div className="fb-scroll-sequence-panel__body">
+                  {sequenceType === 'image-sequence' ? (
+                    <ScrollSequenceFrameListEditor
+                      value={resolved.scrollSequenceFrames ?? []}
+                      sourceMode={sourceMode}
+                      onChange={(nextFrames) => { upd('scrollSequenceFrames', nextFrames); commit(); }}
+                    />
+                  ) : (sourceMode === 'library' ? (
+                    <MediaPickerButton
+                      value={resolved.scrollSequenceSrc ?? ''}
+                      onChange={(nextValue) => { upd('scrollSequenceSrc', nextValue); commit(); }}
+                      mediaType={sequenceType === 'video' ? 'video' : 'image'}
+                    />
+                  ) : (
+                    <input
+                      className="fb-prop-input"
+                      type="url"
+                      value={resolved.scrollSequenceSrc ?? ''}
+                      placeholder={sequenceType === 'video' ? 'https://example.com/video.mp4' : 'https://example.com/sequence.gif'}
+                      onChange={(event) => upd('scrollSequenceSrc', event.target.value)}
+                      onBlur={commit}
+                    />
+                  ))}
+                  <div className="fb-artboard-bp-note">
+                    {sequenceType === 'image-sequence'
+                      ? 'Use consistent dimensions for every frame. Media Library and direct image URLs both work here.'
+                      : (sequenceType === 'video'
+                        ? 'Use a direct MP4 or WebM file. Hosted media URLs are better than embed pages.'
+                        : 'Choose or paste a GIF source. It will scrub inside the same marker range.')}
+                  </div>
+                </div>
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Fit</span>
+                <IconGroup
+                  value={s.objectFit ?? 'cover'}
+                  onChange={v => { updS('objectFit', v); commit(); }}
+                  options={[
+                    { value: 'contain', icon: '⊡', label: 'Fit' },
+                    { value: 'cover', icon: '⛶', label: 'Fill' },
+                  ]}
+                />
+              </div>
+
+              <div className="fb-prop-row fb-prop-row--full fb-scroll-sequence-panel">
+                <div className="fb-scroll-sequence-panel__header">
+                  <span className="fb-prop-label">Markers</span>
+                  <span className="fb-scroll-sequence-panel__hint">Top of the sequence is 0 px.</span>
+                </div>
+                <div className="fb-scroll-sequence-panel__actions">
+                  <button
+                    type="button"
+                    className="fb-secondary-btn"
+                    onClick={() => openScrollSequenceRangeEditor({ elementId: element.id, bpId })}
+                  >
+                    Edit Markers
+                  </button>
+                  <span className="fb-scroll-sequence-panel__range">{markerSummary}</span>
+                </div>
+              </div>
+            </Section>
+          );
+        })()}
 
           {!isComponentInstanceOnPage && element.type === 'image' && allowVariableBindings && (
             <div className="fb-prop-row">
