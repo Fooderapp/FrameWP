@@ -24,7 +24,7 @@ function getTransitionEasing(transition) {
   return `cubic-bezier(${clamp(bezier.x1, 0.44, 0, 1)}, ${clamp(bezier.y1, 0, -2, 2)}, ${clamp(bezier.x2, 0.56, 0, 1)}, ${clamp(bezier.y2, 1, -2, 2)})`;
 }
 
-function buildLoopTransform(effect, baseTransform = '') {
+export function buildAnimatedEffectTransform(effect, baseTransform = '') {
   const transforms = [];
   const safeBaseTransform = typeof baseTransform === 'string' ? baseTransform.trim() : '';
   if (safeBaseTransform) transforms.push(safeBaseTransform);
@@ -56,7 +56,7 @@ export function getLoopAnimationStyle(animation, baseTransform = '', playState =
   const startOpacity = clamp(animation?.effect?.opacity, 1, 0, 1);
   return {
     '--fb-loop-opacity-from': startOpacity,
-    '--fb-loop-transform-from': buildLoopTransform(animation.effect, baseTransform),
+    '--fb-loop-transform-from': buildAnimatedEffectTransform(animation.effect, baseTransform),
     '--fb-loop-transform-to': (typeof baseTransform === 'string' && baseTransform.trim()) ? baseTransform.trim() : 'none',
     animationName: 'fb-loop-animation',
     animationDuration: `${getTransitionDuration(animation.transition)}s`,
@@ -68,6 +68,20 @@ export function getLoopAnimationStyle(animation, baseTransform = '', playState =
     animationPlayState: playState,
     transformStyle: animation?.effect?.rotateMode === '3d' ? 'preserve-3d' : undefined,
     willChange: 'transform, opacity',
+  };
+}
+
+export function getHoverAnimationStyle(animation, baseTransform = '', baseOpacity = 1, active = false) {
+  if (!animation || animation.type !== 'hover') return null;
+  const safeBaseTransform = (typeof baseTransform === 'string' && baseTransform.trim()) ? baseTransform.trim() : 'none';
+  return {
+    opacity: active ? clamp(animation?.effect?.opacity, baseOpacity, 0, 1) : clamp(baseOpacity, 1, 0, 1),
+    transform: active ? buildAnimatedEffectTransform(animation.effect, baseTransform) : safeBaseTransform,
+    transitionProperty: 'transform, opacity',
+    transitionDuration: `${getTransitionDuration(animation.transition)}s`,
+    transitionTimingFunction: getTransitionEasing(animation.transition),
+    transformStyle: animation?.effect?.rotateMode === '3d' ? 'preserve-3d' : undefined,
+    willChange: active ? 'transform, opacity' : undefined,
   };
 }
 

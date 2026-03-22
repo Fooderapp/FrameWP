@@ -180,25 +180,25 @@ export default function ElementAnimationModal({
   const [draft, setDraft] = useState(animation);
   const [transitionOpen, setTransitionOpen] = useState(false);
   const [effectEditorOpen, setEffectEditorOpen] = useState(false);
-  const isFloatingLoopEditor = draft?.type === 'loop';
+  const isFloatingCompactEditor = draft?.type === 'loop' || draft?.type === 'hover';
 
   useEffect(() => {
     setDraft(animation);
   }, [animation?.id]);
 
   useEffect(() => {
-    if (!draft || !onPreview || draft.type !== 'loop') return;
+    if (!draft || !onPreview || (draft.type !== 'loop' && draft.type !== 'hover')) return;
     onPreview(draft);
   }, [draft]);
 
   useEffect(() => {
-    if (!isFloatingLoopEditor) return undefined;
+    if (!isFloatingCompactEditor) return undefined;
     const handleEscape = (event) => {
       if (event.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [isFloatingLoopEditor, onClose]);
+  }, [isFloatingCompactEditor, onClose]);
 
   const triggerLabel = useMemo(() => {
     if (draft.type === 'scroll') {
@@ -295,7 +295,7 @@ export default function ElementAnimationModal({
       );
     }
 
-    if (draft.type === 'loop') {
+    if (draft.type === 'loop' || draft.type === 'hover') {
       const updateEffect = (key, value, fallback, min, max) => {
         setDraft((current) => ({
           ...current,
@@ -308,28 +308,32 @@ export default function ElementAnimationModal({
       const effect = draft.effect ?? {};
       return (
         <>
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Type</span>
-            <div className="fb-animation-modal__segmented">
-              <button type="button" className={draft.loopType === 'loop' ? 'is-active' : ''} onClick={() => setDraft((current) => ({ ...current, loopType: 'loop' }))}>Loop</button>
-              <button type="button" className={draft.loopType === 'mirror' ? 'is-active' : ''} onClick={() => setDraft((current) => ({ ...current, loopType: 'mirror' }))}>Mirror</button>
-            </div>
-          </div>
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Delay</span>
-            <div className="fb-variant-transition-modal__number-field">
-              <input
-                className="fb-prop-input"
-                type="number"
-                min={0}
-                max={60}
-                step={0.1}
-                value={Math.round((draft.delay ?? 0) * 100) / 100}
-                onChange={(event) => setDraft((current) => ({ ...current, delay: clamp(event.target.value, current.delay ?? 0, 0, 60) }))}
-              />
-              <span className="fb-variant-transition-modal__number-unit">s</span>
-            </div>
-          </div>
+          {draft.type === 'loop' ? (
+            <>
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Type</span>
+                <div className="fb-animation-modal__segmented">
+                  <button type="button" className={draft.loopType === 'loop' ? 'is-active' : ''} onClick={() => setDraft((current) => ({ ...current, loopType: 'loop' }))}>Loop</button>
+                  <button type="button" className={draft.loopType === 'mirror' ? 'is-active' : ''} onClick={() => setDraft((current) => ({ ...current, loopType: 'mirror' }))}>Mirror</button>
+                </div>
+              </div>
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Delay</span>
+                <div className="fb-variant-transition-modal__number-field">
+                  <input
+                    className="fb-prop-input"
+                    type="number"
+                    min={0}
+                    max={60}
+                    step={0.1}
+                    value={Math.round((draft.delay ?? 0) * 100) / 100}
+                    onChange={(event) => setDraft((current) => ({ ...current, delay: clamp(event.target.value, current.delay ?? 0, 0, 60) }))}
+                  />
+                  <span className="fb-variant-transition-modal__number-unit">s</span>
+                </div>
+              </div>
+            </>
+          ) : null}
           <EffectNumberRow label="Opacity" className="fb-animation-modal__control-row--range" value={effect.opacity ?? 1} min={0} max={1} step={0.01} rangeMin={0} rangeMax={1} rangeStep={0.01} onChange={(value) => updateEffect('opacity', value, effect.opacity ?? 1, 0, 1)} />
           <EffectNumberRow label="Scale" className="fb-animation-modal__control-row--range" value={effect.scale ?? 1} min={0.1} max={4} step={0.01} rangeMin={0.1} rangeMax={2} rangeStep={0.01} onChange={(value) => updateEffect('scale', value, effect.scale ?? 1, 0.1, 4)} />
           <div className="fb-animation-modal__control-row fb-animation-modal__control-row--rotate">
@@ -380,13 +384,15 @@ export default function ElementAnimationModal({
               <input type="number" className="fb-prop-input" value={effect.offsetY ?? 0} step={1} onChange={(event) => updateEffect('offsetY', event.target.value, effect.offsetY ?? 0, -4000, 4000)} />
             </label>
           </div>
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Off Screen</span>
-            <div className="fb-animation-modal__segmented">
-              <button type="button" className={draft.offscreenBehavior === 'play' ? 'is-active' : ''} onClick={() => setDraft((current) => ({ ...current, offscreenBehavior: 'play' }))}>Play</button>
-              <button type="button" className={draft.offscreenBehavior !== 'play' ? 'is-active' : ''} onClick={() => setDraft((current) => ({ ...current, offscreenBehavior: 'pause' }))}>Pause</button>
+          {draft.type === 'loop' ? (
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Off Screen</span>
+              <div className="fb-animation-modal__segmented">
+                <button type="button" className={draft.offscreenBehavior === 'play' ? 'is-active' : ''} onClick={() => setDraft((current) => ({ ...current, offscreenBehavior: 'play' }))}>Play</button>
+                <button type="button" className={draft.offscreenBehavior !== 'play' ? 'is-active' : ''} onClick={() => setDraft((current) => ({ ...current, offscreenBehavior: 'pause' }))}>Pause</button>
+              </div>
             </div>
-          </div>
+          ) : null}
           <div className="fb-prop-row">
             <span className="fb-prop-label">Transition</span>
             <TransitionSummaryButton transition={draft.transition} onClick={() => setTransitionOpen(true)} />
@@ -474,7 +480,7 @@ export default function ElementAnimationModal({
 
   const card = (
     <div
-      className={`fb-overlay-modal__card fb-element-animation-modal${isFloatingLoopEditor ? ' fb-element-animation-modal--floating' : ''}`}
+      className={`fb-overlay-modal__card fb-element-animation-modal${isFloatingCompactEditor ? ' fb-element-animation-modal--floating' : ''}`}
       onMouseDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -482,7 +488,13 @@ export default function ElementAnimationModal({
       <div className="fb-element-animation-modal__header">
         <button type="button" className="fb-element-animation-modal__back" onClick={onClose} aria-label="Close animation modal">{UIIcons.arrowLeft}</button>
         <div className="fb-variant-transition-modal__title">
-          {draft.type === 'enter' ? 'Appear Animation' : (draft.type === 'scroll' ? 'Scroll Animation' : (draft.type === 'loop' ? 'Loop Animation' : 'Scroll Variant'))}
+          {draft.type === 'enter'
+            ? 'Appear Animation'
+            : (draft.type === 'scroll'
+              ? 'Scroll Animation'
+              : (draft.type === 'loop'
+                ? 'Loop Animation'
+                : (draft.type === 'hover' ? 'Hover Animation' : 'Scroll Variant')))}
         </div>
       </div>
       <div className="fb-element-animation-modal__body">
@@ -490,14 +502,14 @@ export default function ElementAnimationModal({
       </div>
       <div className="fb-variant-transition-modal__actions">
         <button type="button" className="fb-secondary-btn" onClick={onDelete}>Delete</button>
-        <button type="button" className="fb-primary-btn" onClick={saveAndClose}>{isFloatingLoopEditor ? 'Done' : 'Save'}</button>
+        <button type="button" className="fb-primary-btn" onClick={saveAndClose}>{isFloatingCompactEditor ? 'Done' : 'Save'}</button>
       </div>
     </div>
   );
 
   return (
     <>
-      {isFloatingLoopEditor ? (
+      {isFloatingCompactEditor ? (
         card
       ) : (
         <div className="fb-overlay-modal" onMouseDown={onClose}>
@@ -518,7 +530,7 @@ export default function ElementAnimationModal({
       {transitionOpen ? (
         <VariantTransitionModal
           sourceName={draft.name}
-          targetName={draft.type === 'scroll-variant' ? 'Variant' : (draft.type === 'loop' ? 'Loop' : 'End')}
+          targetName={draft.type === 'scroll-variant' ? 'Variant' : (draft.type === 'loop' ? 'Loop' : (draft.type === 'hover' ? 'Hover' : 'End'))}
           initialTransition={draft.transition}
           initialDelay={draft.type === 'loop' ? (draft.delay ?? 0) : 0}
           onCancel={() => setTransitionOpen(false)}
@@ -526,7 +538,7 @@ export default function ElementAnimationModal({
             setDraft((current) => ({
               ...current,
               transition,
-              ...(current.type === 'loop' ? { delay } : null),
+              ...(current.type === 'loop' ? { delay } : {}),
             }));
             setTransitionOpen(false);
           }}

@@ -1042,6 +1042,7 @@ function getTransitionTypeLabel(type) {
 }
 
 const TRANSITION_CLIPBOARD_KEY = 'fb:transition-clipboard';
+const ANIMATION_CLIPBOARD_KEY = 'fb:animation-clipboard';
 
 function readStoredTransitionClipboard() {
   if (typeof window === 'undefined' || !window.localStorage) return null;
@@ -1065,6 +1066,28 @@ function writeStoredTransitionClipboard(payload) {
   }
 }
 
+function readStoredAnimationClipboard() {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(ANIMATION_CLIPBOARD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.animation || typeof parsed.animation !== 'object') return null;
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeStoredAnimationClipboard(payload) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(ANIMATION_CLIPBOARD_KEY, JSON.stringify(payload));
+  } catch (error) {
+    return;
+  }
+}
+
 function getTransitionSummary(interaction) {
   if (!interaction?.targetVariantId) return 'No transition';
   const transition = interaction.transition ?? { type: 'instant' };
@@ -1078,6 +1101,7 @@ function getTransitionSummary(interaction) {
 function getElementAnimationTypeLabel(type) {
   if (type === 'scroll') return 'Scroll';
   if (type === 'loop') return 'Loop';
+  if (type === 'hover') return 'Hover';
   if (type === 'scroll-variant') return 'Scroll variant';
   return 'Appear';
 }
@@ -1110,6 +1134,10 @@ function getElementAnimationSummary(animation, variantOptions = []) {
     if (animation.delay > 0) parts.push(`${Math.round((animation.delay ?? 0) * 10) / 10}s delay`);
     if (effectSummary) parts.push(effectSummary);
     return parts.join(' · ');
+  }
+  if (animation.type === 'hover') {
+    const effectSummary = summarizeLoopEffect(animation.effect);
+    return effectSummary ? `Hover state · ${effectSummary}` : 'Hover state';
   }
   const targets = Array.isArray(animation.targets) ? animation.targets : [];
   if (!targets.length) return 'Add variant triggers';
@@ -1225,9 +1253,12 @@ export default function PropertiesPanel() {
   const [transitionModalState, setTransitionModalState] = useState(null);
   const [transitionContextMenu, setTransitionContextMenu] = useState(null);
   const [hasStoredTransitionClipboard, setHasStoredTransitionClipboard] = useState(() => !!readStoredTransitionClipboard());
+  const [animationCardContextMenu, setAnimationCardContextMenu] = useState(null);
+  const [hasStoredAnimationClipboard, setHasStoredAnimationClipboard] = useState(() => !!readStoredAnimationClipboard());
   const [elementAnimationModalState, setElementAnimationModalState] = useState(null);
   const [animationAddMenuOpen, setAnimationAddMenuOpen] = useState(false);
   const [shadowModalOpen, setShadowModalOpen] = useState(false);
+  const animationPasteTargetRef = useRef(null);
   const selectedPanelRef = useRef(null);
   const fontPreviewSnapshotRef = useRef(null);
   const shadowTriggerRef = useRef(null);
@@ -1279,15 +1310,24 @@ export default function PropertiesPanel() {
   const openAnimationEditor = useEditorStore(s => s.openAnimationEditor);
   const closeAnimationEditor = useEditorStore(s => s.closeAnimationEditor);
   const loopAnimationPreview = useEditorStore(s => s.loopAnimationPreview);
+  const hoverAnimationPreview = useEditorStore(s => s.hoverAnimationPreview);
   const openLoopAnimationPreview = useEditorStore(s => s.openLoopAnimationPreview);
   const closeLoopAnimationPreview = useEditorStore(s => s.closeLoopAnimationPreview);
+  const openHoverAnimationPreview = useEditorStore(s => s.openHoverAnimationPreview);
+  const closeHoverAnimationPreview = useEditorStore(s => s.closeHoverAnimationPreview);
   const openScrollSequenceRangeEditor = useEditorStore(s => s.openScrollSequenceRangeEditor);
 
   useEffect(() => {
-    if (!transitionContextMenu) return undefined;
-    const handleDismiss = () => setTransitionContextMenu(null);
+    if (!transitionContextMenu && !animationCardContextMenu) return undefined;
+    const handleDismiss = () => {
+      setTransitionContextMenu(null);
+      setAnimationCardContextMenu(null);
+    };
     const handleEscape = (event) => {
-      if (event.key === 'Escape') setTransitionContextMenu(null);
+      if (event.key === 'Escape') {
+        setTransitionContextMenu(null);
+        setAnimationCardContextMenu(null);
+      }
     };
     window.addEventListener('pointerdown', handleDismiss);
     window.addEventListener('keydown', handleEscape);
@@ -1295,7 +1335,7 @@ export default function PropertiesPanel() {
       window.removeEventListener('pointerdown', handleDismiss);
       window.removeEventListener('keydown', handleEscape);
     };
-  }, [transitionContextMenu]);
+  }, [animationCardContextMenu, transitionContextMenu]);
   const closeScrollSequenceRangeEditor = useEditorStore(s => s.closeScrollSequenceRangeEditor);
 
   const selectedLoopAnimationId = useMemo(() => {
@@ -1303,6 +1343,13 @@ export default function PropertiesPanel() {
     const currentBpId = selection.bpId || 'desktop';
     return resolveElementAnimations(element, currentBpId)
       .find((entry) => entry.id === elementAnimationModalState.animationId && entry.type === 'loop')?.id ?? null;
+  }, [element, elementAnimationModalState?.animationId, selection]);
+
+  const selectedHoverAnimationId = useMemo(() => {
+    if (!elementAnimationModalState?.animationId || !element || !selection) return null;
+    const currentBpId = selection.bpId || 'desktop';
+    return resolveElementAnimations(element, currentBpId)
+      .find((entry) => entry.id === elementAnimationModalState.animationId && entry.type === 'hover')?.id ?? null;
   }, [element, elementAnimationModalState?.animationId, selection]);
 
   const selectedAnimationStillExists = useMemo(() => {
@@ -1338,6 +1385,33 @@ export default function PropertiesPanel() {
       closeLoopAnimationPreview();
     };
   }, [closeLoopAnimationPreview, element, openLoopAnimationPreview, selectedLoopAnimationId, selection]);
+
+  useEffect(() => {
+    if (!selectedHoverAnimationId || !element || !selection) {
+      closeHoverAnimationPreview();
+      return undefined;
+    }
+    openHoverAnimationPreview({
+      elementId: element.id,
+      bpId: selection.bpId || 'desktop',
+      animationId: selectedHoverAnimationId,
+    });
+    return () => {
+      closeHoverAnimationPreview();
+    };
+  }, [closeHoverAnimationPreview, element, openHoverAnimationPreview, selectedHoverAnimationId, selection]);
+
+  useEffect(() => {
+    if (!animationAddMenuOpen) return undefined;
+    const handlePointerDown = (event) => {
+      if (animationPasteTargetRef.current?.contains(event.target)) return;
+      setAnimationAddMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [animationAddMenuOpen]);
 
   // Artboard selection
   const artboardSel         = useEditorStore(s => s.artboardSel);
@@ -1649,6 +1723,7 @@ export default function PropertiesPanel() {
   const resolvedAnimations = resolveElementAnimations(element, bpId);
   const animationVariantOptions = selectedComponentVariants.map((variant) => ({ value: variant.id, label: variant.name }));
   const selectedElementAnimation = resolvedAnimations.find((entry) => entry.id === elementAnimationModalState?.animationId) ?? null;
+  const contextMenuAnimation = resolvedAnimations.find((entry) => entry.id === animationCardContextMenu?.animationId) ?? null;
 
   if (hasMultiSelection && selectedElements.length) {
     const resolvedSelections = selectedElements.map((selected) => ({
@@ -2275,6 +2350,89 @@ export default function PropertiesPanel() {
     setHasStoredTransitionClipboard(true);
     setTransitionContextMenu(null);
   };
+  const openAnimationCardContextMenu = (event, animation) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setHasStoredAnimationClipboard(!!readStoredAnimationClipboard());
+    setAnimationCardContextMenu({
+      animationId: animation.id,
+      x: Math.min(event.clientX, Math.max(12, window.innerWidth - 188)),
+      y: Math.min(event.clientY, Math.max(12, window.innerHeight - 112)),
+    });
+  };
+  const openAnimationSectionContextMenu = (event) => {
+    event.preventDefault();
+    setHasStoredAnimationClipboard(!!readStoredAnimationClipboard());
+    setAnimationCardContextMenu({
+      animationId: null,
+      x: Math.min(event.clientX, Math.max(12, window.innerWidth - 188)),
+      y: Math.min(event.clientY, Math.max(12, window.innerHeight - 112)),
+    });
+  };
+  const addAnimationFromMenu = (type) => {
+    const nextId = addElementAnimation(element.id, bpId, type);
+    if (!nextId) return;
+    commit();
+    setAnimationAddMenuOpen(false);
+    setElementAnimationModalState({ animationId: nextId });
+  };
+  const copyAnimationCard = async () => {
+    if (!contextMenuAnimation) return;
+    const payload = { animation: JSON.parse(JSON.stringify(contextMenuAnimation)) };
+    writeStoredAnimationClipboard(payload);
+    setHasStoredAnimationClipboard(true);
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(payload));
+      } catch (error) {
+        // Ignore clipboard permission failures and keep local storage copy.
+      }
+    }
+    setAnimationCardContextMenu(null);
+  };
+  const pasteAnimationCard = async () => {
+    let payload = readStoredAnimationClipboard();
+    if (!payload && navigator.clipboard?.readText) {
+      try {
+        const raw = await navigator.clipboard.readText();
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && parsed.animation && typeof parsed.animation === 'object') payload = parsed;
+      } catch (error) {
+        payload = null;
+      }
+    }
+    if (!payload?.animation) {
+      setAnimationCardContextMenu(null);
+      return;
+    }
+    const copiedAnimation = payload.animation;
+    if (!contextMenuAnimation) {
+      const nextId = addElementAnimation(element.id, bpId, copiedAnimation.type || 'enter');
+      if (nextId) {
+        updateElementAnimation(element.id, bpId, nextId, {
+          ...copiedAnimation,
+          id: nextId,
+        });
+        setElementAnimationModalState({ animationId: nextId });
+        commit();
+      }
+      setHasStoredAnimationClipboard(true);
+      setAnimationCardContextMenu(null);
+      setAnimationAddMenuOpen(false);
+      return;
+    }
+    updateElementAnimation(element.id, bpId, contextMenuAnimation.id, {
+      ...copiedAnimation,
+      id: contextMenuAnimation.id,
+      type: contextMenuAnimation.type,
+      name: copiedAnimation.type === contextMenuAnimation.type
+        ? (copiedAnimation.name ?? contextMenuAnimation.name)
+        : contextMenuAnimation.name,
+    });
+    commit();
+    setHasStoredAnimationClipboard(true);
+    setAnimationCardContextMenu(null);
+  };
   const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(element);
   const vectorShapeData = ['path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(element) : null;
   const selectedVectorPoint = activeVectorPoint?.elementId === element?.id && activeVectorPoint?.bpId === bpId && vectorShapeData
@@ -2552,14 +2710,18 @@ export default function PropertiesPanel() {
                       onChange={v => { applyFixedSizeChange('height', Math.max(20, v)); commit(); }}
                     />
                   </div>
+                  <div className="fb-size-aspect-row">
+                    <span className="fb-size-aspect-row__label">Aspect</span>
+                    <button
+                      type="button"
+                      className={`fb-size-aspect-toggle${aspectRatioLocked ? ' is-active' : ''}`}
+                      onClick={() => { upd('lockAspectRatio', !aspectRatioLocked); commit(); }}
+                    >
+                      <span className="fb-size-aspect-toggle__icon" aria-hidden="true">{UIIcons.link}</span>
+                      <span>{aspectRatioLocked ? 'Locked' : 'Unlocked'}</span>
+                    </button>
+                  </div>
                 </div>
-                <IconButton
-                  icon={UIIcons.link}
-                  title="Lock aspect ratio"
-                  active={aspectRatioLocked}
-                  className="fb-btn--sm fb-size-lock-btn"
-                  onClick={() => { upd('lockAspectRatio', !aspectRatioLocked); commit(); }}
-                />
               </div>
               <div className="fb-artboard-bp-note">
                 {selectedEditorVariant?.mode === 'hover' || selectedEditorVariant?.mode === 'pressed'
@@ -2662,7 +2824,7 @@ export default function PropertiesPanel() {
 
   return (
     <>
-    <aside className={`fb-right${selectedElementAnimation?.type === 'loop' ? ' fb-right--loop-popup-open' : ''}`} ref={selectedPanelRef}>
+    <aside className={`fb-right${selectedElementAnimation?.type === 'loop' || selectedElementAnimation?.type === 'hover' ? ' fb-right--loop-popup-open' : ''}`} ref={selectedPanelRef}>
       <div className="fb-right__header">
         <span className="fb-right__header-title">
           {element.name || element.type}
@@ -2786,72 +2948,10 @@ export default function PropertiesPanel() {
                 {resolvedAnimations.length ? <span className="fb-section-badge is-active">{resolvedAnimations.length}</span> : null}
               </span>
             )}
-            action={(
-              <HeaderActionButton
-                icon={UIIcons.plusCircle}
-                title="Add animation"
-                label={resolvedAnimations.length ? 'Add More' : 'Add'}
-                className={resolvedAnimations.length ? 'fb-panel-header-action--active' : ''}
-                onClick={() => setAnimationAddMenuOpen((current) => !current)}
-              />
-            )}
           >
+            <div onContextMenu={openAnimationSectionContextMenu}>
             {bpId !== 'desktop' && !Array.isArray(element.animations?.[bpId]) ? (
               <div className="fb-artboard-bp-note">Animations inherit from desktop here until you change this breakpoint.</div>
-            ) : null}
-            {animationAddMenuOpen ? (
-              <div className="fb-animation-section__adder">
-                <button
-                  type="button"
-                  className="fb-add-field"
-                  onClick={() => {
-                    const nextId = addElementAnimation(element.id, bpId, 'enter');
-                    commit();
-                    setAnimationAddMenuOpen(false);
-                    setElementAnimationModalState({ animationId: nextId });
-                  }}
-                >
-                  Appear
-                </button>
-                <button
-                  type="button"
-                  className="fb-add-field"
-                  onClick={() => {
-                    const nextId = addElementAnimation(element.id, bpId, 'scroll');
-                    commit();
-                    setAnimationAddMenuOpen(false);
-                    setElementAnimationModalState({ animationId: nextId });
-                  }}
-                >
-                  Scroll
-                </button>
-                <button
-                  type="button"
-                  className="fb-add-field"
-                  onClick={() => {
-                    const nextId = addElementAnimation(element.id, bpId, 'loop');
-                    commit();
-                    setAnimationAddMenuOpen(false);
-                    setElementAnimationModalState({ animationId: nextId });
-                  }}
-                >
-                  Loop
-                </button>
-                <button
-                  type="button"
-                  className="fb-add-field"
-                  disabled={!isComponentInstanceOnPage || !animationVariantOptions.length}
-                  onClick={() => {
-                    if (!isComponentInstanceOnPage || !animationVariantOptions.length) return;
-                    const nextId = addElementAnimation(element.id, bpId, 'scroll-variant');
-                    commit();
-                    setAnimationAddMenuOpen(false);
-                    setElementAnimationModalState({ animationId: nextId });
-                  }}
-                >
-                  Scroll Variant
-                </button>
-              </div>
             ) : null}
             {resolvedAnimations.length ? (
               <div className="fb-animation-section__list">
@@ -2861,11 +2961,16 @@ export default function PropertiesPanel() {
                     type="button"
                     className="fb-animation-card is-configured"
                     onClick={() => setElementAnimationModalState({ animationId: animation.id })}
+                    onContextMenu={(event) => openAnimationCardContextMenu(event, animation)}
                   >
                     <span className="fb-animation-card__type-row">
                       <span className="fb-animation-card__type">{getElementAnimationTypeLabel(animation.type)}</span>
-                      {animation.type === 'loop' ? (
-                        <span className={`fb-loop-indicator${loopAnimationPreview?.animationId === animation.id ? ' is-live' : ''}`} aria-label="Loop animation" title="Loop animation" />
+                      {animation.type === 'loop' || animation.type === 'hover' ? (
+                        <span
+                          className={`fb-loop-indicator${((animation.type === 'loop' ? loopAnimationPreview : hoverAnimationPreview)?.animationId === animation.id) ? ' is-live' : ''}`}
+                          aria-label={animation.type === 'loop' ? 'Loop animation' : 'Hover animation'}
+                          title={animation.type === 'loop' ? 'Loop animation' : 'Hover animation'}
+                        />
                       ) : null}
                     </span>
                     <span className="fb-animation-card__name">{animation.name}</span>
@@ -2874,8 +2979,48 @@ export default function PropertiesPanel() {
                 ))}
               </div>
             ) : (
-              <div className="fb-artboard-bp-note">Add an appear, scroll, or scroll-variant animation for this element.</div>
+              <div className="fb-artboard-bp-note">Add an appear, scroll, hover, loop, or scroll-variant animation for this element.</div>
             )}
+            <div
+              className={`fb-animation-section__paste-target${hasStoredAnimationClipboard ? ' is-ready' : ''}`}
+              onContextMenu={openAnimationSectionContextMenu}
+              title={hasStoredAnimationClipboard ? 'Right-click to paste animation' : 'Right-click for animation actions'}
+              ref={animationPasteTargetRef}
+            >
+              <div className="fb-animation-section__actions">
+                <span>{hasStoredAnimationClipboard ? 'Right-click here to paste animation' : 'Right-click here for animation actions'}</span>
+                <div className="fb-animation-section__add-wrap">
+                  <button
+                    type="button"
+                    className="fb-secondary-btn fb-animation-section__paste-action"
+                    onClick={() => setAnimationAddMenuOpen((current) => !current)}
+                  >
+                    <span>{resolvedAnimations.length ? 'Add More' : 'Add'}</span>
+                    <span className="fb-animation-section__paste-action-icon" aria-hidden="true">{UIIcons.chevronDown}</span>
+                  </button>
+                  {animationAddMenuOpen ? (
+                    <div className="fb-animation-section__add-menu">
+                      <button type="button" className="fb-animation-section__add-menu-item" onClick={() => addAnimationFromMenu('enter')}>Appear</button>
+                      <button type="button" className="fb-animation-section__add-menu-item" onClick={() => addAnimationFromMenu('scroll')}>Scroll</button>
+                      <button type="button" className="fb-animation-section__add-menu-item" onClick={() => addAnimationFromMenu('loop')}>Loop</button>
+                      <button type="button" className="fb-animation-section__add-menu-item" onClick={() => addAnimationFromMenu('hover')}>Hover</button>
+                      <button
+                        type="button"
+                        className="fb-animation-section__add-menu-item"
+                        disabled={!isComponentInstanceOnPage || !animationVariantOptions.length}
+                        onClick={() => {
+                          if (!isComponentInstanceOnPage || !animationVariantOptions.length) return;
+                          addAnimationFromMenu('scroll-variant');
+                        }}
+                      >
+                        Scroll Variant
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            </div>
           </Section>
         ) : null}
 
@@ -3033,14 +3178,20 @@ export default function PropertiesPanel() {
               </select>
             </div>
           </div>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Aspect</span>
+            <div className="fb-size-aspect-row">
+              <button
+                type="button"
+                className={`fb-size-aspect-toggle${aspectRatioLocked ? ' is-active' : ''}`}
+                onClick={() => { upd('lockAspectRatio', !aspectRatioLocked); commit(); }}
+              >
+                <span className="fb-size-aspect-toggle__icon" aria-hidden="true">{UIIcons.link}</span>
+                <span>{aspectRatioLocked ? 'Locked' : 'Unlocked'}</span>
+              </button>
             </div>
-            <IconButton
-              icon={UIIcons.link}
-              title="Lock aspect ratio"
-              active={aspectRatioLocked}
-              className="fb-btn--sm fb-size-lock-btn"
-              onClick={() => { upd('lockAspectRatio', !aspectRatioLocked); commit(); }}
-            />
+          </div>
+            </div>
           </div>
           {isComponentRoot && (
             <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
@@ -4193,7 +4344,7 @@ export default function PropertiesPanel() {
         </Section>
 
       </div>
-      {selectedElementAnimation?.type === 'loop' ? (
+      {selectedElementAnimation?.type === 'loop' || selectedElementAnimation?.type === 'hover' ? (
         <ElementAnimationModal
           animation={selectedElementAnimation}
           variantOptions={animationVariantOptions}
@@ -4238,7 +4389,7 @@ export default function PropertiesPanel() {
         />
       ) : null}
     </aside>
-    {selectedElementAnimation && selectedElementAnimation.type !== 'loop' ? (
+    {selectedElementAnimation && selectedElementAnimation.type !== 'loop' && selectedElementAnimation.type !== 'hover' ? (
       <ElementAnimationModal
         animation={selectedElementAnimation}
         variantOptions={animationVariantOptions}
@@ -4281,6 +4432,18 @@ export default function PropertiesPanel() {
           });
         }}
       />
+    ) : null}
+    {animationCardContextMenu && typeof document !== 'undefined' ? createPortal(
+      <div
+        className="fb-context-menu"
+        style={{ left: animationCardContextMenu.x, top: animationCardContextMenu.y }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <button type="button" className="fb-context-menu__item" onClick={copyAnimationCard}>Copy animation</button>
+        <button type="button" className="fb-context-menu__item" onClick={pasteAnimationCard} disabled={!hasStoredAnimationClipboard}>Paste animation</button>
+      </div>,
+      document.body,
     ) : null}
     {shadowModalOpen ? (
       <ShadowSetupModal

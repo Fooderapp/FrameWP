@@ -5,7 +5,7 @@ import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleF
 import { getEmbedPreview } from '../components/embedUtils';
 import RichTextEditor from '../components/RichTextEditor';
 import { sanitizeSvgMarkup } from '../components/iconLibrary';
-import { getLoopAnimationStyle, useLoopAnimationPlayback } from '../components/loopAnimation';
+import { getHoverAnimationStyle, getLoopAnimationStyle, useLoopAnimationPlayback } from '../components/loopAnimation';
 import { getResolvedRichTextHtml, plainTextToRichTextHtml } from '../components/richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from '../components/videoUtils';
 
@@ -105,6 +105,7 @@ function isRichTextEditorUiTarget(target) {
 
 export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, artboardAlignItems, dragPreview = null, draggingElementId = null, draggingElementBpId = null }) {
   const [dropOver, setDropOver] = useState(false);
+  const [isHoverAnimationActive, setIsHoverAnimationActive] = useState(false);
   const elementRef = useRef(null);
   const [isEditingText, setIsEditingText] = useState(false);
   const [toolbarRect, setToolbarRect] = useState(null);
@@ -121,7 +122,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const updateElementLayout    = useEditorStore(s => s.updateElementLayout);
   const pushHistory            = useEditorStore(s => s.pushHistory);
   const selection              = useEditorStore(s => s.selection);
-  const isHovered              = useEditorStore(s => s.hoveredId === elementId);
+  const isHovered              = useEditorStore(s => s.hoveredId === elementId || s.layerHoveredId === elementId);
   const bpDef                  = useEditorStore(s => s.breakpointDefs[bpId]);
   const drilledContainerId     = useEditorStore(s => s.drilledContainerId);
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
@@ -132,6 +133,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const viewport               = useEditorStore(s => s.viewport);
   const animationEditor        = useEditorStore(s => s.animationEditor);
   const loopAnimationPreview   = useEditorStore(s => s.loopAnimationPreview);
+  const hoverAnimationPreview  = useEditorStore(s => s.hoverAnimationPreview);
   const currentPage            = useEditorStore((s) => {
     if (s.activeSurface === 'component' && s.componentEditor?.isOpen) {
       return s.componentEditor.page ?? null;
@@ -520,12 +522,22 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const rotationTransform = rotation ? `rotate(${rotation}deg)` : '';
   const composedTransform = [previewTransform, rotationTransform].filter(Boolean).join(' ') || undefined;
   const activeLoopAnimation = el ? resolveElementAnimations(el, bpId).find((entry) => entry.type === 'loop') ?? null : null;
+  const activeHoverAnimation = el ? resolveElementAnimations(el, bpId).find((entry) => entry.type === 'hover') ?? null : null;
   const isLoopPreviewActive = !!activeLoopAnimation
     && loopAnimationPreview?.elementId === id
     && loopAnimationPreview?.bpId === bpId
     && loopAnimationPreview?.animationId === activeLoopAnimation.id;
+  const isHoverPreviewActive = !!activeHoverAnimation
+    && hoverAnimationPreview?.elementId === id
+    && hoverAnimationPreview?.bpId === bpId
+    && hoverAnimationPreview?.animationId === activeHoverAnimation.id;
   const loopAnimationPlayState = useLoopAnimationPlayback(elementRef, isLoopPreviewActive, activeLoopAnimation?.offscreenBehavior);
   const loopAnimationStyle = getLoopAnimationStyle(isLoopPreviewActive ? activeLoopAnimation : null, composedTransform ?? '', loopAnimationPlayState);
+  const baseOpacity = resolved?.hidden ? 0 : (styles?.opacity ?? 1);
+  const hoverAnimationStyle = (!loopAnimationStyle || isHoverAnimationActive)
+    ? getHoverAnimationStyle(isHoverPreviewActive ? activeHoverAnimation : null, composedTransform ?? '', baseOpacity, isHoverAnimationActive && isHoverPreviewActive)
+    : null;
+  const activeAnimationStyle = hoverAnimationStyle ?? loopAnimationStyle;
   const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
   const maskedVectorFillActive = (() => {
     const nextShapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
@@ -552,7 +564,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     maxWidth:  maxW,
     minHeight: effectiveFlowPosition ? flowMinHeight : minH,
     maxHeight: maxH,
-    transform: loopAnimationStyle ? undefined : composedTransform,
+    transform: activeAnimationStyle ? undefined : composedTransform,
     // backgroundColor can hold a CSS gradient string — route accordingly
     backgroundColor: !maskedVectorFillActive && styles?.backgroundColor && !styles.backgroundColor.includes('gradient(')
       ? styles.backgroundColor
@@ -607,7 +619,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     cursor:  pendingDraw ? 'crosshair' : interactionLocked ? 'not-allowed' : 'move',
     boxSizing: 'border-box',
     pointerEvents: undefined,
-    ...(loopAnimationStyle ?? {}),
+    ...(activeAnimationStyle ?? {}),
   };
 
   const textStyle = el.type === 'text' ? {
@@ -737,8 +749,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   return (
     <div
       ref={elementRef}
-      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${!isSelected && isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${interactionLocked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isSticky ? ' fb-el--sticky' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}${el.componentInstance ? ' fb-el--component' : ''}${el.componentRoot ? ' fb-el--component-root' : ''}${shapeKind === 'line' ? ' fb-el--vector-line' : ''}`}
+      className={`fb-el${isSelected ? ' fb-el--selected' : ''}${isHovered ? ' fb-el--hovered' : ''}${!isSelected && isDropTarget ? ' fb-el--drop-target' : ''}${interactionLocked ? ' fb-el--locked' : ''}${isOffCanvas ? ' fb-el--offcanvas' : ''}${isFixed ? ' fb-el--fixed' : ''}${isSticky ? ' fb-el--sticky' : ''}${isFlowInLayout ? ' fb-el--flow' : ''}${id === drilledContainerId ? ' fb-el--drilled' : ''}${el.componentInstance ? ' fb-el--component' : ''}${el.componentRoot ? ' fb-el--component-root' : ''}${shapeKind === 'line' ? ' fb-el--vector-line' : ''}`}
       style={inlineStyle}
+      onMouseEnter={() => setIsHoverAnimationActive(true)}
+      onMouseLeave={() => setIsHoverAnimationActive(false)}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
       onKeyDown={handleKeyDown}

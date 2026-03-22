@@ -4,7 +4,7 @@ import { useEditorStore, resolveElement, resolveElementAnimations } from '../sto
 import { getEmbedPreview } from './embedUtils';
 import { familyToFontStack } from './googleFonts';
 import { sanitizeSvgMarkup } from './iconLibrary';
-import { getLoopAnimationStyle, useLoopAnimationPlayback } from './loopAnimation';
+import { getHoverAnimationStyle, getLoopAnimationStyle, useLoopAnimationPlayback } from './loopAnimation';
 import { getResolvedRichTextHtml } from './richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from './videoUtils';
 
@@ -634,9 +634,12 @@ function collectTopLevelUnmatchedNodes(variantNode, matchedIds) {
 
 function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const nodeRef = useRef(null);
+  const [isHoverAnimationActive, setIsHoverAnimationActive] = useState(false);
   const loopAnimationPreview = useEditorStore((state) => state.loopAnimationPreview);
+  const hoverAnimationPreview = useEditorStore((state) => state.hoverAnimationPreview);
   const resolved = resolveElement(element, bpId);
   const activeLoopAnimation = resolveElementAnimations(element, bpId).find((entry) => entry.type === 'loop') ?? null;
+  const activeHoverAnimation = resolveElementAnimations(element, bpId).find((entry) => entry.type === 'hover') ?? null;
   const styles = resolved?.styles ?? {};
   const widthMode = resolved?.widthMode ?? 'fixed';
   const heightMode = resolved?.heightMode ?? 'fixed';
@@ -723,8 +726,17 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     && loopAnimationPreview?.elementId === element.id
     && loopAnimationPreview?.bpId === bpId
     && loopAnimationPreview?.animationId === activeLoopAnimation.id;
+  const isHoverPreviewActive = !!activeHoverAnimation
+    && hoverAnimationPreview?.elementId === element.id
+    && hoverAnimationPreview?.bpId === bpId
+    && hoverAnimationPreview?.animationId === activeHoverAnimation.id;
   const loopAnimationPlayState = useLoopAnimationPlayback(nodeRef, isLoopPreviewActive, activeLoopAnimation?.offscreenBehavior);
   const loopAnimationStyle = getLoopAnimationStyle(isLoopPreviewActive ? activeLoopAnimation : null, baseTransform, loopAnimationPlayState);
+  const baseOpacity = resolved?.hidden ? 0 : (styles?.opacity ?? 1);
+  const hoverAnimationStyle = (!loopAnimationStyle || isHoverAnimationActive)
+    ? getHoverAnimationStyle(isHoverPreviewActive ? activeHoverAnimation : null, baseTransform, baseOpacity, isHoverAnimationActive && isHoverPreviewActive)
+    : null;
+  const activeAnimationStyle = hoverAnimationStyle ?? loopAnimationStyle;
 
   const style = {
     position: isSticky ? 'sticky' : (isRelative ? 'relative' : 'absolute'),
@@ -742,7 +754,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     maxWidth: resolved?.maxW ?? undefined,
     minHeight: effectiveFlowPosition ? flowMinHeight : (resolved?.minH ?? undefined),
     maxHeight: resolved?.maxH ?? undefined,
-    transform: loopAnimationStyle ? undefined : (baseTransform || undefined),
+    transform: activeAnimationStyle ? undefined : (baseTransform || undefined),
     backgroundColor,
     backgroundImage,
     backgroundSize: backgroundImage ? (styles?.backgroundSize ?? 'cover') : undefined,
@@ -771,7 +783,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     justifyContent: styles?.justifyContent,
     boxSizing: 'border-box',
     pointerEvents: resolved?.hidden ? 'none' : undefined,
-    ...(loopAnimationStyle ?? {}),
+    ...(activeAnimationStyle ?? {}),
   };
 
   const textStyle = element.type === 'text' ? {
@@ -793,7 +805,15 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   } : null;
 
   return (
-    <div ref={nodeRef} className="fb-component-play-preview__node" data-fb-node-id={element.id} data-flip-id={element.id} style={style}>
+    <div
+      ref={nodeRef}
+      className="fb-component-play-preview__node"
+      data-fb-node-id={element.id}
+      data-flip-id={element.id}
+      style={style}
+      onMouseEnter={() => setIsHoverAnimationActive(true)}
+      onMouseLeave={() => setIsHoverAnimationActive(false)}
+    >
       {hasGradientFrameStroke && styles?.borderWidth > 0 ? (
         <div
           aria-hidden="true"

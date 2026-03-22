@@ -151,13 +151,14 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
   const setSelection      = useEditorStore(s => s.setSelection);
   const toggleSelection   = useEditorStore(s => s.toggleSelection);
   const setPrimarySelection = useEditorStore(s => s.setPrimarySelection);
-  const hoveredId         = useEditorStore(s => s.hoveredId);
-  const setHoveredId      = useEditorStore(s => s.setHoveredId);
+  const hoveredId         = useEditorStore(s => s.layerHoveredId);
+  const setHoveredId      = useEditorStore(s => s.setLayerHoveredId);
   const toggleVisibility  = useEditorStore(s => s.toggleElementVisibility);
   const updateElementBase = useEditorStore(s => s.updateElementBase);
   const openComponentEditor = useEditorStore(s => s.openComponentEditor);
   const activeSurface       = useEditorStore(s => s.activeSurface);
   const loopAnimationPreview = useEditorStore(s => s.loopAnimationPreview);
+  const hoverAnimationPreview = useEditorStore(s => s.hoverAnimationPreview);
   const components          = useEditorStore(s => s.components);
   const currentPage         = useEditorStore(s => s.pages.find((page) => page.id === s.currentPageId) ?? null);
   const globalVariables     = useEditorStore(s => s.globalVariables);
@@ -191,11 +192,17 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
   const visibleChildren = isMainSurfaceComponent ? [] : children;
   const hasChildren = visibleChildren.length > 0;
   const activeLoopAnimation = resolveElementAnimations(el, bpId || 'desktop').find((entry) => entry.type === 'loop') ?? null;
+  const activeHoverAnimation = resolveElementAnimations(el, bpId || 'desktop').find((entry) => entry.type === 'hover') ?? null;
   const hasLoopAnimation = !!activeLoopAnimation;
+  const hasHoverAnimation = !!activeHoverAnimation;
   const loopIndicatorLive = !!activeLoopAnimation
     && loopAnimationPreview?.elementId === el.id
     && loopAnimationPreview?.bpId === (bpId || 'desktop')
     && loopAnimationPreview?.animationId === activeLoopAnimation.id;
+  const hoverIndicatorLive = !!activeHoverAnimation
+    && hoverAnimationPreview?.elementId === el.id
+    && hoverAnimationPreview?.bpId === (bpId || 'desktop')
+    && hoverAnimationPreview?.animationId === activeHoverAnimation.id;
 
   useEffect(() => {
     if (isSel && itemRef.current) {
@@ -331,8 +338,8 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
             {displayName}
           </span>
         )}
-        {hasLoopAnimation ? (
-          <span className={`fb-loop-indicator fb-loop-indicator--layer${loopIndicatorLive ? ' is-live' : ''}`} aria-label="Loop animation" title="Loop animation" />
+        {hasLoopAnimation || hasHoverAnimation ? (
+          <span className={`fb-loop-indicator fb-loop-indicator--layer${(hasLoopAnimation ? loopIndicatorLive : hoverIndicatorLive) ? ' is-live' : ''}`} aria-label={hasLoopAnimation ? 'Loop animation' : 'Hover animation'} title={hasLoopAnimation ? 'Loop animation' : 'Hover animation'} />
         ) : null}
         <span className={`fb-layer-vis${resolved.hidden ? ' fb-layer-vis--visible' : ''}`}
           title={resolved.hidden ? 'Show' : 'Hide'}

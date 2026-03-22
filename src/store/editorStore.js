@@ -544,7 +544,7 @@ function removeVariableReferencesFromFlow(flow, variableScope, variableId) {
   };
 }
 
-const ELEMENT_ANIMATION_TYPES = new Set(['enter', 'scroll', 'scroll-variant', 'loop']);
+const ELEMENT_ANIMATION_TYPES = new Set(['enter', 'scroll', 'scroll-variant', 'loop', 'hover']);
 const ELEMENT_ANIMATION_PLAYBACK = new Set(['once', 'replay']);
 const LOOP_ANIMATION_TYPES = new Set(['loop', 'mirror']);
 const LOOP_ANIMATION_OFFSCREEN = new Set(['play', 'pause']);
@@ -629,22 +629,34 @@ function normalizeLoopEffect(effect) {
   return normalizeEnterEffect(effect, 'fadeUp');
 }
 
+function normalizeHoverEffect(effect) {
+  return normalizeEnterEffect(effect, 'fadeUp');
+}
+
 function normalizeElementAnimation(animation, index = 0) {
   const type = ELEMENT_ANIMATION_TYPES.has(animation?.type) ? animation.type : 'enter';
   const preset = typeof animation?.preset === 'string' && animation.preset
     ? animation.preset
-    : (type === 'scroll-variant' || type === 'loop' ? 'custom' : 'fadeUp');
+    : (type === 'scroll-variant' || type === 'loop' || type === 'hover' ? 'custom' : 'fadeUp');
   const transitionFallback = type === 'scroll-variant'
     ? { type: 'ease', duration: 0.45, easePreset: 'easeInOut' }
     : (type === 'loop'
       ? { type: 'ease', duration: 1.2, easePreset: 'linear', bezier: { x1: 0, y1: 0, x2: 1, y2: 1 } }
-      : { type: 'ease', duration: 0.7, easePreset: 'easeInOut' });
+      : (type === 'hover'
+        ? { type: 'ease', duration: 0.22, easePreset: 'easeInOut' }
+        : { type: 'ease', duration: 0.7, easePreset: 'easeInOut' }));
   const base = {
     id: typeof animation?.id === 'string' && animation.id ? animation.id : makeId('anim'),
     type,
     name: typeof animation?.name === 'string' && animation.name.trim()
       ? animation.name.trim()
-      : (type === 'enter' ? 'Appear' : (type === 'scroll' ? 'Scroll animation' : (type === 'loop' ? 'Loop animation' : 'Scroll variant'))),
+      : (type === 'enter'
+        ? 'Appear'
+        : (type === 'scroll'
+          ? 'Scroll animation'
+          : (type === 'loop'
+            ? 'Loop animation'
+            : (type === 'hover' ? 'Hover animation' : 'Scroll variant')))),
     preset,
     transition: normalizeAnimationTransition(animation?.transition, transitionFallback),
   };
@@ -680,6 +692,13 @@ function normalizeElementAnimation(animation, index = 0) {
       offscreenBehavior: LOOP_ANIMATION_OFFSCREEN.has(animation?.offscreenBehavior) ? animation.offscreenBehavior : 'pause',
       delay: clampFinite(animation?.delay, 0, 0, 60),
       effect: normalizeLoopEffect(animation?.effect),
+    };
+  }
+
+  if (type === 'hover') {
+    return {
+      ...base,
+      effect: normalizeHoverEffect(animation?.effect),
     };
   }
 
@@ -2165,6 +2184,7 @@ function buildComponentEditorResetState(componentEditor, fallbackBreakpointDefs 
     selection: normalizeSelection(componentEditor?.uiRestore?.selection),
     artboardSel: componentEditor?.uiRestore?.artboardSel ?? null,
     hoveredId: componentEditor?.uiRestore?.hoveredId ?? null,
+    layerHoveredId: null,
     drilledContainerId: componentEditor?.uiRestore?.drilledContainerId ?? null,
     pendingDraw: componentEditor?.uiRestore?.pendingDraw ?? null,
     leftTab: componentEditor?.uiRestore?.leftTab ?? 'layers',
@@ -4097,6 +4117,7 @@ export const useEditorStore = create((set, get) => {
         selection: nextSelection,
         artboardSel: null,
         hoveredId: null,
+        layerHoveredId: null,
         drilledContainerId: null,
         pendingDraw: null,
         leftTab: 'layers',
@@ -4110,6 +4131,7 @@ export const useEditorStore = create((set, get) => {
         selection: nextSelection,
         artboardSel: null,
         hoveredId: null,
+        layerHoveredId: null,
         drilledContainerId: null,
         pendingDraw: null,
         componentEditor: nextComponentEditor,
@@ -4324,6 +4346,7 @@ export const useEditorStore = create((set, get) => {
         selection: normalizeSelection(current.uiRestore?.selection),
         artboardSel: current.uiRestore?.artboardSel ?? null,
         hoveredId: current.uiRestore?.hoveredId ?? null,
+        layerHoveredId: null,
         drilledContainerId: current.uiRestore?.drilledContainerId ?? null,
         pendingDraw: current.uiRestore?.pendingDraw ?? null,
         leftTab: current.uiRestore?.leftTab ?? 'layers',
@@ -4582,8 +4605,10 @@ export const useEditorStore = create((set, get) => {
         };
       });
     },
-    hoveredId: null,   // elementId hovered in layers panel
+    hoveredId: null,   // elementId hovered on canvas
     setHoveredId: (id) => set({ hoveredId: id }),
+    layerHoveredId: null,
+    setLayerHoveredId: (id) => set({ layerHoveredId: id }),
     drilledContainerId: null, // element whose direct children are single-click selectable (null = artboard root)
     setDrilledContainerId: (id) => set({ drilledContainerId: id }),
     artboardSel: null, // bpId of the currently selected artboard
@@ -4706,6 +4731,17 @@ export const useEditorStore = create((set, get) => {
         : null,
     }),
     closeLoopAnimationPreview: () => set({ loopAnimationPreview: null }),
+    hoverAnimationPreview: null,
+    openHoverAnimationPreview: (payload) => set({
+      hoverAnimationPreview: payload && payload.elementId && payload.animationId
+        ? {
+            elementId: payload.elementId,
+            bpId: payload.bpId ?? 'desktop',
+            animationId: payload.animationId,
+          }
+        : null,
+    }),
+    closeHoverAnimationPreview: () => set({ hoverAnimationPreview: null }),
     scrollSequenceRangeEditor: null,
     openScrollSequenceRangeEditor: (payload) => set({
       scrollSequenceRangeEditor: payload && payload.elementId

@@ -3085,6 +3085,58 @@ class FrameBuilder_Exporter {
 		node.style.transformStyle = '';
 		node.style.willChange = '';
 	};
+	var applyHoverAnimation = function(node, animation, active) {
+		if (!node || !animation) return;
+		var baseState = getAnimationBaseState(node);
+		var effect = animation && animation.effect ? animation.effect : {};
+		var transition = normalizeAnimationTransition(animation && animation.transition, { duration: 0.22, easePreset: 'easeInOut' });
+		var duration = getTransitionDurationMs(transition) / 1000;
+		var ease = transition.type === 'realistic'
+			? (transition.springMode === 'physics'
+				? 'elastic.out(1,' + Math.max(0.2, transition.mass * 0.45) + ')'
+				: 'back.out(' + (1 + transition.bounce * 1.2) + ')')
+			: getEaseValue(transition);
+		var targetOpacity = active ? clampLoopNumber(effect.opacity, baseState.opacity, 0, 1) : baseState.opacity;
+		var targetX = active ? clampLoopNumber(effect.offsetX, 0, -4000, 4000) : 0;
+		var targetY = active ? clampLoopNumber(effect.offsetY, 0, -4000, 4000) : 0;
+		var targetScale = active ? clampLoopNumber(effect.scale, 1, 0.1, 4) : 1;
+		var targetSkewX = active ? clampLoopNumber(effect.skewX, 0, -180, 180) : 0;
+		var targetSkewY = active ? clampLoopNumber(effect.skewY, 0, -180, 180) : 0;
+		var targetRotation = (baseState.rotation || 0) + (active ? clampLoopNumber(effect.rotate, 0, -1080, 1080) : 0);
+		var targetRotationX = active && effect.rotateMode === '3d' ? clampLoopNumber(effect.rotateX, 0, -1080, 1080) : 0;
+		var targetRotationY = active && effect.rotateMode === '3d' ? clampLoopNumber(effect.rotateY, 0, -1080, 1080) : 0;
+		node.style.transformStyle = active && effect.rotateMode === '3d' ? 'preserve-3d' : '';
+		node.style.willChange = 'transform, opacity';
+		if (gsap) {
+			gsap.killTweensOf(node);
+			gsap.to(node, {
+				opacity: targetOpacity,
+				x: targetX,
+				y: targetY,
+				scaleX: targetScale,
+				scaleY: targetScale,
+				rotation: targetRotation,
+				rotationX: targetRotationX,
+				rotationY: targetRotationY,
+				skewX: targetSkewX,
+				skewY: targetSkewY,
+				transformPerspective: active && effect.rotateMode === '3d' ? 1000 : 0,
+				transformOrigin: 'center center',
+				duration: duration,
+				ease: ease,
+				overwrite: true,
+			});
+			return;
+		}
+		node.style.opacity = String(targetOpacity);
+		node.style.transform = active ? buildLoopTransform(effect, baseState.rotation || 0) : (baseState.rotation ? ('rotate(' + baseState.rotation + 'deg)') : 'none');
+	};
+	var clearHoverAnimation = function(node) {
+		if (!node) return;
+		if (gsap) gsap.killTweensOf(node);
+		node.style.transformStyle = '';
+		node.style.willChange = '';
+	};
 	var applyLoopAnimation = function(node, animation, playState) {
 		if (!node || !animation) return;
 		ensureLoopAnimationStyles();
@@ -3270,8 +3322,15 @@ class FrameBuilder_Exporter {
 		var enterPlayed = new Set();
 		var scrollPlaybackState = { maxProgress: 0 };
 		var loopVisibilityState = { isVisible: true };
+		var hoverState = { isActive: false };
+		var scrollApplyState = { hasApplied: false };
 		var scrollMetrics = null;
 		var scrollMetricsKey = '';
+		var getHoverAnimation = function() {
+			return resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
+				return entry && entry.type === 'hover';
+			}) || null;
+		};
 		var refreshScrollMetrics = function(animation) {
 			if (!animation) {
 				scrollMetrics = null;
@@ -3307,6 +3366,10 @@ class FrameBuilder_Exporter {
 		}, { threshold: 0.18 });
 		enterObserver.observe(node);
 		var updateLoopAnimation = function() {
+			if (hoverState.isActive) {
+				clearLoopAnimation(node);
+				return;
+			}
 			var animation = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
 				return entry && entry.type === 'loop';
 			}) || null;
@@ -3332,10 +3395,20 @@ class FrameBuilder_Exporter {
 			var animation = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
 				return entry && entry.type === 'scroll';
 			}) || null;
+			if (hoverState.isActive) {
+				if (!animation) {
+					refreshScrollMetrics(null);
+					scrollPlaybackState.maxProgress = 0;
+				}
+				return;
+			}
 			if (!animation) {
 				refreshScrollMetrics(null);
 				scrollPlaybackState.maxProgress = 0;
-				restoreAnimationBaseState(node);
+				if (scrollApplyState.hasApplied) {
+					restoreAnimationBaseState(node);
+					scrollApplyState.hasApplied = false;
+				}
 				updateLoopAnimation();
 				return;
 			}
@@ -3351,11 +3424,46 @@ class FrameBuilder_Exporter {
 				scrollPlaybackState.maxProgress = 0;
 			}
 			applyScrollAnimation(node, animation, progress);
+			scrollApplyState.hasApplied = true;
 			updateLoopAnimation();
 		};
 		var requestScrollUpdate = function() {
 			if (scrollFrame) return;
 			scrollFrame = window.requestAnimationFrame(updateScrollAnimations);
+		};
+		var syncHoverAnimation = function(active) {
+			hoverState.isActive = active === true;
+			var hoverAnimation = getHoverAnimation();
+			if (!hoverAnimation) {
+				clearHoverAnimation(node);
+				updateScrollAnimations();
+				if (!resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
+					return entry && entry.type === 'scroll';
+				})) {
+					restoreAnimationBaseState(node);
+				}
+				updateLoopAnimation();
+				return;
+			}
+			if (hoverState.isActive) {
+				clearLoopAnimation(node);
+				applyHoverAnimation(node, hoverAnimation, true);
+				return;
+			}
+			clearHoverAnimation(node);
+			var hasScrollAnimation = !!resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
+				return entry && entry.type === 'scroll';
+			});
+			var hasLoopAnimation = !!resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
+				return entry && entry.type === 'loop';
+			});
+			if (hasScrollAnimation || hasLoopAnimation) {
+				if (hasScrollAnimation) updateScrollAnimations();
+				else restoreAnimationBaseState(node);
+				updateLoopAnimation();
+				return;
+			}
+			applyHoverAnimation(node, hoverAnimation, false);
 		};
 		var handleScrollResize = function() {
 			var animation = resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
@@ -3367,6 +3475,12 @@ class FrameBuilder_Exporter {
 		window.addEventListener('scroll', requestScrollUpdate, { passive: true });
 		window.addEventListener('resize', handleScrollResize);
 		window.addEventListener('load', handleScrollResize);
+		node.addEventListener('mouseenter', function() {
+			syncHoverAnimation(true);
+		});
+		node.addEventListener('mouseleave', function() {
+			syncHoverAnimation(false);
+		});
 		requestScrollUpdate();
 	};
 	var getRealisticOvershoot = function(transition) {
