@@ -600,43 +600,47 @@ export default function FillPicker({
     } catch (_) {}
   };
 
-  // Popover positioning
-  const openPicker = () => {
+  const closePicker = useCallback(() => {
+    updateOpen(false);
+  }, [updateOpen]);
+
+  const updatePopoverPosition = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const W = 308;
-    const maxTop = Math.max(8, window.innerHeight - 600);
-    const top = Math.max(8, Math.min(rect.top, maxTop));
+
+    const viewportPadding = 12;
+    const gap = 10;
+    const popoverWidth = Math.min(popoverRef.current?.offsetWidth ?? 308, window.innerWidth - (viewportPadding * 2));
+    const popoverHeight = Math.min(popoverRef.current?.offsetHeight ?? 560, window.innerHeight - (viewportPadding * 2));
+    const clampLeft = (value) => Math.max(viewportPadding, Math.min(value, window.innerWidth - popoverWidth - viewportPadding));
+    const clampTop = (value) => Math.max(viewportPadding, Math.min(value, window.innerHeight - popoverHeight - viewportPadding));
 
     if (popoverPlacement === 'bottom-start') {
       const shadowPopupRect = triggerRef.current?.closest('.fb-shadow-popup')?.getBoundingClientRect() ?? null;
       if (shadowPopupRect) {
-        const gap = 12;
-        const popupTop = shadowPopupRect.top;
-        const popupRight = shadowPopupRect.right;
-        const popupLeft = shadowPopupRect.left;
-        const fitsRight = popupRight + gap + W <= window.innerWidth - 8;
-        const sideLeft = fitsRight
-          ? popupRight + gap
-          : popupLeft - W - gap;
-        const nextLeft = Math.max(8, Math.min(sideLeft, window.innerWidth - W - 8));
-        const nextTop = Math.max(8, Math.min(popupTop, window.innerHeight - 600));
-        setPos({ top: nextTop, left: nextLeft });
-      } else {
-        const nextLeft = Math.max(8, Math.min(rect.left, window.innerWidth - W - 8));
-        const nextTop = Math.max(8, Math.min(rect.bottom + 10, window.innerHeight - 600));
-        setPos({ top: nextTop, left: nextLeft });
+        const fitsRight = shadowPopupRect.right + gap + popoverWidth <= window.innerWidth - viewportPadding;
+        const fitsLeft = shadowPopupRect.left - gap - popoverWidth >= viewportPadding;
+        const nextLeft = fitsRight
+          ? shadowPopupRect.right + gap
+          : (fitsLeft ? shadowPopupRect.left - popoverWidth - gap : rect.left);
+        setPos({ top: clampTop(shadowPopupRect.top), left: clampLeft(nextLeft) });
+        return;
       }
-    } else {
-      const left = rect.left - W - 10;
-      setPos({ top, left: Math.max(8, left) });
+
+      const fitsBelow = rect.bottom + gap + popoverHeight <= window.innerHeight - viewportPadding;
+      const nextTop = fitsBelow ? rect.bottom + gap : rect.top - popoverHeight - gap;
+      setPos({ top: clampTop(nextTop), left: clampLeft(rect.left) });
+      return;
     }
+
+    const fitsLeft = rect.left - gap - popoverWidth >= viewportPadding;
+    const nextLeft = fitsLeft ? rect.left - popoverWidth - gap : rect.right + gap;
+    setPos({ top: clampTop(rect.top), left: clampLeft(nextLeft) });
+  }, [popoverPlacement]);
+
+  const openPicker = () => {
     updateOpen(true);
   };
-
-  const closePicker = useCallback(() => {
-    updateOpen(false);
-  }, [updateOpen]);
 
   // Close on outside click
   useEffect(() => {
@@ -656,6 +660,18 @@ export default function FillPicker({
       window.removeEventListener('touchstart', handler);
     };
   }, [closePicker, open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const rafId = window.requestAnimationFrame(() => updatePopoverPosition());
+    window.addEventListener('resize', updatePopoverPosition);
+    window.addEventListener('scroll', updatePopoverPosition, true);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', updatePopoverPosition);
+      window.removeEventListener('scroll', updatePopoverPosition, true);
+    };
+  }, [open, updatePopoverPosition]);
 
   // Color styles
   const filteredStyles = colorStyles.filter(cs =>

@@ -265,13 +265,59 @@ function normalizeElementConstraints(element) {
   };
 }
 
+function syncElementLockedFlag(element) {
+  if (!element || typeof element !== 'object') return element;
+  const locked = !!(element.base?.locked ?? element.locked ?? false);
+  return {
+    ...element,
+    locked,
+    base: {
+      ...(element.base ?? {}),
+      locked,
+    },
+  };
+}
+
+function normalizeRootFlowInsertion(element, bpId, currentPage) {
+  if (!element || element.parentId) return element;
+  const pageLayout = resolvePageLayout(currentPage?.layout, bpId);
+  const shouldFlowAtRoot = pageLayout !== null
+    && (element.base?.positionType == null || element.base.positionType === 'absolute')
+    && !element.base?.absoluteInLayout;
+
+  if (!shouldFlowAtRoot) return element;
+
+  const nextElement = {
+    ...element,
+    base: {
+      ...element.base,
+      positionType: 'relative',
+      absoluteInLayout: false,
+    },
+  };
+
+  if (bpId === 'desktop') return nextElement;
+
+  return {
+    ...nextElement,
+    overrides: {
+      ...nextElement.overrides,
+      [bpId]: {
+        ...(nextElement.overrides?.[bpId] ?? {}),
+        positionType: 'relative',
+        absoluteInLayout: false,
+      },
+    },
+  };
+}
+
 function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
   return elements.map((el) => {
     if (el.id !== elementId) return el;
     const syncedName = typeof safeUpdates?.name === 'string' ? safeUpdates.name : null;
     if (bpId === 'desktop') {
       if (el.type === 'text') {
-        return pruneElementBreakpointOverrides({
+        return syncElementLockedFlag(pruneElementBreakpointOverrides({
           ...el,
           ...(syncedName != null ? { name: syncedName } : {}),
           base: {
@@ -279,13 +325,13 @@ function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
             ...safeUpdates,
             ...normalizeTextFields({ ...el.base, ...safeUpdates }),
           },
-        });
+        }));
       }
-      return pruneElementBreakpointOverrides({
+      return syncElementLockedFlag(pruneElementBreakpointOverrides({
         ...el,
         ...(syncedName != null ? { name: syncedName } : {}),
         base: { ...el.base, ...safeUpdates },
-      });
+      }));
     }
     const ov = el.overrides?.[bpId] ?? {};
     if (el.type === 'text') {
@@ -304,15 +350,15 @@ function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
         }));
       }
 
-      return pruneElementBreakpointOverrides({
+      return syncElementLockedFlag(pruneElementBreakpointOverrides({
         ...el,
         overrides: {
           ...el.overrides,
           [bpId]: nextOverride,
         },
-      });
+      }));
     }
-    return pruneElementBreakpointOverrides({ ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } });
+    return syncElementLockedFlag(pruneElementBreakpointOverrides({ ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } }));
   });
 }
 
@@ -986,12 +1032,12 @@ function normalizeElementDynamicFields(element) {
   const normalizedElement = normalizeElementConstraints(pruneElementBreakpointOverrides(
     normalizeEmbedElementFields(normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element)))))
   ));
-  return {
+  return syncElementLockedFlag({
     ...normalizedElement,
     animations: normalizeElementAnimations(element?.animations),
     bindings: normalizeElementBindings(element?.bindings),
     interactions: normalizeElementInteractions(element?.interactions),
-  };
+  });
 }
 
 function getVariableMap(pageVariables = [], globalVariables = []) {
@@ -2607,7 +2653,7 @@ function instantiateComponentSnapshot(snapshot, {
 function preserveComponentRootPlacement(nextRoot, currentRoot) {
   if (!nextRoot || !currentRoot) return nextRoot;
   const layoutKeys = [
-    'x', 'y', 'width', 'height', 'rotation',
+    'x', 'y', 'width', 'height', 'rotation', 'rotationX', 'rotationY',
     'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
     'minW', 'maxW', 'minH', 'maxH',
     'hidden', 'locked', 'positionType', 'absoluteInLayout', 'constraints', 'lockAspectRatio',
@@ -2624,7 +2670,7 @@ function preserveComponentRootPlacement(nextRoot, currentRoot) {
 
   ['tablet', 'mobile'].forEach((bpId) => {
     const preserved = pick(currentRoot.overrides?.[bpId] ?? {}, [
-      'x', 'y', 'width', 'height', 'rotation',
+      'x', 'y', 'width', 'height', 'rotation', 'rotationX', 'rotationY',
       'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
       'minW', 'maxW', 'minH', 'maxH',
       'hidden', 'positionType', 'absoluteInLayout', 'constraints', 'lockAspectRatio',
@@ -4136,6 +4182,24 @@ export const useEditorStore = create((set, get) => {
      *  except the originating breakpoint. */
     addElement(element, parentId = null, bpId = 'desktop') {
       let el = { ...element, parentId: parentId ?? null };
+      const currentPage = get().getCurrentPage?.() ?? null;
+      const pageLayout = !parentId ? resolvePageLayout(currentPage?.layout, bpId) : null;
+      const shouldFlowAtRoot = !parentId
+        && pageLayout !== null
+        && (el.base?.positionType == null || el.base.positionType === 'absolute')
+        && !el.base?.absoluteInLayout;
+
+      if (shouldFlowAtRoot) {
+        el = {
+          ...el,
+          base: {
+            ...el.base,
+            positionType: 'relative',
+            absoluteInLayout: false,
+          },
+        };
+      }
+
       if (bpId && bpId !== 'desktop') {
         // Hide on all breakpoints via base, then show only on originating bp
         el = {
@@ -4143,7 +4207,11 @@ export const useEditorStore = create((set, get) => {
           base: { ...el.base, hidden: true },
           overrides: {
             ...el.overrides,
-            [bpId]: { ...(el.overrides?.[bpId] ?? {}), hidden: false },
+            [bpId]: {
+              ...(el.overrides?.[bpId] ?? {}),
+              hidden: false,
+              ...(shouldFlowAtRoot ? { positionType: 'relative', absoluteInLayout: false } : {}),
+            },
           },
         };
       }
@@ -4247,11 +4315,11 @@ export const useEditorStore = create((set, get) => {
       withPage(els =>
         els.map((el) => {
           if (el.id !== elementId) return el;
-          return {
+          return syncElementLockedFlag({
             ...el,
             ...(typeof updates?.name === 'string' ? { name: updates.name } : {}),
             base: { ...el.base, ...updates },
-          };
+          });
         })
       );
     },
@@ -4261,7 +4329,7 @@ export const useEditorStore = create((set, get) => {
       if (!targetIds.size) return;
       withPage((els) => els.map((el) => (
         targetIds.has(el.id)
-          ? { ...el, base: { ...el.base, ...updates } }
+          ? syncElementLockedFlag({ ...el, base: { ...el.base, ...updates } })
           : el
       )));
     },
@@ -4417,9 +4485,9 @@ export const useEditorStore = create((set, get) => {
       if (!targetIds.size || !safeUpdates || !Object.keys(safeUpdates).length) return;
       withPage((els) => els.map((el) => {
         if (!targetIds.has(el.id)) return el;
-        if (bpId === 'desktop') return pruneElementBreakpointOverrides({ ...el, base: { ...el.base, ...safeUpdates } });
+        if (bpId === 'desktop') return syncElementLockedFlag(pruneElementBreakpointOverrides({ ...el, base: { ...el.base, ...safeUpdates } }));
         const ov = el.overrides?.[bpId] ?? {};
-        return pruneElementBreakpointOverrides({ ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } });
+        return syncElementLockedFlag(pruneElementBreakpointOverrides({ ...el, overrides: { ...el.overrides, [bpId]: { ...ov, ...safeUpdates } } }));
       }));
 
       if (safeUpdates?.hidden === true) {
@@ -4710,8 +4778,14 @@ export const useEditorStore = create((set, get) => {
     },
 
     /** Bulk-add a flat array of pre-cloned elements (for paste). */
-    addElements(elements) {
-      withPage(els => [...els, ...(Array.isArray(elements) ? elements.map(normalizeElementDynamicFields) : [])]);
+    addElements(elements, bpId = 'desktop') {
+      const currentPage = get().getCurrentPage?.() ?? null;
+      withPage((els) => [
+        ...els,
+        ...(Array.isArray(elements)
+          ? elements.map((element) => normalizeElementDynamicFields(normalizeRootFlowInsertion(element, bpId, currentPage)))
+          : []),
+      ]);
     },
 
     /** Move element under a new parent (or null = root). Prevents circular nesting. */

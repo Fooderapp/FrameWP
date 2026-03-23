@@ -3257,7 +3257,7 @@ html, body, #framebuilder-root {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
-  transform-origin: top left;
+  transform-origin: center center;
   will-change: transform, opacity;
 }
 

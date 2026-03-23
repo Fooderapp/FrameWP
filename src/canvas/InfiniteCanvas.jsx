@@ -1,11 +1,12 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { useEditorStore, createFrame, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds } from '../store/editorStore';
+import { useEditorStore, createFrame, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
 import { getAssetStyleUpdatesForElement, parseAssetDragPayload } from '../store/assetStyles';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
 import { buildGradient, parseGradient } from '../components/FillPicker';
 import { extractSvgMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
 import { plainTextToRichTextHtml, sanitizeRichTextHtml } from '../components/richText';
+import { hasAnyElementRotation } from '../utils/elementTransform';
 
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
@@ -15,6 +16,18 @@ const PEN_CLOSE_SNAP_PX = 16;
 const TELEPORT_MARKER = 'FRAMEWP_TELEPORT';
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
+
+function resolveCanvasEditingElement(element, bpId, animationEditor) {
+  const resolved = resolveElement ? resolveElement(element, bpId) : element;
+  const state = useEditorStore.getState();
+  const currentPage = state.getCurrentPage ? state.getCurrentPage() : (state.pages.find((page) => page.id === state.currentPageId) ?? null);
+  const pageLayout = resolvePageLayout(currentPage?.layout, bpId);
+  const treatAsFlowPositioned = !!resolved && (
+    ['relative', 'sticky'].includes(resolved.positionType ?? 'absolute')
+    || (!element?.parentId && pageLayout !== null && !resolved.absoluteInLayout && resolved.positionType !== 'fixed')
+  );
+  return applyAnimationPreviewPatch(resolved, getAnimationEditorPreviewPatch(element, bpId, animationEditor), { treatAsFlowPositioned });
+}
 
 function isFontResizeTextElement(el, resolved) {
   if ((el?.type ?? '') !== 'text') return false;
@@ -106,12 +119,107 @@ function mergeTeleportStylesIntoAssets(payload) {
   }
 }
 
+function isTeleportImportAssetUrl(value) {
+  if (typeof value !== 'string') return false;
+  const source = value.trim();
+  return source.startsWith('data:') || /^https?:\/\//i.test(source);
+}
+
+async function importTeleportMediaAsset(source, postId = 0, assetName = '') {
+  const formData = new FormData();
+  formData.append('action', 'framebuilder_import_media_asset');
+  formData.append('_wpnonce', window.fbData?.nonce || '');
+  formData.append('source', source);
+  if (postId) formData.append('post_id', `${postId}`);
+  if (assetName) formData.append('asset_name', assetName);
+
+  const response = await fetch(window.fbData?.ajaxUrl || '/wp-admin/admin-ajax.php', {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: formData,
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.success || !payload?.url) {
+    throw new Error(payload?.data?.message || 'Media import failed');
+  }
+  return payload;
+}
+
+function getTeleportConstraints(node) {
+  if (!node?.constraints || typeof node.constraints !== 'object') return undefined;
+  return {
+    horizontal: typeof node.constraints.horizontal === 'string' ? node.constraints.horizontal : undefined,
+    vertical: typeof node.constraints.vertical === 'string' ? node.constraints.vertical : undefined,
+    top: node.constraints.top !== false,
+    right: node.constraints.right === true,
+    bottom: node.constraints.bottom === true,
+    left: node.constraints.left !== false,
+  };
+}
+
+function getTeleportAlignSelf(node) {
+  if (node?.alignSelf === 'stretch' || node?.alignSelf === 'center' || node?.alignSelf === 'flex-start' || node?.alignSelf === 'flex-end') {
+    return node.alignSelf;
+  }
+  return undefined;
+}
+
+async function uploadImportedTeleportAssets(importedElements, options = {}) {
+  if (!Array.isArray(importedElements) || !importedElements.length) return;
+  const showReusedAssetAlert = options.showReusedAssetAlert !== false;
+  const state = useEditorStore.getState();
+  const uploadCache = new Map();
+  const pending = [];
+  const reusedAssetNames = new Set();
+
+  const getUploadedAsset = async (source, assetName = '') => {
+    if (!isTeleportImportAssetUrl(source)) return source;
+    if (!uploadCache.has(source)) {
+      uploadCache.set(source, importTeleportMediaAsset(source, Number(window.fbData?.postId) || 0, assetName).catch(() => ({ url: source, alreadyExists: false, assetName })));
+    }
+    return uploadCache.get(source);
+  };
+
+  importedElements.forEach((element) => {
+    const assetName = typeof element?.name === 'string' ? element.name.trim() : '';
+    const imageSource = typeof element?.base?.src === 'string' ? element.base.src.trim() : '';
+    if (imageSource && isTeleportImportAssetUrl(imageSource)) {
+      pending.push(
+        getUploadedAsset(imageSource, assetName).then((result) => {
+          const nextUrl = result?.url;
+          if (!nextUrl || nextUrl === imageSource) return;
+          if (result?.alreadyExists) reusedAssetNames.add(result.assetName || assetName || element.name || 'Imported image');
+          state.updateElementBase(element.id, { src: nextUrl });
+        })
+      );
+    }
+
+    const backgroundImage = typeof element?.base?.styles?.backgroundImage === 'string' ? element.base.styles.backgroundImage.trim() : '';
+    if (backgroundImage && isTeleportImportAssetUrl(backgroundImage)) {
+      pending.push(
+        getUploadedAsset(backgroundImage, assetName).then((result) => {
+          const nextUrl = result?.url;
+          if (!nextUrl || nextUrl === backgroundImage) return;
+          if (result?.alreadyExists) reusedAssetNames.add(result.assetName || assetName || element.name || 'Imported image');
+          state.updateElementStyles(element.id, 'desktop', { backgroundImage: nextUrl });
+        })
+      );
+    }
+  });
+
+  if (pending.length) await Promise.all(pending);
+  if (showReusedAssetAlert && reusedAssetNames.size && typeof window !== 'undefined' && typeof window.alert === 'function') {
+    window.alert(`Used existing Media Library files during Figma import:\n- ${Array.from(reusedAssetNames).join('\n- ')}`);
+  }
+}
+
 function getTeleportSizingMode(value, fallback = 'fixed') {
   return value === 'hug' || value === 'fill' || value === 'fixed' ? value : fallback;
 }
 
 function getTeleportPosition(node, parentIsLayout = false) {
-  if (!parentIsLayout) return {};
+  if (!parentIsLayout) return { positionType: 'absolute', absoluteInLayout: false };
   if (node?.positionType === 'absolute' || node?.absoluteInLayout) {
     return { positionType: 'absolute', absoluteInLayout: true };
   }
@@ -136,6 +244,14 @@ function getTeleportRadiusStyles(node) {
   };
 }
 
+function getTeleportFilterStyles(node) {
+  const nextStyles = {};
+  if (node?.brightness != null) nextStyles.brightness = Math.max(0, Math.min(200, clampTeleportNumber(node.brightness, 100, 0, 200)));
+  if (node?.contrast != null) nextStyles.contrast = Math.max(0, Math.min(200, clampTeleportNumber(node.contrast, 100, 0, 200)));
+  if (node?.saturation != null) nextStyles.saturation = Math.max(0, Math.min(200, clampTeleportNumber(node.saturation, 100, 0, 200)));
+  return nextStyles;
+}
+
 function buildImportedFrame(node, parentIsLayout = false) {
   const label = typeof node?.name === 'string' && node.name.trim() ? node.name.trim() : 'Frame';
   const element = createFrame(
@@ -156,13 +272,16 @@ function buildImportedFrame(node, parentIsLayout = false) {
     heightFr: Math.max(0.1, clampTeleportNumber(node?.heightFr, element.base.heightFr ?? 1, 0.1)),
     rotation: clampTeleportNumber(node?.rotation, 0),
     hidden: node?.visible === false,
+    constraints: getTeleportConstraints(node) ?? element.base.constraints,
     ...getTeleportPosition(node, parentIsLayout),
     styles: {
       ...element.base.styles,
+      alignSelf: getTeleportAlignSelf(node),
       backgroundColor: typeof node?.backgroundColor === 'string' ? node.backgroundColor : 'transparent',
       backgroundImage: typeof node?.backgroundImage === 'string' ? node.backgroundImage : '',
       backgroundSize: typeof node?.backgroundSize === 'string' ? node.backgroundSize : element.base.styles.backgroundSize,
       backgroundPosition: typeof node?.backgroundPosition === 'string' ? node.backgroundPosition : element.base.styles.backgroundPosition,
+      ...getTeleportFilterStyles(node),
       ...getTeleportRadiusStyles(node),
       borderWidth: Math.max(0, clampTeleportNumber(node?.borderWidth, 0, 0)),
       borderColor: typeof node?.borderColor === 'string' ? node.borderColor : '#000000',
@@ -213,9 +332,11 @@ function buildImportedText(node, parentIsLayout = false) {
     hidden: node?.visible === false,
     text: content,
     richTextHtml,
+    constraints: getTeleportConstraints(node) ?? element.base.constraints,
     ...getTeleportPosition(node, parentIsLayout),
     styles: {
       ...element.base.styles,
+      alignSelf: getTeleportAlignSelf(node),
       backgroundColor: 'transparent',
       color: typeof node?.color === 'string' ? node.color : '#111111',
       fontFamily: typeof node?.fontFamily === 'string' && node.fontFamily.trim() ? node.fontFamily : 'Inter',
@@ -230,6 +351,7 @@ function buildImportedText(node, parentIsLayout = false) {
       textAlign: node?.textAlign ?? 'left',
       textTransform: typeof node?.textTransform === 'string' ? node.textTransform : 'none',
       textDecoration: typeof node?.textDecoration === 'string' ? node.textDecoration : 'none',
+      ...getTeleportFilterStyles(node),
       opacity: Math.max(0, Math.min(1, clampTeleportNumber(node?.opacity, 1, 0, 1))),
       boxShadow: typeof node?.boxShadow === 'string' ? node.boxShadow : '',
       mixBlendMode: typeof node?.mixBlendMode === 'string' ? node.mixBlendMode : 'normal',
@@ -260,9 +382,12 @@ function buildImportedImage(node, parentIsLayout = false) {
     rotation: clampTeleportNumber(node?.rotation, 0),
     hidden: node?.visible === false,
     src: typeof node?.src === 'string' ? node.src : '',
+    constraints: getTeleportConstraints(node) ?? element.base.constraints,
     ...getTeleportPosition(node, parentIsLayout),
     styles: {
       ...element.base.styles,
+      alignSelf: getTeleportAlignSelf(node),
+      ...getTeleportFilterStyles(node),
       ...getTeleportRadiusStyles(node),
       borderWidth: Math.max(0, clampTeleportNumber(node?.borderWidth, 0, 0)),
       borderColor: typeof node?.borderColor === 'string' ? node.borderColor : '#000000',
@@ -303,13 +428,16 @@ function buildImportedLine(node, parentIsLayout = false) {
     svgMarkup: buildVectorShapeSvgMarkup(vectorData, { width, height, fill: 'none', stroke: strokeColor, strokeWidth }),
     shapeType: 'line',
     iconName: 'line',
+    constraints: getTeleportConstraints(node) ?? element.base.constraints,
     ...getTeleportPosition(node, parentIsLayout),
     styles: {
       ...element.base.styles,
+      alignSelf: getTeleportAlignSelf(node),
       backgroundColor: 'transparent',
       color: strokeColor,
       strokeColor,
       strokeWidth,
+      ...getTeleportFilterStyles(node),
       opacity: Math.max(0, Math.min(1, clampTeleportNumber(node?.opacity, 1, 0, 1))),
       boxShadow: typeof node?.boxShadow === 'string' ? node.boxShadow : '',
       mixBlendMode: typeof node?.mixBlendMode === 'string' ? node.mixBlendMode : 'normal',
@@ -344,15 +472,18 @@ function buildImportedVector(node, parentIsLayout = false) {
     iconSource: 'custom',
     iconName: 'teleport-svg',
     svgMarkup: sanitizeSvgMarkup(typeof node?.svgMarkup === 'string' ? node.svgMarkup : '', { forceCurrentColor: false }),
+    constraints: getTeleportConstraints(node) ?? element.base.constraints,
     ...getTeleportPosition(node, parentIsLayout),
     styles: {
       ...element.base.styles,
+      alignSelf: getTeleportAlignSelf(node),
       backgroundColor: 'transparent',
       color: typeof node?.strokeColor === 'string' && node.strokeColor
         ? node.strokeColor
         : (typeof node?.borderColor === 'string' && node.borderColor ? node.borderColor : element.base.styles?.color),
       strokeColor: typeof node?.strokeColor === 'string' ? node.strokeColor : (typeof node?.borderColor === 'string' ? node.borderColor : undefined),
       strokeWidth: node?.strokeWidth != null ? Math.max(0, clampTeleportNumber(node.strokeWidth, 0, 0)) : undefined,
+      ...getTeleportFilterStyles(node),
       opacity: Math.max(0, Math.min(1, clampTeleportNumber(node?.opacity, 1, 0, 1))),
       boxShadow: typeof node?.boxShadow === 'string' ? node.boxShadow : '',
       mixBlendMode: typeof node?.mixBlendMode === 'string' ? node.mixBlendMode : 'normal',
@@ -662,6 +793,42 @@ function resolveResizedBounds({ startBounds, handle, pointer, minSize = 20, keep
   };
 }
 
+function resolveCenteredResizedBounds({ startBounds, handle, pointer, minSize = 20, keepAspectRatio = false }) {
+  const minDimension = Math.max(1, minSize);
+  const centerX = startBounds.minX + (startBounds.width / 2);
+  const centerY = startBounds.minY + (startBounds.height / 2);
+  const activeX = handle.includes('e') || handle.includes('w');
+  const activeY = handle.includes('n') || handle.includes('s');
+  let nextWidth = startBounds.width;
+  let nextHeight = startBounds.height;
+
+  if (activeX) nextWidth = Math.max(minDimension, Math.abs(pointer.x - centerX) * 2);
+  if (activeY) nextHeight = Math.max(minDimension, Math.abs(pointer.y - centerY) * 2);
+
+  if (keepAspectRatio) {
+    const aspectRatio = getAspectRatio(startBounds.width, startBounds.height);
+    if (aspectRatio) {
+      if (activeX && activeY) {
+        if ((nextWidth / nextHeight) > aspectRatio) nextHeight = nextWidth / aspectRatio;
+        else nextWidth = nextHeight * aspectRatio;
+      } else if (activeX) {
+        nextHeight = nextWidth / aspectRatio;
+      } else if (activeY) {
+        nextWidth = nextHeight * aspectRatio;
+      }
+    }
+  }
+
+  return {
+    minX: centerX - (nextWidth / 2),
+    minY: centerY - (nextHeight / 2),
+    maxX: centerX + (nextWidth / 2),
+    maxY: centerY + (nextHeight / 2),
+    width: Math.max(minDimension, nextWidth),
+    height: Math.max(minDimension, nextHeight),
+  };
+}
+
 function getResizeHandlePoint(startBounds, handle) {
   const minX = startBounds.minX;
   const minY = startBounds.minY;
@@ -914,6 +1081,30 @@ function shouldUseDirectRotatedMove(session) {
   return true;
 }
 
+function isFlowDragContext({ element, resolved, bp, pageLayout, computedPosition, ghostW, ghostH }) {
+  const isGeomOffCanvas = !element?.parentId && bp
+    ? ((resolved?.x ?? 0) + ghostW <= 0
+      || (resolved?.x ?? 0) >= bp.width
+      || (resolved?.y ?? 0) + ghostH <= 0
+      || (resolved?.y ?? 0) >= bp.height)
+    : false;
+  const heuristicFlowCtx = ['relative', 'sticky'].includes(resolved?.positionType ?? 'absolute')
+    || (!element?.parentId
+      && pageLayout !== null
+      && !resolved?.absoluteInLayout
+      && resolved?.positionType !== 'fixed'
+      && !isGeomOffCanvas);
+  const isFlowCtx = computedPosition != null
+    ? computedPosition === 'relative' || computedPosition === 'sticky'
+    : heuristicFlowCtx;
+
+  return {
+    isFlowCtx,
+    isGeomOffCanvas,
+    origPositionType: isFlowCtx ? (resolved?.positionType ?? 'relative') : (resolved?.positionType ?? 'absolute'),
+  };
+}
+
 function getAxisAlignedBounds(rect) {
   if (!rect) return null;
   const left = rect.left;
@@ -932,7 +1123,7 @@ function getAxisAlignedBounds(rect) {
   };
 }
 
-function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onCut, onPaste, onDelete }) {
+function CanvasContextMenu({ menu, hasClipboard, hasStyleClipboard, onClose, onCopy, onCopyStyle, onCut, onPaste, onPasteStyle, onDelete }) {
   if (!menu) return null;
 
   return (
@@ -952,6 +1143,14 @@ function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onCut, onPaste
       <button
         type="button"
         className="fb-context-menu__item"
+        onClick={() => { onCopyStyle(); onClose(); }}
+        disabled={!menu.elementId}
+      >
+        Copy style
+      </button>
+      <button
+        type="button"
+        className="fb-context-menu__item"
         onClick={() => { onCut(); onClose(); }}
         disabled={!menu.elementId}
       >
@@ -964,6 +1163,14 @@ function CanvasContextMenu({ menu, hasClipboard, onClose, onCopy, onCut, onPaste
         disabled={!hasClipboard || !menu.canPasteIntoFrame}
       >
         Paste
+      </button>
+      <button
+        type="button"
+        className="fb-context-menu__item"
+        onClick={() => { onPasteStyle(); onClose(); }}
+        disabled={!hasStyleClipboard || !menu.elementId}
+      >
+        Paste style
       </button>
       <button
         type="button"
@@ -1336,7 +1543,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
           el: selected,
           resolved: resolvedSelected,
           metrics,
-          canResize: !selected.locked && !isFlow && Math.abs(parseFloat(resolvedSelected.rotation) || 0) <= 0.01,
+          canResize: !selected.locked && !isFlow && !hasAnyElementRotation(resolvedSelected),
         };
       })
       .filter((item) => item.metrics);
@@ -1480,7 +1687,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
   const overlayHandles = (isFontResizeTextElement(el, resolved) ? ['se'] : OVERLAY_HANDLES)
     .filter((handle) => !(isActiveComponentVariantRoot && handle === 'e'));
   const rotateHandles = ['nw', 'ne', 'se', 'sw'];
-  const overlayCapturesPointer = canMoveOverlay && el.type !== 'text' && Math.abs(parseFloat(rotation) || 0) <= 0.01;
+  const overlayCapturesPointer = canMoveOverlay && el.type !== 'text' && !hasAnyElementRotation(resolved);
 
   let worldX = metrics?.modelWorldX ?? bp.x;
   let worldY = metrics?.modelWorldY ?? bp.y;
@@ -2306,8 +2513,8 @@ export default function InfiniteCanvas() {
     const localY = Math.round(reframed.offsetY - bp.y - (pageLayout ? 0 : (pagePadding?.top ?? 0)));
     const element = createShapePreset('pen', localX, localY);
     if (pageLayout) {
-      element.base.positionType = 'absolute';
-      element.base.absoluteInLayout = true;
+      element.base.positionType = 'relative';
+      element.base.absoluteInLayout = false;
     }
     element.base.width = reframed.width;
     element.base.height = reframed.height;
@@ -2656,7 +2863,8 @@ export default function InfiniteCanvas() {
       ? selectedEl.id
       : null;
     const targetParentId = parentId ?? activeSelectedFrameId ?? null;
-    if (!targetParentId) return false;
+    const currentPage = st.getCurrentPage?.() ?? null;
+    const currentPageLayout = resolvePageLayout(currentPage?.layout, targetBpId);
     const cursorPlacement = getPlacementFromClient(
       clientX ?? lastPointerClientRef.current.x,
       clientY ?? lastPointerClientRef.current.y,
@@ -2689,7 +2897,12 @@ export default function InfiniteCanvas() {
     const root = cloned[0];
     if (!root) return false;
     if (targetBpId === 'desktop') {
-      root.base = { ...root.base, x: targetX, y: targetY };
+      root.base = {
+        ...root.base,
+        x: targetX,
+        y: targetY,
+        ...(!targetParentId && currentPageLayout !== null ? { positionType: 'relative', absoluteInLayout: false } : {}),
+      };
     } else {
       root.overrides = {
         ...root.overrides,
@@ -2698,10 +2911,18 @@ export default function InfiniteCanvas() {
           x: targetX,
           y: targetY,
           hidden: false,
+          ...(!targetParentId && currentPageLayout !== null ? { positionType: 'relative', absoluteInLayout: false } : {}),
         },
       };
+      if (!targetParentId && currentPageLayout !== null) {
+        root.base = {
+          ...root.base,
+          positionType: 'relative',
+          absoluteInLayout: false,
+        };
+      }
     }
-    addElements(cloned);
+    addElements(cloned, targetBpId);
     if (targetParentId) {
       st.reparentElement(root.id, targetParentId);
     }
@@ -2734,7 +2955,7 @@ export default function InfiniteCanvas() {
     return true;
   }, [addElement, getPlacementFromClient, pushHistory, setArtboardSel]);
 
-  const importTeleportPayloadAt = useCallback(({ payload, clientX = null, clientY = null }) => {
+  const importTeleportPayloadAt = useCallback(({ payload, clientX = null, clientY = null, showReusedAssetAlert = true }) => {
     if (!payload?.nodes?.length) return false;
     const state = useEditorStore.getState();
     const fallbackBpId = state.selection?.bpId ?? 'desktop';
@@ -2750,6 +2971,20 @@ export default function InfiniteCanvas() {
     });
     if (!importedElements.length || !rootIds.length) return false;
 
+    const rootIdSet = new Set(rootIds);
+    const currentPage = state.pages.find((page) => page.id === state.currentPageId) ?? null;
+    const currentPageLayout = resolvePageLayout(currentPage?.layout, placement.bpId);
+    if (currentPageLayout !== null) {
+      importedElements.forEach((element) => {
+        if (!rootIdSet.has(element.id)) return;
+        element.base = {
+          ...element.base,
+          positionType: 'relative',
+          absoluteInLayout: false,
+        };
+      });
+    }
+
     if (placement.bpId !== 'desktop') {
       importedElements.forEach((element) => {
         const nextOverrides = {
@@ -2764,6 +2999,7 @@ export default function InfiniteCanvas() {
             ...nextOverrides[placement.bpId],
             x: element.base.x,
             y: element.base.y,
+            ...(currentPageLayout !== null ? { positionType: 'relative', absoluteInLayout: false } : {}),
           };
         }
         element.overrides = nextOverrides;
@@ -2772,10 +3008,11 @@ export default function InfiniteCanvas() {
     }
 
     mergeTeleportStylesIntoAssets(payload);
-    addElements(importedElements);
+    addElements(importedElements, placement.bpId);
     useEditorStore.getState().setSelection({ elementId: rootIds[0], bpId: placement.bpId });
     setArtboardSel(null);
     pushHistory();
+    void uploadImportedTeleportAssets(importedElements, { showReusedAssetAlert });
     return true;
   }, [addElements, getPlacementFromClient, pushHistory, setArtboardSel]);
 
@@ -2865,7 +3102,7 @@ export default function InfiniteCanvas() {
     const canRootFlow = !!pageLayout
       && session.origPositionType !== 'fixed'
       && wasRootLevel
-      && (session.origWasFlow || session.origWasOffCanvas || session.dragMode === 'flow');
+      && !offCanvas;
 
     let mode = 'root-free';
     let targetParentId = null;
@@ -3172,7 +3409,7 @@ export default function InfiniteCanvas() {
       const plainText = clipboardData?.getData('text/plain') ?? '';
       const teleportPayload = parseTeleportClipboardPayload(plainText);
       if (teleportPayload) {
-        if (importTeleportPayloadAt({ payload: teleportPayload, clientX: lastPointerClientRef.current.x, clientY: lastPointerClientRef.current.y })) {
+        if (importTeleportPayloadAt({ payload: teleportPayload, clientX: lastPointerClientRef.current.x, clientY: lastPointerClientRef.current.y, showReusedAssetAlert: false })) {
           e.preventDefault();
         }
         return;
@@ -3190,7 +3427,6 @@ export default function InfiniteCanvas() {
 
       if (!clipboard.current) return;
       const currentBpId = useEditorStore.getState().selection?.bpId ?? clipboard.current.bpId;
-      if (!canPasteIntoFrame(currentBpId)) return;
       e.preventDefault();
       pasteClipboardAt({
         bpId: currentBpId,
@@ -3335,6 +3571,8 @@ export default function InfiniteCanvas() {
       },
     });
   }, [canPasteIntoFrame, setArtboardSel, setSelection]);
+
+  const hasStoredStyleClipboard = !!readStoredElementStyleClipboard();
 
   // ── Mouse move (pan + element drag/resize) ─────────────────
   const onMouseMove = useCallback((e) => {
@@ -3648,7 +3886,8 @@ export default function InfiniteCanvas() {
       useEditorStore.getState().updateElementLayout(rotId, bpId, { rotation: nextRotation });
       setDragHint({ label: `${Math.round(nextRotation)}deg`, clientX: e.clientX, clientY: e.clientY });
     } else if (type === 'resize') {
-      const nextBounds = resolveResizedBounds({
+        const resizeBoundsResolver = drag.current.centerResize ? resolveCenteredResizedBounds : resolveResizedBounds;
+        const nextBounds = resizeBoundsResolver({
         startBounds: { minX: startX, minY: startY, width: startW, height: startH },
         handle,
         pointer: {
@@ -3869,11 +4108,6 @@ export default function InfiniteCanvas() {
           break;
         }
       }
-      const rootAbsoluteInLayout = !parentId && pageLayout2 !== null;
-      if (rootAbsoluteInLayout) {
-        localX = Math.round(elX - targetBpDef.x);
-        localY = Math.round(elY - targetBpDef.y);
-      }
       const newEl = drawType === 'image'
         ? createImage(localX, localY)
         : drawType === 'video'
@@ -3948,10 +4182,6 @@ export default function InfiniteCanvas() {
             strokeWidth: Math.max(0.5, newEl.base.styles?.strokeWidth || 1.5),
           });
         }
-      }
-      if (rootAbsoluteInLayout) {
-        newEl.base.positionType = 'absolute';
-        newEl.base.absoluteInLayout = true;
       }
       addElement(newEl, parentId, targetBpId);
       // If drawn inside a container, drill into it so the element is interactable
@@ -4070,19 +4300,38 @@ export default function InfiniteCanvas() {
             } else {
               moveToParent(null);
               st.setDrilledContainerId(null);
-              const absoluteInLayout = drop.mode !== 'fixed-root' && !!drop.pageLayout;
-              const offsetX = absoluteInLayout ? 0 : (drop.pagePadding?.left ?? 0);
-              const offsetY = absoluteInLayout ? 0 : (drop.pagePadding?.top ?? 0);
-              st.updateElementLayout(session.elementId, session.bpId, {
-                positionType: drop.mode === 'fixed-root' ? 'fixed' : 'absolute',
-                absoluteInLayout: drop.mode === 'fixed-root' ? false : absoluteInLayout,
-                widthMode: 'fixed',
-                heightMode: 'fixed',
-                width: fixedWidth,
-                height: fixedHeight,
-                x: Math.round(drop.worldX - drop.bp.x - offsetX),
-                y: Math.round(drop.worldY - drop.bp.y - offsetY),
-              });
+              const withinAutoLayoutRootBounds = !!drop.pageLayout
+                && drop.mode !== 'fixed-root'
+                && drop.worldX >= drop.bp.x
+                && drop.worldX + fixedWidth <= drop.bp.x + drop.bp.width
+                && drop.worldY >= drop.bp.y
+                && drop.worldY + fixedHeight <= drop.bp.y + drop.bp.height;
+              if (withinAutoLayoutRootBounds) {
+                st.updateElementLayout(session.elementId, session.bpId, {
+                  positionType: 'relative',
+                  absoluteInLayout: false,
+                  widthMode: 'fixed',
+                  heightMode: 'fixed',
+                  width: fixedWidth,
+                  height: fixedHeight,
+                  x: Math.round(drop.worldX - drop.bp.x - (drop.pagePadding?.left ?? 0)),
+                  y: Math.round(drop.worldY - drop.bp.y - (drop.pagePadding?.top ?? 0)),
+                });
+              } else {
+                const absoluteInLayout = drop.mode !== 'fixed-root' && !!drop.pageLayout;
+                const offsetX = absoluteInLayout ? 0 : (drop.pagePadding?.left ?? 0);
+                const offsetY = absoluteInLayout ? 0 : (drop.pagePadding?.top ?? 0);
+                st.updateElementLayout(session.elementId, session.bpId, {
+                  positionType: drop.mode === 'fixed-root' ? 'fixed' : 'absolute',
+                  absoluteInLayout: drop.mode === 'fixed-root' ? false : absoluteInLayout,
+                  widthMode: 'fixed',
+                  heightMode: 'fixed',
+                  width: fixedWidth,
+                  height: fixedHeight,
+                  x: Math.round(drop.worldX - drop.bp.x - offsetX),
+                  y: Math.round(drop.worldY - drop.bp.y - offsetY),
+                });
+              }
             }
             st.setSelection({ elementId: session.elementId, bpId: session.bpId });
           } else {
@@ -4271,34 +4520,46 @@ export default function InfiniteCanvas() {
   const startMoveFromOverlay = useCallback((e, bpId, element) => {
     const { getAllElements } = useEditorStore.getState();
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
-    const resolved = resolveElement ? resolveElement(el, bpId) : el;
+    const resolved = resolveCanvasEditingElement(el, bpId, useEditorStore.getState().animationEditor);
     const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
     const page = useEditorStore.getState().getCurrentPage();
     const domEl = boardDom?.querySelector(`[data-id="${el.id}"]`);
     const rect = domEl?.getBoundingClientRect() ?? e.currentTarget?.getBoundingClientRect?.();
     const scale = useEditorStore.getState().viewport.scale;
     const bpDef = useEditorStore.getState().breakpointDefs[bpId];
+    const pageLayout = resolvePageLayout(page?.layout, bpId);
     const metrics = getElementWorldMetrics({ el, bpId, bp: bpDef, page, boardDom, scale });
     const ghostW = rect ? (rect.width / scale) : (resolved.width ?? el.base?.width ?? 100);
     const ghostH = rect ? (rect.height / scale) : (resolved.height ?? el.base?.height ?? 40);
-    const startWorldX = metrics?.modelWorldX ?? (resolved.x ?? el.base?.x ?? 0);
-    const startWorldY = metrics?.modelWorldY ?? (resolved.y ?? el.base?.y ?? 0);
+    const computedPosition = domEl ? window.getComputedStyle(domEl).position : null;
+    const {
+      isFlowCtx,
+      isGeomOffCanvas,
+      origPositionType,
+    } = isFlowDragContext({
+      element: el,
+      resolved,
+      bp: bpDef,
+      pageLayout,
+      computedPosition,
+      ghostW,
+      ghostH,
+    });
+    const startWorldX = (isFlowCtx ? (metrics?.domWorldX ?? metrics?.modelWorldX) : metrics?.modelWorldX) ?? (resolved.x ?? el.base?.x ?? 0);
+    const startWorldY = (isFlowCtx ? (metrics?.domWorldY ?? metrics?.modelWorldY) : metrics?.modelWorldY) ?? (resolved.y ?? el.base?.y ?? 0);
     const pointerWorld = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
     const pointerPoint = { x: pointerWorld.worldX, y: pointerWorld.worldY };
-    const rotationValue = Math.abs(parseFloat(resolved.rotation) || 0);
+    const rotationValue = hasAnyElementRotation(resolved) ? 1 : 0;
     const rotationDegrees = parseFloat(resolved.rotation) || 0;
     const center = { x: startWorldX + ghostW / 2, y: startWorldY + ghostH / 2 };
     const unrotatedPointer = rotationValue > 0.01
       ? rotatePointAround(pointerPoint, center, -rotationDegrees)
       : pointerPoint;
-    const isGeomOffCanvas = !el.parentId && bpDef
-      ? ((resolved.x ?? 0) + ghostW <= 0 || (resolved.x ?? 0) >= bpDef.width || (resolved.y ?? 0) + ghostH <= 0 || (resolved.y ?? 0) >= bpDef.height)
-      : false;
     const grabOffsetClientX = rect ? (e.clientX - rect.left) : 0;
     const grabOffsetClientY = rect ? (e.clientY - rect.top) : 0;
     drag.current = {
       type: 'element-drag',
-      dragMode: 'free',
+      dragMode: isFlowCtx ? 'flow' : 'free',
       bpId,
       elementId: el.id,
       startMX: e.clientX, startMY: e.clientY,
@@ -4316,9 +4577,9 @@ export default function InfiniteCanvas() {
       layoutW: resolved.width ?? el.base?.width ?? 100,
       layoutH: resolved.height ?? el.base?.height ?? 40,
       origParentId: el.parentId ?? null,
-      origPositionType: resolved.positionType ?? 'absolute',
-      origWasFlow: false,
-      origWasOffCanvas: isGeomOffCanvas,
+      origPositionType,
+      origWasFlow: isFlowCtx,
+      origWasOffCanvas: isFlowCtx ? false : isGeomOffCanvas,
       hasRotation: rotationValue > 0.01,
       ghostBgColor: resolved.styles?.backgroundColor ?? null,
       ghostW,
@@ -4591,13 +4852,27 @@ export default function InfiniteCanvas() {
     e.stopPropagation();
     setArtboardSel(null);
     const { getAllElements } = useEditorStore.getState();
-    const clickedEl = getAllElements().find(ee => ee.id === element.id) ?? element;
+    const allElements = getAllElements();
+    const clickedEl = allElements.find(ee => ee.id === element.id) ?? element;
     const activeSelection = useEditorStore.getState().selection;
     const selectedIds = activeSelection?.bpId === bpId ? getSelectionElementIds(activeSelection) : [];
-    const dragSelectionIds = selectedIds.includes(clickedEl.id) ? selectedIds : [clickedEl.id];
+    let selectedAncestorId = null;
+    if (!selectedIds.includes(clickedEl.id)) {
+      let cursor = clickedEl;
+      while (cursor?.parentId) {
+        cursor = allElements.find((candidate) => candidate.id === cursor.parentId) ?? null;
+        if (cursor && selectedIds.includes(cursor.id)) {
+          selectedAncestorId = cursor.id;
+          break;
+        }
+      }
+    }
+    const dragSelectionIds = selectedIds.includes(clickedEl.id)
+      ? selectedIds
+      : (selectedAncestorId ? selectedIds : [clickedEl.id]);
     const dragElementId = dragSelectionIds[0] ?? clickedEl.id;
-    const el = getAllElements().find(ee => ee.id === dragElementId) ?? clickedEl;
-    const resolved = resolveElement ? resolveElement(el, bpId) : el;
+    const el = allElements.find(ee => ee.id === dragElementId) ?? clickedEl;
+    const resolved = resolveCanvasEditingElement(el, bpId, useEditorStore.getState().animationEditor);
     const page0 = useEditorStore.getState().getCurrentPage();
     const boardDom0 = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
     const metrics = getElementWorldMetrics({
@@ -4609,7 +4884,7 @@ export default function InfiniteCanvas() {
       scale: useEditorStore.getState().viewport.scale,
     });
     const pointerWorld = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
-    if (!isElementSelected(activeSelection, clickedEl.id, bpId)) {
+    if (!isElementSelected(activeSelection, clickedEl.id, bpId) && !selectedAncestorId) {
       setSelection({ elementId: dragElementId, bpId });
     }
 
@@ -4618,13 +4893,13 @@ export default function InfiniteCanvas() {
         .map((id) => getAllElements().find((candidate) => candidate.id === id))
         .filter(Boolean)
         .map((item) => {
-          const itemResolved = resolveElement(item, bpId);
+          const itemResolved = resolveCanvasEditingElement(item, bpId, useEditorStore.getState().animationEditor);
           const groupIsFlow = ['relative', 'sticky'].includes(itemResolved.positionType ?? 'absolute')
             || (!item.parentId && page0?.layout?.[bpId] != null && !itemResolved.absoluteInLayout && itemResolved.positionType !== 'fixed');
           return {
             id: item.id,
             locked: !!item.locked,
-            hasRotation: Math.abs(parseFloat(itemResolved.rotation) || 0) > 0.01,
+            hasRotation: hasAnyElementRotation(itemResolved),
             isFlow: groupIsFlow,
             startX: itemResolved.x ?? item.base?.x ?? 0,
             startY: itemResolved.y ?? item.base?.y ?? 0,
@@ -4672,7 +4947,7 @@ export default function InfiniteCanvas() {
     let ghostClientH = ghostH * useEditorStore.getState().viewport.scale;
     let grabOffsetClientX = ghostClientW / 2;
     let grabOffsetClientY = ghostClientH / 2;
-    const rotationValue = Math.abs(parseFloat(resolved.rotation) || 0);
+    const rotationValue = hasAnyElementRotation(resolved) ? 1 : 0;
     if (domEl) {
       const dr = domEl.getBoundingClientRect();
       const sc0 = useEditorStore.getState().viewport.scale;
@@ -4739,7 +5014,7 @@ export default function InfiniteCanvas() {
     e.preventDefault();
     const { getAllElements } = useEditorStore.getState();
     const el = getAllElements().find(ee => ee.id === element.id) ?? element;
-    const resolved = resolveElement ? resolveElement(el, bpId) : el;
+    const resolved = resolveCanvasEditingElement(el, bpId, useEditorStore.getState().animationEditor);
     const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
     if ((shapeKind === 'path' || shapeKind === 'pen') && (String(handle).startsWith('rotate-') || ['nw','n','ne','e','se','s','sw','w'].includes(handle))) {
       setSelection({ elementId: el.id, bpId });
@@ -4807,7 +5082,7 @@ export default function InfiniteCanvas() {
       const startHandlePoint = getResizeHandlePoint(groupBounds, groupHandle);
       const lockAspectRatio = groupItems.every((item) => {
         const candidate = getAllElements().find((entry) => entry.id === item.id);
-        const candidateResolved = candidate ? (resolveElement ? resolveElement(candidate, bpId) : candidate) : null;
+        const candidateResolved = candidate ? resolveCanvasEditingElement(candidate, bpId, useEditorStore.getState().animationEditor) : null;
         return candidateResolved?.lockAspectRatio === true;
       });
       drag.current = {
@@ -4834,6 +5109,11 @@ export default function InfiniteCanvas() {
       height: resolved.height ?? el.base?.height ?? 100,
     };
     const startHandlePoint = getResizeHandlePoint(startBounds, handle);
+    const animationEditor = useEditorStore.getState().animationEditor;
+    const centerResize = !!animationEditor
+      && animationEditor.elementId === el.id
+      && animationEditor.bpId === bpId
+      && ['enter-start', 'scroll-start', 'scroll-effect'].includes(animationEditor.mode);
     drag.current = {
       type: 'resize', bpId, elementId: el.id, handle,
       startMX: e.clientX, startMY: e.clientY,
@@ -4843,6 +5123,7 @@ export default function InfiniteCanvas() {
       startH: startBounds.height,
       startHandleX: startHandlePoint.x,
       startHandleY: startHandlePoint.y,
+      centerResize,
       lockAspectRatio: resolved.lockAspectRatio === true,
     };
     setInteracting(true);
@@ -5425,10 +5706,17 @@ export default function InfiniteCanvas() {
       <CanvasContextMenu
         menu={contextMenu}
         hasClipboard={!!clipboard.current}
+        hasStyleClipboard={hasStoredStyleClipboard}
         onClose={closeContextMenu}
         onCopy={() => contextMenu?.elementId && copyElementToClipboard(contextMenu.elementId, contextMenu.bpId)}
+        onCopyStyle={() => contextMenu?.elementId && copyElementStylesToStoredClipboard(contextMenu.elementId, contextMenu.bpId)}
         onCut={() => contextMenu?.elementId && cutElementToClipboard(contextMenu.elementId, contextMenu.bpId)}
         onPaste={() => contextMenu?.canPasteIntoFrame && pasteClipboardAt({ bpId: contextMenu.bpId, parentId: contextMenu.elementId, clientX: contextMenu.clientX, clientY: contextMenu.clientY })}
+        onPasteStyle={() => {
+          if (!contextMenu?.elementId) return;
+          if (!pasteStoredElementStylesToElement(contextMenu.elementId, contextMenu.bpId)) return;
+          pushHistory();
+        }}
         onDelete={() => {
           if (!contextMenu?.elementId) return;
           deleteElement(contextMenu.elementId);

@@ -27,9 +27,12 @@ function getTransitionEasing(transition) {
 export function buildAnimatedEffectTransform(effect, baseTransform = '') {
   const transforms = [];
   const safeBaseTransform = typeof baseTransform === 'string' ? baseTransform.trim() : '';
-  if (safeBaseTransform) transforms.push(safeBaseTransform);
   const offsetX = clamp(effect?.offsetX, 0, -4000, 4000);
   const offsetY = clamp(effect?.offsetY, 0, -4000, 4000);
+  if (effect?.rotateMode === '3d') {
+    transforms.push('perspective(1000px)');
+  }
+  if (safeBaseTransform) transforms.push(safeBaseTransform);
   if (offsetX !== 0 || offsetY !== 0) transforms.push(`translate(${offsetX}px, ${offsetY}px)`);
   const scale = clamp(effect?.scale, 1, 0.1, 4);
   if (scale !== 1) transforms.push(`scale(${scale})`);
@@ -37,7 +40,6 @@ export function buildAnimatedEffectTransform(effect, baseTransform = '') {
   const skewY = clamp(effect?.skewY, 0, -180, 180);
   if (skewX !== 0 || skewY !== 0) transforms.push(`skew(${skewX}deg, ${skewY}deg)`);
   if (effect?.rotateMode === '3d') {
-    transforms.push('perspective(1000px)');
     const rotateX = clamp(effect?.rotateX, 0, -1080, 1080);
     const rotateY = clamp(effect?.rotateY, 0, -1080, 1080);
     const rotateZ = clamp(effect?.rotate, 0, -1080, 1080);
@@ -66,6 +68,7 @@ export function getLoopAnimationStyle(animation, baseTransform = '', playState =
     animationDirection: animation?.loopType === 'mirror' ? 'alternate' : 'normal',
     animationFillMode: 'both',
     animationPlayState: playState,
+    transformOrigin: 'center center',
     transformStyle: animation?.effect?.rotateMode === '3d' ? 'preserve-3d' : undefined,
     willChange: 'transform, opacity',
   };
@@ -74,14 +77,21 @@ export function getLoopAnimationStyle(animation, baseTransform = '', playState =
 export function getHoverAnimationStyle(animation, baseTransform = '', baseOpacity = 1, active = false) {
   if (!animation || animation.type !== 'hover') return null;
   const safeBaseTransform = (typeof baseTransform === 'string' && baseTransform.trim()) ? baseTransform.trim() : 'none';
+  const targetTransform = active ? buildAnimatedEffectTransform(animation.effect, baseTransform) : safeBaseTransform;
+  const preserve3D = animation?.effect?.rotateMode === '3d'
+    || targetTransform.includes('rotateX(')
+    || targetTransform.includes('rotateY(')
+    || safeBaseTransform.includes('rotateX(')
+    || safeBaseTransform.includes('rotateY(');
   return {
     opacity: active ? clamp(animation?.effect?.opacity, baseOpacity, 0, 1) : clamp(baseOpacity, 1, 0, 1),
-    transform: active ? buildAnimatedEffectTransform(animation.effect, baseTransform) : safeBaseTransform,
+    transform: targetTransform,
     transitionProperty: 'transform, opacity',
     transitionDuration: `${getTransitionDuration(animation.transition)}s`,
     transitionTimingFunction: getTransitionEasing(animation.transition),
-    transformStyle: animation?.effect?.rotateMode === '3d' ? 'preserve-3d' : undefined,
-    willChange: active ? 'transform, opacity' : undefined,
+    transformOrigin: 'center center',
+    transformStyle: preserve3D ? 'preserve-3d' : undefined,
+    willChange: 'transform, opacity',
   };
 }
 

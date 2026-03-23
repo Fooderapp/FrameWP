@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ASSET_STORAGE_COMPONENT_ID, useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
+import { ASSET_STORAGE_COMPONENT_ID, useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, resolvePageSmoothScroll, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import CustomSelect from '../components/CustomSelect';
@@ -10,6 +10,8 @@ import { sanitizeSvgMarkup } from '../components/iconLibrary';
 import { getRichTextInlineStyleValues, plainTextToRichTextHtml } from '../components/richText';
 import VariantTransitionModal from '../components/VariantTransitionModal';
 import ElementAnimationModal from '../components/ElementAnimationModal';
+import { toViewportRect } from '../utils/rect';
+import { hasElement3DRotation } from '../utils/elementTransform';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -485,6 +487,10 @@ function ChoiceGroup({ value, onChange, options }) {
   );
 }
 
+function getTransformMode(rotationX, rotationY) {
+  return Math.abs(normalizeFiniteNumber(rotationX, 0)) > 0.01 || Math.abs(normalizeFiniteNumber(rotationY, 0)) > 0.01 ? '3d' : '2d';
+}
+
 function VariableBindingButton({ variables, binding, onSelect, onRemove, title = 'Bind variable' }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
@@ -803,17 +809,51 @@ function MixedPosInput({ value, label, onCommit, placeholder = 'Mixed' }) {
 
 /** Visual constraint selector — placed in center of TLRB cross; lines = toggleable pins */
 function ConstraintWidget({ constraints, onChange }) {
-  const c = { top: true, left: true, right: false, bottom: false, ...constraints };
-  const t = (key) => onChange({ ...c, [key]: !c[key] });
+  const horizontal = getConstraintMode(constraints, 'horizontal');
+  const vertical = getConstraintMode(constraints, 'vertical');
+  const c = {
+    left: horizontal === 'left' || horizontal === 'stretch',
+    right: horizontal === 'right' || horizontal === 'stretch',
+    top: vertical === 'top' || vertical === 'stretch',
+    bottom: vertical === 'bottom' || vertical === 'stretch',
+  };
+  const applyEdges = (nextEdges) => {
+    if (!nextEdges.top && !nextEdges.bottom && !nextEdges.left && !nextEdges.right) return;
+    const nextHorizontal = nextEdges.left && nextEdges.right ? 'stretch' : (nextEdges.left ? 'left' : (nextEdges.right ? 'right' : 'center'));
+    const nextVertical = nextEdges.top && nextEdges.bottom ? 'stretch' : (nextEdges.top ? 'top' : (nextEdges.bottom ? 'bottom' : 'center'));
+    onChange({
+      horizontal: nextHorizontal,
+      vertical: nextVertical,
+      left: nextEdges.left,
+      right: nextEdges.right,
+      top: nextEdges.top,
+      bottom: nextEdges.bottom,
+    });
+  };
+  const toggleLine = (key) => applyEdges({ ...c, [key]: !c[key] });
   return (
     <div className="fb-cw">
-      <button className={`fb-cw-btn fb-cw-btn--top${c.top ? ' active' : ''}`}    title="Pin top"    onClick={() => t('top')}    />
-      <button className={`fb-cw-btn fb-cw-btn--right${c.right ? ' active' : ''}`} title="Pin right"  onClick={() => t('right')}  />
-      <button className={`fb-cw-btn fb-cw-btn--bottom${c.bottom ? ' active' : ''}`} title="Pin bottom" onClick={() => t('bottom')} />
-      <button className={`fb-cw-btn fb-cw-btn--left${c.left ? ' active' : ''}`}  title="Pin left"   onClick={() => t('left')}   />
+      <button type="button" className={`fb-cw-btn fb-cw-btn--top${c.top ? ' active' : ''}`} title="Top" onClick={() => toggleLine('top')} />
+      <button type="button" className={`fb-cw-btn fb-cw-btn--right${c.right ? ' active' : ''}`} title="Right" onClick={() => toggleLine('right')} />
+      <button type="button" className={`fb-cw-btn fb-cw-btn--bottom${c.bottom ? ' active' : ''}`} title="Bottom" onClick={() => toggleLine('bottom')} />
+      <button type="button" className={`fb-cw-btn fb-cw-btn--left${c.left ? ' active' : ''}`} title="Left" onClick={() => toggleLine('left')} />
       <div className="fb-cw-inner" />
     </div>
   );
+}
+
+function getConstraintMode(constraints, axis = 'horizontal') {
+  const raw = constraints && typeof constraints === 'object' ? constraints : {};
+  if (axis === 'horizontal') {
+    if (typeof raw.horizontal === 'string') return raw.horizontal;
+    if (raw.left && raw.right) return 'stretch';
+    if (raw.right && !raw.left) return 'right';
+    return 'left';
+  }
+  if (typeof raw.vertical === 'string') return raw.vertical;
+  if (raw.top && raw.bottom) return 'stretch';
+  if (raw.bottom && !raw.top) return 'bottom';
+  return 'top';
 }
 
 /** Expandable min/max width/height section */
@@ -1418,6 +1458,7 @@ export default function PropertiesPanel() {
   const bpDefs              = useEditorStore(s => s.breakpointDefs);
   const updateBreakpointDef    = useEditorStore(s => s.updateBreakpointDef);
   const setPageBackground       = useEditorStore(s => s.setPageBackground);
+  const setPageSmoothScroll     = useEditorStore(s => s.setPageSmoothScroll);
   const setPagePadding          = useEditorStore(s => s.setPagePadding);
   const setPageLayout           = useEditorStore(s => s.setPageLayout);
   const page                    = useEditorStore(s => s.getCurrentPage());
@@ -1428,6 +1469,7 @@ export default function PropertiesPanel() {
   const savedLayoutRef          = useRef({});
   const removeOverrideFn        = useEditorStore(s => s.removeOverride);
   const removeStyleOverrideFn   = useEditorStore(s => s.removeStyleOverride);
+  const currentSelectionBpId = selection?.bpId || 'desktop';
   const selectionIds = getSelectionElementIds(selection);
   const selectedComponentMeta = activeSurface === 'page' && element?.componentInstance?.componentId
     ? components.find((component) => component.id === element.componentInstance?.componentId)
@@ -1443,6 +1485,24 @@ export default function PropertiesPanel() {
     ? element?.componentInstance?.variantId
     : selectedComponentMeta?.defaultVariantId ?? selectedComponentVariants[0]?.id ?? '';
   const hasMultiSelection = selectionIds.length > 1;
+  const multiSelectionHas3DRotation = useMemo(() => (
+    hasMultiSelection
+      ? selectedElements.some((selected) => {
+          const resolvedSelected = resolveElementWithVariables(selected, currentSelectionBpId, pageVariables, globalVariables);
+          return getTransformMode(resolvedSelected.rotationX ?? 0, resolvedSelected.rotationY ?? 0) === '3d';
+        })
+      : false
+  ), [currentSelectionBpId, globalVariables, hasMultiSelection, pageVariables, selectedElements]);
+  const singleSelectionHas3DRotation = useMemo(() => (
+    !hasMultiSelection && element
+      ? getTransformMode(
+          resolveElementWithVariables(element, currentSelectionBpId, pageVariables, globalVariables).rotationX ?? 0,
+          resolveElementWithVariables(element, currentSelectionBpId, pageVariables, globalVariables).rotationY ?? 0,
+        ) === '3d'
+      : false
+  ), [currentSelectionBpId, element, globalVariables, hasMultiSelection, pageVariables]);
+  const [multiTransformMode, setMultiTransformMode] = useState(multiSelectionHas3DRotation ? '3d' : '2d');
+  const [singleTransformMode, setSingleTransformMode] = useState(singleSelectionHas3DRotation ? '3d' : '2d');
   const allVariables = [...pageVariables, ...globalVariables];
   const variableLookup = new Map(allVariables.map((variable) => [`${variable.scope}:${variable.id}`, variable]));
   const componentSourceLabelMap = useMemo(() => {
@@ -1455,6 +1515,16 @@ export default function PropertiesPanel() {
     });
     return map;
   }, [activeSurface, componentEditor.page?.elements]);
+
+  useEffect(() => {
+    if (!hasMultiSelection) return;
+    setMultiTransformMode(multiSelectionHas3DRotation ? '3d' : '2d');
+  }, [hasMultiSelection, multiSelectionHas3DRotation, selectionIds.join('|')]);
+
+  useEffect(() => {
+    if (hasMultiSelection) return;
+    setSingleTransformMode(singleSelectionHas3DRotation ? '3d' : '2d');
+  }, [hasMultiSelection, selectedElementId, singleSelectionHas3DRotation]);
 
   const captureFontPreviewSnapshot = (elementIds, currentBpId) => {
     if (fontPreviewSnapshotRef.current) return;
@@ -1579,6 +1649,9 @@ export default function PropertiesPanel() {
     const effectivePad = resolvePagePadding(page?.padding, artboardSel);
     const isPadInherited = artboardSel !== 'desktop' && rawPad == null;
     const activePad   = rawPad ?? effectivePad;
+    const rawSmoothScroll = page?.smoothScroll?.[artboardSel] ?? null;
+    const effectiveSmoothScroll = resolvePageSmoothScroll(page?.smoothScroll, artboardSel);
+    const isSmoothScrollInherited = artboardSel !== 'desktop' && rawSmoothScroll == null;
     const updatePad   = (key, val) => {
       const cur = rawPad ?? { ...effectivePad };
       setPagePadding(artboardSel, { ...cur, [key]: val });
@@ -1620,6 +1693,23 @@ export default function PropertiesPanel() {
                 {isBgInherited
                   ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
                   : <IconButton icon={UIIcons.inherit} title="Inherit background from parent" onClick={() => setPageBackground(artboardSel, null)} />
+                }
+              </div>
+            )}
+          </Section>
+          <Section title="Scrolling">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Smooth scroll</span>
+              <Toggle value={!!effectiveSmoothScroll} onChange={value => setPageSmoothScroll(artboardSel, value)} />
+            </div>
+            <div className="fb-artboard-bp-note">
+              Enables smooth scrolling for anchor jumps and scripted page scrolling on the published page.
+            </div>
+            {artboardSel !== 'desktop' && (
+              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                {isSmoothScrollInherited
+                  ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
+                  : <IconButton icon={UIIcons.inherit} title="Inherit smooth scroll from parent" onClick={() => setPageSmoothScroll(artboardSel, null)} />
                 }
               </div>
             )}
@@ -1797,7 +1887,9 @@ export default function PropertiesPanel() {
     const hiddenValue = getSharedValue(({ resolved }) => !!resolved.hidden);
     const zIndexValue = getSharedValue(({ resolved }) => resolved.styles?.zIndex ?? 1);
     const rotationValue = getSharedValue(({ resolved }) => resolved.rotation ?? 0);
-    const lockedValue = getSharedValue(({ element }) => !!element.base?.locked);
+    const rotationXValue = getSharedValue(({ resolved }) => resolved.rotationX ?? 0);
+    const rotationYValue = getSharedValue(({ resolved }) => resolved.rotationY ?? 0);
+    const lockedValue = getSharedValue(({ element, resolved }) => !!(resolved.locked ?? element.locked ?? element.base?.locked));
     const aspectRatioLockedValue = getSharedValue(({ resolved }) => resolved.lockAspectRatio === true);
     const positionTypeValue = getSharedValue(({ element: selected, resolved }) => getResolvedSelectionPositionMode(selected, resolved, pageLayout));
     const xValue = getSharedValue(({ resolved }) => Math.round((resolved.x ?? 0) * 10) / 10);
@@ -1812,8 +1904,8 @@ export default function PropertiesPanel() {
     const heightFrValue = getSharedValue(({ resolved }) => Math.round((resolved.heightFr ?? 1) * 10) / 10);
     const constraintsValueRaw = getSharedValue(({ resolved }) => JSON.stringify({ top: true, left: true, right: false, bottom: false, ...(resolved.constraints ?? {}) }));
     const constraintsValue = constraintsValueRaw ? JSON.parse(constraintsValueRaw) : { top: true, left: true, right: false, bottom: false };
-    const rightValue = xValue == null || widthValue == null ? null : Math.max(0, alignContainerW - xValue - widthValue);
-    const bottomValue = yValue == null || heightValue == null ? null : Math.max(0, alignContainerH - yValue - heightValue);
+    const rightValue = xValue == null || widthValue == null ? null : Math.round((alignContainerW - xValue - widthValue) * 10) / 10;
+    const bottomValue = yValue == null || heightValue == null ? null : Math.round((alignContainerH - yValue - heightValue) * 10) / 10;
     const hasFlowSelection = resolvedSelections.some(({ element: selected, resolved }) => {
       const positionMode = getResolvedSelectionPositionMode(selected, resolved, pageLayout);
       return positionMode === 'relative' || positionMode === 'sticky';
@@ -1884,7 +1976,15 @@ export default function PropertiesPanel() {
       pushHistory();
     };
     const applyMultiConstraints = (constraints) => {
-      updateElementsLayout(selectionIds, bpId, { constraints });
+      const nextHorizontal = getConstraintMode(constraints, 'horizontal');
+      const nextVertical = getConstraintMode(constraints, 'vertical');
+      updateElementsLayout(selectionIds, bpId, {
+        constraints: {
+          ...constraints,
+          horizontal: nextHorizontal,
+          vertical: nextVertical,
+        },
+      });
       pushHistory();
     };
     const applyMultiSizeMode = (dimension, mode) => {
@@ -1975,20 +2075,20 @@ export default function PropertiesPanel() {
             </div>
             <div className="fb-pos-widget">
               <div className="fb-pos-widget__row">
-                <MixedPosInput value={yValue} label="T" onCommit={(value) => applyMultiPosition('y', Math.max(0, value))} />
+                <MixedPosInput value={yValue} label="T" onCommit={(value) => applyMultiPosition('y', positionTypeValue === 'sticky' ? Math.max(0, value) : value)} />
               </div>
               <div className="fb-pos-widget__row">
                 <MixedPosInput value={xValue} label="L" onCommit={(value) => applyMultiPosition('x', value)} />
                 <ConstraintWidget constraints={constraintsValue} onChange={applyMultiConstraints} />
                 <MixedPosInput value={rightValue} label="R" onCommit={(value) => {
                   if (widthValue == null) return;
-                  applyMultiPosition('x', Math.max(0, alignContainerW - value - widthValue));
+                  applyMultiPosition('x', alignContainerW - value - widthValue);
                 }} />
               </div>
               <div className="fb-pos-widget__row">
                 <MixedPosInput value={bottomValue} label="B" onCommit={(value) => {
                   if (heightValue == null) return;
-                  applyMultiPosition('y', Math.max(0, alignContainerH - value - heightValue));
+                  applyMultiPosition('y', alignContainerH - value - heightValue);
                 }} />
               </div>
             </div>
@@ -2056,6 +2156,58 @@ export default function PropertiesPanel() {
               />
             </div>
             <div className="fb-artboard-bp-note">Entering a size applies a fixed pixel width or height to every selected element. Different current values show as Mixed until you replace them.</div>
+          </Section>
+
+          <Section title="Transform">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Mode</span>
+              <ChoiceGroup
+                value={multiTransformMode}
+                onChange={(value) => {
+                  setMultiTransformMode(value);
+                  if (value === '2d') applyLayout({ rotationX: 0, rotationY: 0 });
+                }}
+                options={[
+                  { value: '2d', label: '2D' },
+                  { value: '3d', label: '3D' },
+                ]}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Rotate Z</span>
+              <MixedNumberInput
+                value={rotationValue}
+                min={-360}
+                max={360}
+                step={1}
+                onCommit={(value) => applyLayout({ rotation: value })}
+              />
+            </div>
+            {multiTransformMode === '3d' ? (
+              <>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Rotate X</span>
+                  <MixedNumberInput
+                    value={rotationXValue}
+                    min={-360}
+                    max={360}
+                    step={1}
+                    onCommit={(value) => applyLayout({ rotationX: value })}
+                  />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Rotate Y</span>
+                  <MixedNumberInput
+                    value={rotationYValue}
+                    min={-360}
+                    max={360}
+                    step={1}
+                    onCommit={(value) => applyLayout({ rotationY: value })}
+                  />
+                </div>
+              </>
+            ) : null}
+            <div className="fb-artboard-bp-note">2D keeps flat rotation on Z only. Switch to 3D to edit X and Y tilt without changing variant or animation support.</div>
           </Section>
 
           <Section title="Visibility">
@@ -2157,16 +2309,6 @@ export default function PropertiesPanel() {
                 value={zIndexValue}
                 step={1}
                 onCommit={(value) => applyStyles({ zIndex: Math.round(value) })}
-              />
-            </div>
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Rotate</span>
-              <MixedNumberInput
-                value={rotationValue}
-                min={-360}
-                max={360}
-                step={1}
-                onCommit={(value) => applyLayout({ rotation: value })}
               />
             </div>
             <div className="fb-prop-row">
@@ -2369,12 +2511,19 @@ export default function PropertiesPanel() {
       y: Math.min(event.clientY, Math.max(12, window.innerHeight - 112)),
     });
   };
+  const openElementAnimationModal = (animationId, anchorSource = null) => {
+    if (!animationId) return;
+    setElementAnimationModalState({
+      animationId,
+      anchorRect: toViewportRect(anchorSource),
+    });
+  };
   const addAnimationFromMenu = (type) => {
     const nextId = addElementAnimation(element.id, bpId, type);
     if (!nextId) return;
     commit();
     setAnimationAddMenuOpen(false);
-    setElementAnimationModalState({ animationId: nextId });
+    openElementAnimationModal(nextId, animationPasteTargetRef.current);
   };
   const copyAnimationCard = async () => {
     if (!contextMenuAnimation) return;
@@ -2413,7 +2562,7 @@ export default function PropertiesPanel() {
           ...copiedAnimation,
           id: nextId,
         });
-        setElementAnimationModalState({ animationId: nextId });
+        openElementAnimationModal(nextId, animationPasteTargetRef.current);
         commit();
       }
       setHasStoredAnimationClipboard(true);
@@ -2803,6 +2952,7 @@ export default function PropertiesPanel() {
   const isSOv = (...keys) => bpId !== 'desktop' && keys.some(k => k in bpSOv);
   const resetOv  = (...keys) => { keys.forEach(k => removeOverrideFn(element.id, bpId, k)); commit(); };
   const resetSOv = (...keys) => { keys.forEach(k => removeStyleOverrideFn(element.id, bpId, k)); commit(); };
+  const has3DRotation = hasElement3DRotation(resolved);
   const textBinding = getBindingForProperty('text');
   const fontFamilyBinding = getBindingForProperty('styles.fontFamily');
   const textColorBinding = getBindingForProperty('styles.color');
@@ -2824,7 +2974,7 @@ export default function PropertiesPanel() {
 
   return (
     <>
-    <aside className={`fb-right${selectedElementAnimation?.type === 'loop' || selectedElementAnimation?.type === 'hover' ? ' fb-right--loop-popup-open' : ''}`} ref={selectedPanelRef}>
+    <aside className={`fb-right${selectedElementAnimation ? ' fb-right--loop-popup-open' : ''}`} ref={selectedPanelRef}>
       <div className="fb-right__header">
         <span className="fb-right__header-title">
           {element.name || element.type}
@@ -2960,7 +3110,7 @@ export default function PropertiesPanel() {
                     key={animation.id}
                     type="button"
                     className="fb-animation-card is-configured"
-                    onClick={() => setElementAnimationModalState({ animationId: animation.id })}
+                    onClick={(event) => openElementAnimationModal(animation.id, event.currentTarget)}
                     onContextMenu={(event) => openAnimationCardContextMenu(event, animation)}
                   >
                     <span className="fb-animation-card__type-row">
@@ -3077,38 +3227,40 @@ export default function PropertiesPanel() {
             </div>
           )}
           {((resolved.positionType ?? 'absolute') === 'sticky' || (!isFlowInLayout && ['absolute', 'fixed'].includes(resolved.positionType ?? 'absolute'))) && (
-            <div className="fb-pos-widget">
-              <div className="fb-pos-widget__row">
-                <PosInput value={Math.max(0, resolved.y ?? 0)} label="T" onChange={v => { upd('y', Math.max(0, v)); commit(); }} />
+            <>
+              <div className="fb-pos-widget">
+                <div className="fb-pos-widget__row">
+                  <PosInput value={(resolved.positionType ?? 'absolute') === 'sticky' ? Math.max(0, resolved.y ?? 0) : (resolved.y ?? 0)} label="T" onChange={v => { upd('y', (resolved.positionType ?? 'absolute') === 'sticky' ? Math.max(0, v) : v); commit(); }} />
+                </div>
+                {(resolved.positionType ?? 'absolute') !== 'sticky' ? (
+                  <div className="fb-pos-widget__row">
+                    <PosInput value={resolved.x ?? 0} label="L" onChange={v => { upd('x', v); commit(); }} />
+                    <ConstraintWidget
+                      constraints={resolved.constraints}
+                      onChange={v => { upd('constraints', { ...v, horizontal: getConstraintMode(v, 'horizontal'), vertical: getConstraintMode(v, 'vertical') }); commit(); }}
+                    />
+                    <PosInput
+                      value={containerW - (resolved.x ?? 0) - (resolved.width ?? 100)}
+                      label="R"
+                      onChange={v => { upd('x', containerW - v - (resolved.width ?? 100)); commit(); }}
+                    />
+                  </div>
+                ) : (
+                  <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
+                    Sticky uses only the top offset and follows flow layout.
+                  </div>
+                )}
+                {(resolved.positionType ?? 'absolute') !== 'sticky' ? (
+                  <div className="fb-pos-widget__row">
+                    <PosInput
+                      value={effectiveContainerH - (resolved.y ?? 0) - (resolved.height ?? 100)}
+                      label="B"
+                      onChange={v => { upd('y', effectiveContainerH - v - (resolved.height ?? 100)); commit(); }}
+                    />
+                  </div>
+                ) : null}
               </div>
-              {(resolved.positionType ?? 'absolute') !== 'sticky' ? (
-                <div className="fb-pos-widget__row">
-                  <PosInput value={resolved.x ?? 0} label="L" onChange={v => { upd('x', v); commit(); }} />
-                  <ConstraintWidget
-                    constraints={resolved.constraints}
-                    onChange={v => { upd('constraints', v); commit(); }}
-                  />
-                  <PosInput
-                    value={Math.max(0, containerW - (resolved.x ?? 0) - (resolved.width ?? 100))}
-                    label="R"
-                    onChange={v => { upd('x', Math.max(0, containerW - v - (resolved.width ?? 100))); commit(); }}
-                  />
-                </div>
-              ) : (
-                <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
-                  Sticky uses only the top offset and follows flow layout.
-                </div>
-              )}
-              {(resolved.positionType ?? 'absolute') !== 'sticky' ? (
-                <div className="fb-pos-widget__row">
-                  <PosInput
-                    value={Math.max(0, effectiveContainerH - (resolved.y ?? 0) - (resolved.height ?? 100))}
-                    label="B"
-                    onChange={v => { upd('y', Math.max(0, effectiveContainerH - v - (resolved.height ?? 100))); commit(); }}
-                  />
-                </div>
-              ) : null}
-            </div>
+            </>
           )}
           {/* Type dropdown — shown outside auto-layout context */}
           {!inAutoLayout && (
@@ -3199,6 +3351,46 @@ export default function PropertiesPanel() {
             </div>
           )}
           <MinMaxRow resolved={resolved} upd={upd} commit={commit} />
+        </Section>
+
+        <Section title="Transform" action={<ResetBtn show={isOv('rotation','rotationX','rotationY')} onReset={() => resetOv('rotation','rotationX','rotationY')} />}>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Mode</span>
+            <ChoiceGroup
+              value={singleTransformMode}
+              onChange={(value) => {
+                setSingleTransformMode(value);
+                if (value === '2d') {
+                  upd('rotationX', 0);
+                  upd('rotationY', 0);
+                  commit();
+                }
+              }}
+              options={[
+                { value: '2d', label: '2D' },
+                { value: '3d', label: '3D' },
+              ]}
+            />
+          </div>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Rotate Z</span>
+            <NumberInput value={resolved.rotation ?? 0} min={-360} max={360} onChange={v => { upd('rotation', v); commit(); }} label="°" unit="°" />
+          </div>
+          {singleTransformMode === '3d' ? (
+            <>
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Rotate X</span>
+                <NumberInput value={resolved.rotationX ?? 0} min={-360} max={360} onChange={v => { upd('rotationX', v); commit(); }} label="°" unit="°" />
+              </div>
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Rotate Y</span>
+                <NumberInput value={resolved.rotationY ?? 0} min={-360} max={360} onChange={v => { upd('rotationY', v); commit(); }} label="°" unit="°" />
+              </div>
+            </>
+          ) : null}
+          <div className="fb-artboard-bp-note" style={{ marginTop: 6 }}>
+            Rotate Z is the flat 2D turn. Switch to 3D to edit X and Y tilt{has3DRotation ? ', which are active on this layer now.' : '.'}
+          </div>
         </Section>
 
         {shapeKind ? (
@@ -3674,7 +3866,7 @@ export default function PropertiesPanel() {
 
         <Section title="Cursor" defaultOpen={false} />
 
-        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
+        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','brightness','contrast','saturation','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','brightness','contrast','saturation','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Opacity</span>
             <div className="fb-slider-field">
@@ -3769,6 +3961,90 @@ export default function PropertiesPanel() {
                 step={0.5}
                 value={s.blur ?? 0}
                 onChange={e => updS('blur', parseFloat(e.target.value))}
+                onMouseUp={commit}
+              />
+            </div>
+          </div>
+          )}
+
+          {!isComponentInstanceOnPage && (
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Brightness</span>
+            <div className="fb-slider-field">
+              <input
+                className="fb-prop-input fb-slider-field__value"
+                type="number"
+                min={0}
+                max={200}
+                step={1}
+                value={Math.round(s.brightness ?? 100)}
+                onChange={e => { const next = Math.max(0, Math.min(200, parseFloat(e.target.value) || 0)); updS('brightness', next); }}
+                onBlur={commit}
+              />
+              <input
+                className="fb-slider"
+                type="range"
+                min={0}
+                max={200}
+                step={1}
+                value={s.brightness ?? 100}
+                onChange={e => updS('brightness', parseFloat(e.target.value))}
+                onMouseUp={commit}
+              />
+            </div>
+          </div>
+          )}
+
+          {!isComponentInstanceOnPage && (
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Contrast</span>
+            <div className="fb-slider-field">
+              <input
+                className="fb-prop-input fb-slider-field__value"
+                type="number"
+                min={0}
+                max={200}
+                step={1}
+                value={Math.round(s.contrast ?? 100)}
+                onChange={e => { const next = Math.max(0, Math.min(200, parseFloat(e.target.value) || 0)); updS('contrast', next); }}
+                onBlur={commit}
+              />
+              <input
+                className="fb-slider"
+                type="range"
+                min={0}
+                max={200}
+                step={1}
+                value={s.contrast ?? 100}
+                onChange={e => updS('contrast', parseFloat(e.target.value))}
+                onMouseUp={commit}
+              />
+            </div>
+          </div>
+          )}
+
+          {!isComponentInstanceOnPage && (
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Saturation</span>
+            <div className="fb-slider-field">
+              <input
+                className="fb-prop-input fb-slider-field__value"
+                type="number"
+                min={0}
+                max={200}
+                step={1}
+                value={Math.round(s.saturation ?? 100)}
+                onChange={e => { const next = Math.max(0, Math.min(200, parseFloat(e.target.value) || 0)); updS('saturation', next); }}
+                onBlur={commit}
+              />
+              <input
+                className="fb-slider"
+                type="range"
+                min={0}
+                max={200}
+                step={1}
+                value={s.saturation ?? 100}
+                onChange={e => updS('saturation', parseFloat(e.target.value))}
                 onMouseUp={commit}
               />
             </div>
@@ -4315,7 +4591,7 @@ export default function PropertiesPanel() {
           </div>
         </Section>
 
-        <Section title="Advanced" defaultOpen={false} action={<ResetBtn show={isOv('rotation') || isOv('src')} onReset={() => { resetOv('rotation','src'); }} />}>
+        <Section title="Advanced" defaultOpen={false} action={<ResetBtn show={isOv('src')} onReset={() => { resetOv('src'); }} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Name</span>
             <input
@@ -4327,13 +4603,9 @@ export default function PropertiesPanel() {
             />
           </div>
           <div className="fb-prop-row">
-            <span className="fb-prop-label">Rotate</span>
-            <NumberInput value={resolved.rotation ?? 0} min={-360} max={360} onChange={v => { upd('rotation', v); commit(); }} label="°" />
-          </div>
-          <div className="fb-prop-row">
             <span className="fb-prop-label">Lock</span>
             <ChoiceGroup
-              value={element.base?.locked ? 'yes' : 'no'}
+              value={(resolved.locked ?? element.locked ?? element.base?.locked) ? 'yes' : 'no'}
               onChange={v => { updateElementLayout(element.id, 'desktop', { locked: v === 'yes' }); commit(); }}
               options={[
                 { value: 'no', label: 'No' },
@@ -4347,6 +4619,54 @@ export default function PropertiesPanel() {
       {selectedElementAnimation?.type === 'loop' || selectedElementAnimation?.type === 'hover' ? (
         <ElementAnimationModal
           animation={selectedElementAnimation}
+          anchorRect={elementAnimationModalState?.anchorRect ?? null}
+          containerRect={toViewportRect(selectedPanelRef.current)}
+          variantOptions={animationVariantOptions}
+          onClose={() => {
+            if (animationDraftDirtyRef.current) {
+              animationDraftDirtyRef.current = false;
+              commit();
+            }
+            setElementAnimationModalState(null);
+            closeAnimationEditor();
+          }}
+          onDelete={() => {
+            animationDraftDirtyRef.current = false;
+            removeElementAnimation(element.id, bpId, selectedElementAnimation.id);
+            commit();
+            setElementAnimationModalState(null);
+            closeAnimationEditor();
+          }}
+          onPreview={(nextAnimation) => {
+            animationDraftDirtyRef.current = true;
+            updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+          }}
+          onSave={(nextAnimation) => {
+            animationDraftDirtyRef.current = false;
+            updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+            commit();
+          }}
+          onOpenEditor={(mode, nextAnimation) => {
+            if (nextAnimation) {
+              animationDraftDirtyRef.current = false;
+              updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
+              commit();
+            }
+            setElementAnimationModalState(null);
+            openAnimationEditor({
+              elementId: element.id,
+              bpId,
+              animationId: selectedElementAnimation.id,
+              mode,
+            });
+          }}
+        />
+      ) : null}
+      {selectedElementAnimation && selectedElementAnimation.type !== 'loop' && selectedElementAnimation.type !== 'hover' ? (
+        <ElementAnimationModal
+          animation={selectedElementAnimation}
+          anchorRect={elementAnimationModalState?.anchorRect ?? null}
+          containerRect={toViewportRect(selectedPanelRef.current)}
           variantOptions={animationVariantOptions}
           onClose={() => {
             if (animationDraftDirtyRef.current) {
@@ -4389,50 +4709,6 @@ export default function PropertiesPanel() {
         />
       ) : null}
     </aside>
-    {selectedElementAnimation && selectedElementAnimation.type !== 'loop' && selectedElementAnimation.type !== 'hover' ? (
-      <ElementAnimationModal
-        animation={selectedElementAnimation}
-        variantOptions={animationVariantOptions}
-        onClose={() => {
-          if (animationDraftDirtyRef.current) {
-            animationDraftDirtyRef.current = false;
-            commit();
-          }
-          setElementAnimationModalState(null);
-          closeAnimationEditor();
-        }}
-        onDelete={() => {
-          animationDraftDirtyRef.current = false;
-          removeElementAnimation(element.id, bpId, selectedElementAnimation.id);
-          commit();
-          setElementAnimationModalState(null);
-          closeAnimationEditor();
-        }}
-        onPreview={(nextAnimation) => {
-          animationDraftDirtyRef.current = true;
-          updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
-        }}
-        onSave={(nextAnimation) => {
-          animationDraftDirtyRef.current = false;
-          updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
-          commit();
-        }}
-        onOpenEditor={(mode, nextAnimation) => {
-          if (nextAnimation) {
-            animationDraftDirtyRef.current = false;
-            updateElementAnimation(element.id, bpId, selectedElementAnimation.id, nextAnimation);
-            commit();
-          }
-          setElementAnimationModalState(null);
-          openAnimationEditor({
-            elementId: element.id,
-            bpId,
-            animationId: selectedElementAnimation.id,
-            mode,
-          });
-        }}
-      />
-    ) : null}
     {animationCardContextMenu && typeof document !== 'undefined' ? createPortal(
       <div
         className="fb-context-menu"
@@ -4543,11 +4819,21 @@ function ShadowColorField({ color, opacity, onColorChange, onOpacityChange }) {
 function ShadowSetupModal({ anchorRef, initialValue, onClose, onChange, onRemove }) {
   const [draft, setDraft] = useState(initialValue);
   const popupRef = useRef(null);
+  const previewFrameRef = useRef(0);
+  const queuedDraftRef = useRef(initialValue);
   const [position, setPosition] = useState({ top: 32, left: 32, ready: false });
 
   useEffect(() => {
     setDraft(initialValue);
+    queuedDraftRef.current = initialValue;
   }, [initialValue]);
+
+  useEffect(() => () => {
+    if (previewFrameRef.current) {
+      window.cancelAnimationFrame(previewFrameRef.current);
+      previewFrameRef.current = 0;
+    }
+  }, []);
 
   useLayoutEffect(() => {
     if (!anchorRef?.current) return undefined;
@@ -4555,23 +4841,25 @@ function ShadowSetupModal({ anchorRef, initialValue, onClose, onChange, onRemove
     const updatePosition = () => {
       const anchorRect = anchorRef.current?.getBoundingClientRect();
       const panelRect = anchorRef.current?.closest('.fb-right')?.getBoundingClientRect();
-      const popupWidth = Math.min(420, window.innerWidth - 24);
-      const popupHeight = Math.min(640, window.innerHeight - 24);
+      const popupWidth = Math.min(popupRef.current?.offsetWidth ?? 340, window.innerWidth - 24);
+      const popupHeight = Math.min(popupRef.current?.offsetHeight ?? 560, window.innerHeight - 24);
       const panelLeft = panelRect?.left ?? anchorRect?.left ?? 0;
+      const panelRight = panelRect?.right ?? anchorRect?.right ?? 12;
       const anchorTop = anchorRect?.top ?? panelRect?.top ?? 24;
-      let left = panelLeft - popupWidth - 14;
-      if (left < 12) {
-        const panelRight = panelRect?.right ?? anchorRect?.right ?? 12;
-        left = Math.min(window.innerWidth - popupWidth - 12, panelRight + 14);
+      const fitsLeft = panelLeft - popupWidth - 12 >= 12;
+      let left = fitsLeft ? panelLeft - popupWidth - 12 : panelRight + 12;
+      if (left + popupWidth > window.innerWidth - 12) {
+        left = window.innerWidth - popupWidth - 12;
       }
-      const top = Math.max(12, Math.min(window.innerHeight - popupHeight - 12, anchorTop - 18));
+      const top = Math.max(12, Math.min(window.innerHeight - popupHeight - 12, anchorTop - 6));
       setPosition({ top, left: Math.max(12, left), ready: true });
     };
 
-    updatePosition();
+    const rafId = window.requestAnimationFrame(updatePosition);
     window.addEventListener('resize', updatePosition);
     window.addEventListener('scroll', updatePosition, true);
     return () => {
+      window.cancelAnimationFrame(rafId);
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
@@ -4600,7 +4888,13 @@ function ShadowSetupModal({ anchorRef, initialValue, onClose, onChange, onRemove
   const updateDraft = (patch) => {
     setDraft((current) => {
       const next = { ...current, ...patch };
-      onChange(next);
+      queuedDraftRef.current = next;
+      if (!previewFrameRef.current) {
+        previewFrameRef.current = window.requestAnimationFrame(() => {
+          previewFrameRef.current = 0;
+          onChange(queuedDraftRef.current);
+        });
+      }
       return next;
     });
   };
@@ -4611,18 +4905,19 @@ function ShadowSetupModal({ anchorRef, initialValue, onClose, onChange, onRemove
       className="fb-shadow-popup"
       data-inline-editor-ui="true"
       style={{ top: position.top, left: position.left, visibility: position.ready ? 'visible' : 'hidden' }}
+      onPointerDown={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
     >
-      <div className="fb-overlay-modal__card fb-shadow-modal">
-        <div className="fb-shadow-modal__head">
+      <div className="fb-shadow-popup__card fb-shadow-modal">
+        <div className="fb-shadow-popup__head fb-shadow-modal__head">
           <div>
-            <div className="fb-overlay-modal__head">Shadow</div>
-            <div className="fb-shadow-modal__subtitle">Choose a shadow model and tune it here.</div>
+            <div className="fb-shadow-popup__title">Shadow</div>
+            <div className="fb-shadow-modal__subtitle">Tune the layer shadow without leaving the panel.</div>
           </div>
-          <IconButton icon={UIIcons.close} title="Close shadow modal" onClick={onClose} />
+          <IconButton icon={UIIcons.close} title="Close shadow popup" onClick={onClose} />
         </div>
 
-        <div className="fb-overlay-modal__body fb-shadow-modal__body">
+        <div className="fb-shadow-popup__body fb-shadow-modal__body">
           <div className="fb-prop-row">
             <span className="fb-prop-label">Type</span>
             <ChoiceGroup
@@ -4732,7 +5027,7 @@ function ShadowSetupModal({ anchorRef, initialValue, onClose, onChange, onRemove
           )}
         </div>
 
-        <div className="fb-overlay-modal__actions">
+        <div className="fb-shadow-popup__actions">
           <button type="button" className="fb-secondary-btn" onClick={onRemove}>Remove</button>
         </div>
       </div>

@@ -3,7 +3,7 @@ import { getComponentVariantStateLabel, getPrimaryComponentVariant, isDefaultCom
 
 const COMPONENT_ROOT_LAYOUT_KEYS = [
   'width', 'height', 'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
-  'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints', 'lockAspectRatio', 'rotation',
+  'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints', 'lockAspectRatio', 'rotation', 'rotationX', 'rotationY',
 ];
 
 function deepClone(value) {
@@ -93,6 +93,8 @@ export function makeComponentPrimaryRoot(config = {}) {
       width: config.width ?? 240,
       height: config.height ?? 160,
       rotation: config.rotation ?? 0,
+      rotationX: config.rotationX ?? 0,
+      rotationY: config.rotationY ?? 0,
       locked: config.locked ?? false,
       hidden: false,
       widthMode: config.widthMode ?? 'fixed',
@@ -175,6 +177,8 @@ export function ensureComponentPrimaryRoot(snapshot = []) {
     x: 0,
     y: 0,
     rotation: 0,
+    rotationX: 0,
+    rotationY: 0,
     positionType: 'relative',
     absoluteInLayout: false,
   };
@@ -186,6 +190,8 @@ export function ensureComponentPrimaryRoot(snapshot = []) {
       ...(override.x != null ? { x: 0 } : {}),
       ...(override.y != null ? { y: 0 } : {}),
       ...(override.rotation != null ? { rotation: 0 } : {}),
+      ...(override.rotationX != null ? { rotationX: 0 } : {}),
+      ...(override.rotationY != null ? { rotationY: 0 } : {}),
       ...(override.positionType != null ? { positionType: 'relative' } : {}),
       ...(override.absoluteInLayout != null ? { absoluteInLayout: false } : {}),
     };

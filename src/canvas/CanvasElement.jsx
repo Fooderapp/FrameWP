@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
 import { canAssetApplyToElement, parseAssetDragPayload } from '../store/assetStyles';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 import { getEmbedPreview } from '../components/embedUtils';
@@ -8,6 +8,7 @@ import { sanitizeSvgMarkup } from '../components/iconLibrary';
 import { getHoverAnimationStyle, getLoopAnimationStyle, useLoopAnimationPlayback } from '../components/loopAnimation';
 import { getResolvedRichTextHtml, plainTextToRichTextHtml } from '../components/richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from '../components/videoUtils';
+import { buildElementRotationTransform, hasElement3DRotation } from '../utils/elementTransform';
 
 function rectStateChanged(current, next) {
   if (current === next) return false;
@@ -33,6 +34,46 @@ function selectionStyleStateChanged(current, next) {
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function getConstraintMode(constraints, axis = 'horizontal') {
+  const raw = constraints && typeof constraints === 'object' ? constraints : {};
+  if (axis === 'horizontal') {
+    if (typeof raw.horizontal === 'string') return raw.horizontal;
+    if (raw.left && raw.right) return 'stretch';
+    if (raw.right && !raw.left) return 'right';
+    return 'left';
+  }
+  if (typeof raw.vertical === 'string') return raw.vertical;
+  if (raw.top && raw.bottom) return 'stretch';
+  if (raw.bottom && !raw.top) return 'bottom';
+  return 'top';
+}
+
+function clampFilterPercent(value, fallback = 100) {
+  const parsed = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(200, parsed));
+}
+
+function formatFilterNumber(value) {
+  return `${Math.round(value * 1000) / 1000}`;
+}
+
+function buildElementFilter(styles) {
+  if (!styles || typeof styles !== 'object') return undefined;
+  const blur = Math.max(0, typeof styles.blur === 'number' ? styles.blur : parseFloat(styles.blur) || 0);
+  const brightness = clampFilterPercent(styles.brightness, 100);
+  const contrast = clampFilterPercent(styles.contrast, 100);
+  const saturation = clampFilterPercent(styles.saturation, 100);
+  const filters = [];
+
+  if (Math.abs(brightness - 100) > 0.01) filters.push(`brightness(${formatFilterNumber(brightness)}%)`);
+  if (Math.abs(contrast - 100) > 0.01) filters.push(`contrast(${formatFilterNumber(contrast)}%)`);
+  if (Math.abs(saturation - 100) > 0.01) filters.push(`saturate(${formatFilterNumber(saturation)}%)`);
+  if (blur > 0.01) filters.push(`blur(${formatFilterNumber(blur)}px)`);
+
+  return filters.length ? filters.join(' ') : undefined;
 }
 
 function isGradientPaint(value) {
@@ -142,6 +183,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   });
   const globalVariables        = useEditorStore(s => s.globalVariables);
   const pageVariables          = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
+  const pageLayout             = resolvePageLayout(currentPage?.layout, bpId);
   const children               = el?.children?.length
     ? el.children.map((childId) => allElements.find((candidate) => candidate.id === childId)).filter(Boolean)
     : allElements.filter((candidate) => candidate.parentId === elementId);
@@ -159,7 +201,12 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     }
   }
   const rawResolved            = el ? resolveElementWithVariables(el, bpId, pageVariables, globalVariables) : null;
-  const resolved               = el ? applyAnimationPreviewPatch(rawResolved, getAnimationEditorPreviewPatch(el, bpId, animationEditor)) : null;
+  const animationPreviewPatch  = el ? getAnimationEditorPreviewPatch(el, bpId, animationEditor) : null;
+  const previewTreatAsFlowPositioned = !!rawResolved && (
+    ['relative', 'sticky'].includes(rawResolved.positionType ?? 'absolute')
+    || (!el?.parentId && pageLayout !== null && !rawResolved.absoluteInLayout && rawResolved.positionType !== 'fixed')
+  );
+  const resolved               = el ? applyAnimationPreviewPatch(rawResolved, animationPreviewPatch, { treatAsFlowPositioned: previewTreatAsFlowPositioned }) : null;
   const id                     = el?.id ?? elementId;
   const locked                 = el?.locked ?? false;
   const x                      = resolved?.x ?? 0;
@@ -207,6 +254,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
 
   // ── Parent flex direction (needed for fill mode) ───────────
   const parentResolved = parentEl ? resolveElementWithVariables(parentEl, bpId, pageVariables, globalVariables) : null;
+  const absoluteContainerW = parentEl ? (parentResolved?.width ?? bpDef?.width ?? 0) : (bpDef?.width ?? 0);
+  const absoluteContainerH = isFixed
+    ? (bpDef?.viewportFoldH ?? bpDef?.height ?? 0)
+    : (parentEl ? (parentResolved?.height ?? bpDef?.height ?? 0) : (bpDef?.height ?? 0));
   // 'row' | 'column' | 'block'  (block = not a flex parent)
   const parentDir = (() => {
     if (!effectiveFlowPosition) return 'block';
@@ -491,8 +542,18 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
                      : undefined;
   const fillFlexBasis   = fillFlexGrow != null ? '0%' : undefined;
   const fillFlexShrink  = fillFlexGrow != null ? 1   : undefined;
-  const fillAlignSelf   = undefined;
+  const explicitAlignSelf = ['auto', 'flex-start', 'center', 'flex-end', 'stretch'].includes(styles?.alignSelf)
+    ? styles.alignSelf
+    : undefined;
+  const fillAlignSelf   = explicitAlignSelf ?? (
+    (hFill && parentDir === 'row') || (wFill && parentDir === 'column')
+      ? 'stretch'
+      : undefined
+  );
   const stickyAlignSelf = isSticky && parentCrossAlign ? parentCrossAlign : undefined;
+  const effectiveCrossAxisAlign = explicitAlignSelf && explicitAlignSelf !== 'auto'
+    ? explicitAlignSelf
+    : parentCrossAlign;
   const stickyFlowMargins = (() => {
     if (!isSticky || !parentCrossAlign) return null;
     if (parentDir === 'column') {
@@ -513,14 +574,92 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const isDraggingSource = draggingElementId === id && draggingElementBpId === bpId;
   const previewDx = isDragPreviewActive ? (dragPreview.dx ?? 0) : 0;
   const previewDy = isDragPreviewActive ? (dragPreview.dy ?? 0) : 0;
-  const absoluteLeft = !effectiveFlowPosition ? x + previewDx : x;
-  const absoluteTop = !effectiveFlowPosition ? y + previewDy : y;
+  const constraintHorizontal = getConstraintMode(resolved?.constraints, 'horizontal');
+  const constraintVertical = getConstraintMode(resolved?.constraints, 'vertical');
+  const displayWidthPx = widthMode === 'relative' ? ((absoluteContainerW || 0) * (wPct / 100)) : (widthMode === 'fill' ? (absoluteContainerW || 0) : width);
+  const displayHeightPx = heightMode === 'relative' ? ((absoluteContainerH || 0) * (hPct / 100)) : (heightMode === 'fill' ? (absoluteContainerH || 0) : height);
+  const absoluteRight = (absoluteContainerW || 0) - (x + previewDx) - displayWidthPx;
+  const absoluteBottom = (absoluteContainerH || 0) - (y + previewDy) - displayHeightPx;
+  const absoluteCenterOffsetX = (x + previewDx) - (((absoluteContainerW || 0) - displayWidthPx) / 2);
+  const absoluteCenterOffsetY = (y + previewDy) - (((absoluteContainerH || 0) - displayHeightPx) / 2);
   const stickyTop = Math.max(0, y ?? 0);
   const previewTransform = effectiveFlowPosition && isDragPreviewActive
     ? `translate(${previewDx}px, ${previewDy}px)`
     : '';
-  const rotationTransform = rotation ? `rotate(${rotation}deg)` : '';
-  const composedTransform = [previewTransform, rotationTransform].filter(Boolean).join(' ') || undefined;
+  const naturalFlowAlignedOffsetX = (() => {
+    if (!effectiveFlowPosition || !animationPreviewPatch?.layout) return 0;
+    if (parentDir !== 'column') return 0;
+    const baseWidth = typeof rawResolved?.width === 'number' ? rawResolved.width : (parseFloat(rawResolved?.width) || 0);
+    const nextWidth = typeof resolved?.width === 'number' ? resolved.width : (parseFloat(resolved?.width) || 0);
+    const widthDelta = Math.max(0, baseWidth - nextWidth);
+    if (widthDelta <= 0.0001) return 0;
+    if (effectiveCrossAxisAlign === 'center') return widthDelta / 2;
+    if (effectiveCrossAxisAlign === 'flex-end') return widthDelta;
+    return 0;
+  })();
+  const naturalFlowAlignedOffsetY = (() => {
+    if (!effectiveFlowPosition || !animationPreviewPatch?.layout) return 0;
+    if (parentDir !== 'row') return 0;
+    const baseHeight = typeof rawResolved?.height === 'number' ? rawResolved.height : (parseFloat(rawResolved?.height) || 0);
+    const nextHeight = typeof resolved?.height === 'number' ? resolved.height : (parseFloat(resolved?.height) || 0);
+    const heightDelta = Math.max(0, baseHeight - nextHeight);
+    if (heightDelta <= 0.0001) return 0;
+    if (effectiveCrossAxisAlign === 'center') return heightDelta / 2;
+    if (effectiveCrossAxisAlign === 'flex-end') return heightDelta;
+    return 0;
+  })();
+  const animationPreviewPatchTransforms = effectiveFlowPosition && animationPreviewPatch?.layout
+    ? [
+        (resolved?.x != null && rawResolved?.x != null && (resolved.x !== rawResolved.x || naturalFlowAlignedOffsetX !== 0))
+          ? `translateX(${(resolved.x - rawResolved.x) - naturalFlowAlignedOffsetX}px)`
+          : '',
+        (!isSticky && resolved?.y != null && rawResolved?.y != null && (resolved.y !== rawResolved.y || naturalFlowAlignedOffsetY !== 0))
+          ? `translateY(${(resolved.y - rawResolved.y) - naturalFlowAlignedOffsetY}px)`
+          : '',
+      ].filter(Boolean).join(' ')
+    : '';
+  const rotationTransform = buildElementRotationTransform(resolved ?? el ?? {});
+  const absoluteConstraintTransforms = [];
+  const absolutePositionStyle = !effectiveFlowPosition ? (() => {
+    const nextStyle = { width: csW, height: csH };
+
+    if (widthMode === 'fill') {
+      nextStyle.left = 0;
+      nextStyle.right = 0;
+      nextStyle.width = 'auto';
+    } else if (constraintHorizontal === 'stretch') {
+      nextStyle.left = x + previewDx;
+      nextStyle.right = absoluteRight;
+      nextStyle.width = 'auto';
+    } else if (constraintHorizontal === 'right') {
+      nextStyle.right = absoluteRight;
+    } else if (constraintHorizontal === 'center') {
+      nextStyle.left = `calc(50% + ${absoluteCenterOffsetX}px)`;
+      absoluteConstraintTransforms.push('translateX(-50%)');
+    } else {
+      nextStyle.left = x + previewDx;
+    }
+
+    if (heightMode === 'fill') {
+      nextStyle.top = 0;
+      nextStyle.bottom = 0;
+      nextStyle.height = 'auto';
+    } else if (constraintVertical === 'stretch') {
+      nextStyle.top = y + previewDy;
+      nextStyle.bottom = absoluteBottom;
+      nextStyle.height = 'auto';
+    } else if (constraintVertical === 'bottom') {
+      nextStyle.bottom = absoluteBottom;
+    } else if (constraintVertical === 'center') {
+      nextStyle.top = `calc(50% + ${absoluteCenterOffsetY}px)`;
+      absoluteConstraintTransforms.push('translateY(-50%)');
+    } else {
+      nextStyle.top = y + previewDy;
+    }
+
+    return nextStyle;
+  })() : null;
+  const composedTransform = [previewTransform, animationPreviewPatchTransforms, ...absoluteConstraintTransforms, rotationTransform].filter(Boolean).join(' ') || undefined;
   const activeLoopAnimation = el ? resolveElementAnimations(el, bpId).find((entry) => entry.type === 'loop') ?? null : null;
   const activeHoverAnimation = el ? resolveElementAnimations(el, bpId).find((entry) => entry.type === 'hover') ?? null : null;
   const isLoopPreviewActive = !!activeLoopAnimation
@@ -534,11 +673,12 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const loopAnimationPlayState = useLoopAnimationPlayback(elementRef, isLoopPreviewActive, activeLoopAnimation?.offscreenBehavior);
   const loopAnimationStyle = getLoopAnimationStyle(isLoopPreviewActive ? activeLoopAnimation : null, composedTransform ?? '', loopAnimationPlayState);
   const baseOpacity = resolved?.hidden ? 0 : (styles?.opacity ?? 1);
-  const hoverAnimationStyle = (!loopAnimationStyle || isHoverAnimationActive)
-    ? getHoverAnimationStyle(isHoverPreviewActive ? activeHoverAnimation : null, composedTransform ?? '', baseOpacity, isHoverAnimationActive && isHoverPreviewActive)
+  const hoverAnimationStyle = isHoverPreviewActive
+    ? getHoverAnimationStyle(activeHoverAnimation, composedTransform ?? '', baseOpacity, isHoverAnimationActive)
     : null;
   const activeAnimationStyle = hoverAnimationStyle ?? loopAnimationStyle;
   const backgroundImageUrl = getMediaUrl(styles?.backgroundImage);
+  const elementFilter = buildElementFilter(styles);
   const maskedVectorFillActive = (() => {
     const nextShapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
     if (!['path', 'pen'].includes(nextShapeKind ?? '')) return false;
@@ -554,17 +694,19 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           flexGrow:   fillFlexGrow,
           flexShrink: fillFlexShrink,
           flexBasis:  fillFlexBasis,
-          alignSelf:  fillAlignSelf ?? stickyAlignSelf,
+          alignSelf:  isSticky ? (explicitAlignSelf ?? stickyAlignSelf) : fillAlignSelf,
           top:        isSticky ? stickyTop : undefined,
           ...(stickyFlowMargins ?? {}),
         }
-      : { left: absoluteLeft, top: absoluteTop, width: csW, height: csH }
+      : absolutePositionStyle
     ),
     minWidth:  effectiveFlowPosition ? flowMinWidth : minW,
     maxWidth:  maxW,
     minHeight: effectiveFlowPosition ? flowMinHeight : minH,
     maxHeight: maxH,
     transform: activeAnimationStyle ? undefined : composedTransform,
+    transformOrigin: 'center center',
+    transformStyle: hasElement3DRotation(resolved ?? el ?? {}) ? 'preserve-3d' : undefined,
     // backgroundColor can hold a CSS gradient string — route accordingly
     backgroundColor: !maskedVectorFillActive && styles?.backgroundColor && !styles.backgroundColor.includes('gradient(')
       ? styles.backgroundColor
@@ -605,7 +747,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     justifyContent:   styles?.justifyContent,
     boxShadow:        styles?.boxShadow || undefined,
     mixBlendMode:     styles?.mixBlendMode && styles.mixBlendMode !== 'normal' ? styles.mixBlendMode : undefined,
-    filter:           (styles?.blur ?? 0) > 0 ? `blur(${styles.blur}px)` : undefined,
+    filter:           elementFilter,
     backdropFilter:   (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
     WebkitBackdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
     zIndex:           isDragPreviewActive ? 10001 : (isSelected ? 9999 : (styles?.zIndex ?? undefined)),
@@ -629,7 +771,9 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     fontSize: `${styles?.fontSize ?? 42}${styles?.fontSizeUnit ?? 'px'}`,
     lineHeight: `${styles?.lineHeight ?? 1.2}${styles?.lineHeightUnit ?? 'em'}`,
     letterSpacing: `${styles?.letterSpacing ?? 0}${styles?.letterSpacingUnit ?? 'em'}`,
-    color: styles?.color ?? '#000000',
+    color: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+      ? 'transparent'
+      : (styles?.color ?? '#000000'),
     textAlign: styles?.textAlign ?? 'left',
     textDecoration: styles?.textDecoration ?? 'none',
     whiteSpace: textGrowMode === 'auto-width' ? 'pre' : 'pre-wrap',
@@ -641,6 +785,18 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     userSelect: isEditingText ? 'text' : 'none',
     pointerEvents: isEditingText ? 'auto' : 'none',
     cursor: isEditingText ? 'text' : 'inherit',
+    backgroundImage: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+      ? styles.backgroundColor
+      : undefined,
+    backgroundClip: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+      ? 'text'
+      : undefined,
+    WebkitBackgroundClip: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+      ? 'text'
+      : undefined,
+    WebkitTextFillColor: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+      ? 'transparent'
+      : undefined,
     outline: 'none',
     textRendering: 'geometricPrecision',
     WebkitFontSmoothing: 'antialiased',

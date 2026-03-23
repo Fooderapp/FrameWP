@@ -22,6 +22,7 @@ class FrameBuilder_API {
 		add_action( 'wp_ajax_framebuilder_save_variables', [ __CLASS__, 'ajax_save_variables' ] );
 		add_action( 'wp_ajax_framebuilder_get_variable_sources', [ __CLASS__, 'ajax_get_variable_sources' ] );
 		add_action( 'wp_ajax_framebuilder_publish_layout', [ __CLASS__, 'ajax_publish_layout' ] );
+		add_action( 'wp_ajax_framebuilder_import_media_asset', [ __CLASS__, 'ajax_import_media_asset' ] );
 	}
 
 	public static function register_routes() {
@@ -552,6 +553,171 @@ class FrameBuilder_API {
 		return sanitize_text_field( is_scalar( $value ) ? (string) $value : '' );
 	}
 
+	private static function sanitize_import_asset_stem( string $asset_name, string $fallback = 'figma-import' ): string {
+		$stem = sanitize_file_name( pathinfo( $asset_name, PATHINFO_FILENAME ) );
+		$stem = trim( $stem, " \t\n\r\0\x0B-_." );
+		return '' !== $stem ? $stem : $fallback;
+	}
+
+	private static function build_import_filename( string $asset_name, string $extension, string $fallback = 'figma-import' ): string {
+		$stem = self::sanitize_import_asset_stem( $asset_name, $fallback );
+		$extension = trim( sanitize_key( ltrim( $extension, '.' ) ) );
+		return '' !== $extension ? $stem . '.' . $extension : $stem;
+	}
+
+	private static function get_import_attachment_by_source_hash( string $source_hash ): int {
+		if ( '' === $source_hash ) {
+			return 0;
+		}
+
+		$matches = get_posts( [
+			'post_type'      => 'attachment',
+			'post_status'    => 'inherit',
+			'posts_per_page' => 1,
+			'fields'         => 'ids',
+			'orderby'        => 'ID',
+			'order'          => 'DESC',
+			'meta_key'       => '_fb_import_source_hash',
+			'meta_value'     => $source_hash,
+		] );
+
+		return ! empty( $matches ) ? absint( $matches[0] ) : 0;
+	}
+
+	private static function build_import_media_result( int $attachment_id, bool $already_exists = false, string $asset_name = '' ) {
+		$url = wp_get_attachment_url( $attachment_id );
+		if ( ! $url ) {
+			return new WP_Error( 'upload_failed', 'Could not resolve uploaded media URL.', [ 'status' => 500 ] );
+		}
+
+		return [
+			'success'       => true,
+			'attachmentId'  => $attachment_id,
+			'url'           => esc_url_raw( $url ),
+			'alreadyExists' => $already_exists,
+			'assetName'     => $asset_name,
+		];
+	}
+
+	private static function persist_import_attachment_meta( int $attachment_id, string $source_hash, string $asset_name ): void {
+		if ( '' !== $source_hash ) {
+			update_post_meta( $attachment_id, '_fb_import_source_hash', $source_hash );
+		}
+		if ( '' !== $asset_name ) {
+			update_post_meta( $attachment_id, '_fb_import_asset_name', $asset_name );
+		}
+	}
+
+	private static function decode_data_url_to_file( string $source, string $asset_name = '' ): array {
+		if ( ! preg_match( '/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,(.+)$/i', $source, $matches ) ) {
+			return [ '', '', '' ];
+		}
+
+		$mime_type = sanitize_mime_type( $matches[1] ?: 'application/octet-stream' );
+		$binary = base64_decode( $matches[2], true );
+		if ( false === $binary ) {
+			return [ '', '', '' ];
+		}
+
+		$extension_map = [
+			'image/jpeg' => 'jpg',
+			'image/jpg' => 'jpg',
+			'image/png' => 'png',
+			'image/gif' => 'gif',
+			'image/webp' => 'webp',
+			'image/svg+xml' => 'svg',
+		];
+		$extension = $extension_map[ $mime_type ] ?? 'bin';
+		$filename = self::build_import_filename( $asset_name, $extension );
+
+		return [ $filename, $binary, $mime_type ];
+	}
+
+	private static function perform_import_media_asset( $source, int $post_id = 0, string $asset_name = '' ) {
+		if ( ! current_user_can( 'upload_files' ) ) {
+			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
+		}
+
+		$source = is_string( $source ) ? trim( $source ) : '';
+		$asset_name = is_string( $asset_name ) ? trim( sanitize_text_field( $asset_name ) ) : '';
+		if ( '' === $source ) {
+			return new WP_Error( 'invalid_source', 'A valid media source is required.', [ 'status' => 400 ] );
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/media.php';
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+
+		$attachment_id = 0;
+		if ( 0 === strpos( $source, 'data:' ) ) {
+			[ $filename, $binary, $mime_type ] = self::decode_data_url_to_file( $source, $asset_name );
+			if ( '' === $filename || '' === $binary ) {
+				return new WP_Error( 'invalid_source', 'Could not decode media data.', [ 'status' => 400 ] );
+			}
+
+			$source_hash = sha1( $binary );
+			$existing_attachment_id = self::get_import_attachment_by_source_hash( $source_hash );
+			if ( $existing_attachment_id > 0 ) {
+				return self::build_import_media_result( $existing_attachment_id, true, $asset_name );
+			}
+
+			$upload = wp_upload_bits( $filename, null, $binary );
+			if ( ! empty( $upload['error'] ) ) {
+				return new WP_Error( 'upload_failed', $upload['error'], [ 'status' => 500 ] );
+			}
+
+			$filetype = wp_check_filetype( $upload['file'], null );
+			$attachment = [
+				'post_mime_type' => $filetype['type'] ?: $mime_type,
+				'post_title'     => self::sanitize_import_asset_stem( $asset_name ?: $filename ),
+				'post_content'   => '',
+				'post_status'    => 'inherit',
+			];
+			$attachment_id = wp_insert_attachment( $attachment, $upload['file'], $post_id > 0 ? $post_id : 0 );
+			if ( is_wp_error( $attachment_id ) || ! $attachment_id ) {
+				return is_wp_error( $attachment_id )
+					? $attachment_id
+					: new WP_Error( 'upload_failed', 'Could not create attachment.', [ 'status' => 500 ] );
+			}
+
+			$metadata = wp_generate_attachment_metadata( $attachment_id, $upload['file'] );
+			if ( is_array( $metadata ) ) {
+				wp_update_attachment_metadata( $attachment_id, $metadata );
+			}
+			self::persist_import_attachment_meta( (int) $attachment_id, $source_hash, $asset_name );
+		} else {
+			$temp_file = download_url( $source );
+			if ( is_wp_error( $temp_file ) ) {
+				return $temp_file;
+			}
+
+			$source_hash = is_readable( $temp_file ) ? hash_file( 'sha1', $temp_file ) : '';
+			$existing_attachment_id = self::get_import_attachment_by_source_hash( $source_hash );
+			if ( $existing_attachment_id > 0 ) {
+				@unlink( $temp_file );
+				return self::build_import_media_result( $existing_attachment_id, true, $asset_name );
+			}
+
+			$path = wp_parse_url( $source, PHP_URL_PATH );
+			$remote_name = $path ? basename( $path ) : '';
+			$remote_ext = pathinfo( $remote_name, PATHINFO_EXTENSION );
+			$filename = self::build_import_filename( $asset_name ?: $remote_name, $remote_ext ?: 'bin' );
+			$file_array = [
+				'name' => $filename,
+				'tmp_name' => $temp_file,
+			];
+
+			$attachment_id = media_handle_sideload( $file_array, $post_id > 0 ? $post_id : 0 );
+			if ( is_wp_error( $attachment_id ) ) {
+				@unlink( $temp_file );
+				return $attachment_id;
+			}
+			self::persist_import_attachment_meta( (int) $attachment_id, $source_hash, $asset_name );
+		}
+
+		return self::build_import_media_result( (int) $attachment_id, false, $asset_name );
+	}
+
 	private static function sanitize_style_library( $styles ): array {
 		if ( ! is_array( $styles ) ) return [];
 		$clean = [];
@@ -937,5 +1103,20 @@ class FrameBuilder_API {
 			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
 		}
 		wp_send_json( self::perform_get_variable_sources() );
+	}
+
+	public static function ajax_import_media_asset() {
+		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
+			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
+		}
+		$result = self::perform_import_media_asset(
+			wp_unslash( $_POST['source'] ?? '' ),
+			absint( $_POST['post_id'] ?? 0 ),
+			wp_unslash( $_POST['asset_name'] ?? '' )
+		);
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
 	}
 }

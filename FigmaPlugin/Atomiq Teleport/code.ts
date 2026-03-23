@@ -2,6 +2,15 @@ const TELEPORT_MARKER = 'FRAMEWP_TELEPORT';
 
 type TeleportSizingMode = 'fixed' | 'hug' | 'fill';
 
+type TeleportConstraints = {
+  horizontal?: 'left' | 'center' | 'right' | 'stretch' | 'scale';
+  vertical?: 'top' | 'center' | 'bottom' | 'stretch' | 'scale';
+  top: boolean;
+  right: boolean;
+  bottom: boolean;
+  left: boolean;
+};
+
 type TeleportNode = {
   kind: 'frame' | 'text' | 'image' | 'vector';
   name: string;
@@ -19,6 +28,8 @@ type TeleportNode = {
   heightFr?: number;
   positionType?: 'absolute' | 'relative';
   absoluteInLayout?: boolean;
+  constraints?: TeleportConstraints;
+  alignSelf?: 'flex-start' | 'center' | 'flex-end' | 'stretch';
   backgroundColor?: string;
   backgroundImage?: string;
   backgroundSize?: string;
@@ -34,6 +45,9 @@ type TeleportNode = {
   overflow?: 'visible' | 'hidden';
   boxShadow?: string;
   blur?: number;
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
   backdropBlur?: number;
   layout?: {
     flexDirection: 'row' | 'column';
@@ -124,6 +138,13 @@ type LayoutSizedNode = SceneNode & {
   layoutAlign?: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'INHERIT';
 };
 
+type ConstraintNode = SceneNode & {
+  constraints?: {
+    horizontal?: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE';
+    vertical?: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE';
+  };
+};
+
 type StyledSceneNode = SceneNode & {
   fillStyleId?: string | PluginAPI['mixed'];
   textStyleId?: string | PluginAPI['mixed'];
@@ -137,6 +158,10 @@ type RadiusNode = SceneNode & {
   topRightRadius?: number;
   bottomRightRadius?: number;
   bottomLeftRadius?: number;
+};
+
+type MaskNode = SceneNode & {
+  isMask?: boolean;
 };
 
 const imageHashCache = new Map<string, Promise<string>>();
@@ -231,24 +256,116 @@ function matrixPoint(transform: Transform, x: number, y: number): { x: number; y
   };
 }
 
+function projectPoint(point: { x: number; y: number }, direction: { x: number; y: number }): number {
+  return (point.x * direction.x) + (point.y * direction.y);
+}
+
+function getProjectionRangeForRect(width: number, height: number, direction: { x: number; y: number }): { min: number; max: number } {
+  const corners = [
+    { x: 0, y: 0 },
+    { x: width, y: 0 },
+    { x: width, y: height },
+    { x: 0, y: height },
+  ];
+  const projections = corners.map((point) => projectPoint(point, direction));
+  return {
+    min: Math.min(...projections),
+    max: Math.max(...projections),
+  };
+}
+
 function gradientStopsToCss(stops: ReadonlyArray<ColorStop>): string {
   return stops
     .map((stop) => `${rgbaToCss(stop.color, 1) ?? 'transparent'} ${round(stop.position * 100, 0)}%`)
     .join(', ');
 }
 
-function gradientPaintToCss(paint: GradientPaint): string {
-  const stops = gradientStopsToCss(paint.gradientStops);
+function gradientPaintToCss(paint: GradientPaint, width = 1, height = 1): string {
   if (paint.type === 'GRADIENT_LINEAR') {
-    const start = matrixPoint(paint.gradientTransform, 0, 0.5);
-    const end = matrixPoint(paint.gradientTransform, 1, 0.5);
+    const start = matrixPoint(paint.gradientTransform, 1, 0.5);
+    const end = matrixPoint(paint.gradientTransform, 0, 0.5);
+    const localStart = {
+      x: start.x * Math.max(width, 1),
+      y: start.y * Math.max(height, 1),
+    };
+    const localEnd = {
+      x: end.x * Math.max(width, 1),
+      y: end.y * Math.max(height, 1),
+    };
+    const dx = localEnd.x - localStart.x;
+    const dy = localEnd.y - localStart.y;
+    const length = Math.hypot(dx, dy);
+    const stops = length > 0.0001
+      ? (() => {
+        const direction = { x: dx / length, y: dy / length };
+        const projectionRange = getProjectionRangeForRect(Math.max(width, 1), Math.max(height, 1), direction);
+        const startProjection = projectPoint(localStart, direction);
+        const endProjection = projectPoint(localEnd, direction);
+        const totalRange = projectionRange.max - projectionRange.min;
+        return paint.gradientStops.map((stop) => {
+          const projection = startProjection + ((endProjection - startProjection) * stop.position);
+          const mappedPosition = totalRange > 0
+            ? ((projection - projectionRange.min) / totalRange) * 100
+            : (stop.position * 100);
+          return `${rgbaToCss(stop.color, 1) ?? 'transparent'} ${round(mappedPosition, stop.position * 100)}%`;
+        }).join(', ');
+      })()
+      : gradientStopsToCss(paint.gradientStops);
     const angle = round(90 + ((Math.atan2(end.y - start.y, end.x - start.x) * 180) / Math.PI), 0);
     return `linear-gradient(${angle}deg, ${stops})`;
   }
+  const stops = gradientStopsToCss(paint.gradientStops);
   if (paint.type === 'GRADIENT_ANGULAR') {
     return `conic-gradient(from 0deg at 50% 50%, ${stops})`;
   }
   return `radial-gradient(circle at 50% 50%, ${stops})`;
+}
+
+function pickConstraintPins(mode: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE' | undefined, startInset: number, size: number, parentSize: number): { start: boolean; end: boolean } {
+  if (mode === 'MIN') return { start: true, end: false };
+  if (mode === 'MAX') return { start: false, end: true };
+  if (mode === 'STRETCH') return { start: true, end: true };
+
+  const endInset = Math.max(0, parentSize - startInset - size);
+  return endInset < startInset
+    ? { start: false, end: true }
+    : { start: true, end: false };
+}
+
+function mapConstraintMode(mode: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE' | undefined, axis: 'horizontal' | 'vertical'): NonNullable<TeleportConstraints[typeof axis]> {
+  if (axis === 'horizontal') {
+    if (mode === 'CENTER') return 'center';
+    if (mode === 'MAX') return 'right';
+    if (mode === 'STRETCH') return 'stretch';
+    if (mode === 'SCALE') return 'scale';
+    return 'left';
+  }
+  if (mode === 'CENTER') return 'center';
+  if (mode === 'MAX') return 'bottom';
+  if (mode === 'STRETCH') return 'stretch';
+  if (mode === 'SCALE') return 'scale';
+  return 'top';
+}
+
+function getNodeConstraints(node: SceneNode, width: number, height: number): TeleportConstraints | undefined {
+  const constraintNode = node as ConstraintNode;
+  const constraints = constraintNode.constraints;
+  const parent = node.parent;
+  if (!constraints || !parent || !(('width' in parent) && ('height' in parent))) return undefined;
+
+  const localX = 'x' in node ? round(node.x, 0) : 0;
+  const localY = 'y' in node ? round(node.y, 0) : 0;
+  const horizontal = pickConstraintPins(constraints.horizontal, localX, width, Math.max(1, parent.width));
+  const vertical = pickConstraintPins(constraints.vertical, localY, height, Math.max(1, parent.height));
+
+  return {
+    horizontal: mapConstraintMode(constraints.horizontal, 'horizontal'),
+    vertical: mapConstraintMode(constraints.vertical, 'vertical'),
+    top: vertical.start,
+    bottom: vertical.end,
+    left: horizontal.start,
+    right: horizontal.end,
+  };
 }
 
 function detectImageMime(bytes: Uint8Array): string {
@@ -312,34 +429,51 @@ function getNodeEffects(node: SceneNode): { boxShadow: string; blur: number; bac
   return { boxShadow: shadows.join(', '), blur, backdropBlur };
 }
 
+function mapImageFilterPercent(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return round(clampNumber(100 + (value * 100), 100, 0, 200), 100);
+}
+
+function getImagePaintFilterStyle(paint: ImagePaint): Pick<TeleportNode, 'brightness' | 'contrast' | 'saturation'> {
+  const brightness = mapImageFilterPercent(paint.filters?.exposure);
+  const contrast = mapImageFilterPercent(paint.filters?.contrast);
+  const saturation = mapImageFilterPercent(paint.filters?.saturation);
+  return {
+    brightness,
+    contrast,
+    saturation,
+  };
+}
+
 function hasVisibleNodeEffects(node: SceneNode): boolean {
   if (!('effects' in node) || !Array.isArray(node.effects)) return false;
   return node.effects.some((effect) => !!effect && effect.visible !== false && (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW' || effect.type === 'LAYER_BLUR' || effect.type === 'BACKGROUND_BLUR'));
 }
 
-async function getPaintStyle(paint: Paint | undefined): Promise<Partial<TeleportNode>> {
+async function getPaintStyle(paint: Paint | undefined, width = 1, height = 1): Promise<Partial<TeleportNode>> {
   if (!paint || paint.visible === false) return {};
   if (paint.type === 'SOLID') {
     return { backgroundColor: rgbaToCss(paint.color, paint.opacity ?? 1) ?? 'transparent' };
   }
   if (paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL' || paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND') {
-    return { backgroundColor: gradientPaintToCss(paint) };
+    return { backgroundColor: gradientPaintToCss(paint, width, height) };
   }
   if (paint.type === 'IMAGE') {
     const backgroundImage = await imageHashToDataUrl(paint.imageHash);
     if (!backgroundImage) return {};
+    const filterStyle = getImagePaintFilterStyle(paint);
     if (paint.scaleMode === 'FIT') {
-      return { backgroundImage, backgroundSize: 'contain', backgroundPosition: 'center center', objectFit: 'contain' };
+      return { backgroundImage, backgroundSize: 'contain', backgroundPosition: 'center center', objectFit: 'contain', ...filterStyle };
     }
     if (paint.scaleMode === 'TILE') {
-      return { backgroundImage, backgroundSize: 'repeat', backgroundPosition: 'top left', objectFit: 'cover' };
+      return { backgroundImage, backgroundSize: 'repeat', backgroundPosition: 'top left', objectFit: 'cover', ...filterStyle };
     }
-    return { backgroundImage, backgroundSize: 'cover', backgroundPosition: 'center center', objectFit: 'cover' };
+    return { backgroundImage, backgroundSize: 'cover', backgroundPosition: 'center center', objectFit: 'cover', ...filterStyle };
   }
   return {};
 }
 
-function getNodeBorder(node: SceneNode): { borderWidth: number; borderColor: string | null } {
+function getNodeBorder(node: SceneNode, width = 1, height = 1): { borderWidth: number; borderColor: string | null } {
   if (!('strokeWeight' in node)) return { borderWidth: 0, borderColor: null };
   const stroke = getVisibleStrokes(node)[0];
   if (!stroke) return { borderWidth: 0, borderColor: null };
@@ -347,7 +481,7 @@ function getNodeBorder(node: SceneNode): { borderWidth: number; borderColor: str
   if (borderWidth <= 0) return { borderWidth: 0, borderColor: null };
   if (stroke.type === 'SOLID') return { borderWidth, borderColor: rgbaToCss(stroke.color, stroke.opacity ?? 1) };
   if (stroke.type === 'GRADIENT_LINEAR' || stroke.type === 'GRADIENT_RADIAL' || stroke.type === 'GRADIENT_ANGULAR' || stroke.type === 'GRADIENT_DIAMOND') {
-    return { borderWidth, borderColor: gradientPaintToCss(stroke) };
+    return { borderWidth, borderColor: gradientPaintToCss(stroke, width, height) };
   }
   return { borderWidth, borderColor: null };
 }
@@ -435,6 +569,40 @@ function canExportAsGroupedVector(node: SceneNode): boolean {
   return node.children.every((child) => isVectorLikeNode(child as SceneNode));
 }
 
+function hasDirectMaskChild(node: SceneNode): boolean {
+  if (!nodeSupportsChildren(node) || !node.children.length) return false;
+  return node.children.some((child) => !!(child as MaskNode)?.isMask);
+}
+
+function hasUnsupportedShearTransform(node: SceneNode): boolean {
+  const transform = node.relativeTransform;
+  if (!Array.isArray(transform) || transform.length < 2) return false;
+  const xAxis = { x: clampNumber(transform[0][0], 1), y: clampNumber(transform[1][0], 0) };
+  const yAxis = { x: clampNumber(transform[0][1], 0), y: clampNumber(transform[1][1], 1) };
+  const xLength = Math.hypot(xAxis.x, xAxis.y);
+  const yLength = Math.hypot(yAxis.x, yAxis.y);
+  if (xLength <= 0.0001 || yLength <= 0.0001) return false;
+  const dot = (xAxis.x * yAxis.x) + (xAxis.y * yAxis.y);
+  const normalizedDot = dot / (xLength * yLength);
+  return Math.abs(normalizedDot) > 0.001;
+}
+
+function shouldFlattenTextToSvg(node: SceneNode): boolean {
+  if (node.type !== 'TEXT') return false;
+  if (hasUnsupportedShearTransform(node)) return true;
+  const fills = getVisiblePaints(node);
+  if (!fills.length) return false;
+  if (fills.length > 1) return true;
+  return fills.some((paint) => paint.type === 'IMAGE');
+}
+
+function shouldFlattenNodeToSvg(node: SceneNode): boolean {
+  if (shouldExportAsVector(node) || canExportAsGroupedVector(node) || node.type === 'LINE') return false;
+  if (hasDirectMaskChild(node)) return false;
+  if (shouldFlattenTextToSvg(node)) return true;
+  return hasUnsupportedShearTransform(node);
+}
+
 function getTextValue<T>(value: T | PluginAPI['mixed'], fallback: T): T {
   return value === figma.mixed || value == null ? fallback : value;
 }
@@ -498,6 +666,14 @@ function getNodeSizing(node: SceneNode): Pick<TeleportNode, 'widthMode' | 'heigh
   };
 }
 
+function mapLayoutAlign(value: LayoutSizedNode['layoutAlign']): TeleportNode['alignSelf'] | undefined {
+  if (value === 'MIN') return 'flex-start';
+  if (value === 'CENTER') return 'center';
+  if (value === 'MAX') return 'flex-end';
+  if (value === 'STRETCH') return 'stretch';
+  return undefined;
+}
+
 async function getStyleByIdSafe(styleId: string | null | undefined): Promise<BaseStyle | null> {
   if (!styleId) return null;
   if (typeof figma.getStyleByIdAsync === 'function') {
@@ -521,7 +697,7 @@ async function collectTeleportStyles(selection: readonly SceneNode[]): Promise<T
       if (!seen.has(key) && style?.type === 'PAINT') {
         seen.add(key);
         const paints = getVisiblePaints(node);
-        const paintStyle = await getPaintStyle(paints[0]);
+        const paintStyle = await getPaintStyle(paints[0], round('width' in node ? node.width : 1, 1), round('height' in node ? node.height : 1, 1));
         const value = typeof paintStyle.backgroundColor === 'string' && paintStyle.backgroundColor
           ? paintStyle.backgroundColor
           : (typeof paintStyle.backgroundImage === 'string' ? paintStyle.backgroundImage : '');
@@ -589,7 +765,7 @@ async function collectTeleportStyles(selection: readonly SceneNode[]): Promise<T
       const key = `stroke:${styledNode.strokeStyleId}`;
       if (!seen.has(key) && style?.type === 'PAINT') {
         seen.add(key);
-        const border = getNodeBorder(node);
+        const border = getNodeBorder(node, round('width' in node ? node.width : 1, 1), round('height' in node ? node.height : 1, 1));
         if (border.borderWidth > 0) {
           elementStyles.push({
             id: `figma-stroke-${styledNode.strokeStyleId}`,
@@ -625,7 +801,8 @@ async function collectTeleportStyles(selection: readonly SceneNode[]): Promise<T
 }
 
 function shouldExportAsImage(node: SceneNode): boolean {
-  return !nodeSupportsChildren(node) && getVisiblePaints(node).some((paint) => paint.type === 'IMAGE');
+  const fills = getVisiblePaints(node);
+  return !nodeSupportsChildren(node) && fills.length === 1 && fills[0]?.type === 'IMAGE';
 }
 
 function shouldExportAsVector(node: SceneNode): boolean {
@@ -650,6 +827,59 @@ function bytesToString(bytes: Uint8Array): string {
 async function exportNodeAsSvgMarkup(node: SceneNode): Promise<string> {
   const bytes = await node.exportAsync({ format: 'SVG' });
   return bytesToString(bytes);
+}
+
+async function buildFillLayerNodes(node: SceneNode, width: number, height: number): Promise<TeleportNode[]> {
+  const fills = getVisiblePaints(node);
+  if (fills.length <= 1) return [];
+  const radius = getNodeBorderRadiusData(node, width, height);
+  const fillLayers = await Promise.all(fills.map(async (paint, index) => {
+    const fillStyle = await getPaintStyle(paint, width, height);
+    const blendMode = 'blendMode' in paint ? mapBlendMode(paint.blendMode) : 'normal';
+    return {
+      kind: 'frame' as const,
+      name: `${node.name || node.type} Fill ${index + 1}`,
+      x: 0,
+      y: 0,
+      width,
+      height,
+      rotation: 0,
+      visible: true,
+      opacity: 1,
+      mixBlendMode: blendMode,
+      widthMode: 'fixed' as const,
+      heightMode: 'fixed' as const,
+      positionType: 'absolute' as const,
+      absoluteInLayout: true,
+      backgroundColor: fillStyle.backgroundColor ?? 'transparent',
+      backgroundImage: fillStyle.backgroundImage,
+      backgroundSize: fillStyle.backgroundSize,
+      backgroundPosition: fillStyle.backgroundPosition,
+      brightness: fillStyle.brightness,
+      contrast: fillStyle.contrast,
+      saturation: fillStyle.saturation,
+      overflow: 'hidden' as const,
+      boxShadow: '',
+      blur: 0,
+      backdropBlur: 0,
+      layout: null,
+      children: [],
+      ...radius,
+    };
+  }));
+  return fillLayers;
+}
+
+async function buildSvgFallbackNode(node: SceneNode, baseMeta: Omit<TeleportNode, 'kind'>, width: number, height: number, borderWidth: number, borderColor: string | null): Promise<TeleportNode> {
+  return {
+    kind: 'vector',
+    ...baseMeta,
+    ...getNodeBorderRadiusData(node, width, height),
+    vectorKind: 'svg',
+    strokeColor: borderColor ?? undefined,
+    strokeWidth: borderWidth > 0 ? borderWidth : undefined,
+    svgMarkup: await exportNodeAsSvgMarkup(node),
+  };
 }
 
 function inferFontWeight(style: string): number {
@@ -738,10 +968,10 @@ async function convertNode(node: SceneNode, rootOffset: { x: number; y: number }
   const y = isRoot ? round(rootPosition.y - rootOffset.y, 0) : round('y' in node ? node.y : 0, 0);
   const width = round('width' in node ? node.width : 0, 0);
   const height = round('height' in node ? node.height : 0, 0);
-  const { borderWidth, borderColor } = getNodeBorder(node);
+  const { borderWidth, borderColor } = getNodeBorder(node, width, height);
   const { boxShadow, blur, backdropBlur } = getNodeEffects(node);
   const fills = getVisiblePaints(node);
-  const primaryFillStyle = await getPaintStyle(fills[0]);
+  const primaryFillStyle = await getPaintStyle(fills[0], width, height);
   const sizing = getNodeSizing(node);
   const baseMeta: Omit<TeleportNode, 'kind'> = {
     name: node.name || node.type,
@@ -759,12 +989,28 @@ async function convertNode(node: SceneNode, rootOffset: { x: number; y: number }
     heightFr: sizing.heightFr,
     positionType: sizing.positionType,
     absoluteInLayout: sizing.absoluteInLayout,
+    constraints: getNodeConstraints(node, width, height),
+    alignSelf: mapLayoutAlign((node as LayoutSizedNode).layoutAlign),
     borderWidth,
     borderColor: borderColor ?? undefined,
     boxShadow,
     blur,
     backdropBlur,
   };
+
+  if (hasDirectMaskChild(node)) {
+    return {
+      kind: 'image',
+      ...baseMeta,
+      ...getNodeBorderRadiusData(node, width, height),
+      src: await exportNodeAsPngDataUrl(node),
+      objectFit: 'cover',
+    };
+  }
+
+  if (shouldFlattenNodeToSvg(node)) {
+    return await buildSvgFallbackNode(node, baseMeta, width, height, borderWidth, borderColor);
+  }
 
   if (node.type === 'TEXT') {
     const segments = getStyledSegments(node);
@@ -793,9 +1039,7 @@ async function convertNode(node: SceneNode, rootOffset: { x: number; y: number }
       letterSpacingUnit: primaryLetterSpacing.unit,
       textTransform: primarySegment ? getTextCaseCss(primarySegment.textCase) : 'none',
       textDecoration: primarySegment ? getTextDecorationCss(primarySegment.textDecoration) : 'none',
-      backgroundColor: typeof primaryFillStyle.backgroundColor === 'string' && primaryFillStyle.backgroundColor.includes('gradient(')
-        ? 'transparent'
-        : (primaryFillStyle.backgroundColor ?? 'transparent'),
+      backgroundColor: primaryFillStyle.backgroundColor ?? 'transparent',
     };
   }
 
@@ -806,6 +1050,9 @@ async function convertNode(node: SceneNode, rootOffset: { x: number; y: number }
       ...baseMeta,
       ...getNodeBorderRadiusData(node, width, height),
       src: imagePaint?.imageHash ? await imageHashToDataUrl(imagePaint.imageHash) : await exportNodeAsPngDataUrl(node),
+      brightness: primaryFillStyle.brightness,
+      contrast: primaryFillStyle.contrast,
+      saturation: primaryFillStyle.saturation,
       objectFit: primaryFillStyle.objectFit ?? 'cover',
     };
   }
@@ -822,18 +1069,11 @@ async function convertNode(node: SceneNode, rootOffset: { x: number; y: number }
   }
 
   if (shouldExportAsVector(node) || canExportAsGroupedVector(node)) {
-    return {
-      kind: 'vector',
-      ...baseMeta,
-      ...getNodeBorderRadiusData(node, width, height),
-      vectorKind: 'svg',
-      strokeColor: borderColor ?? undefined,
-      strokeWidth: borderWidth > 0 ? borderWidth : undefined,
-      svgMarkup: await exportNodeAsSvgMarkup(node),
-    };
+    return await buildSvgFallbackNode(node, baseMeta, width, height, borderWidth, borderColor);
   }
 
   const layout = getNodeLayout(node);
+  const fillLayers = await buildFillLayerNodes(node, width, height);
   const children = nodeSupportsChildren(node)
     ? (await Promise.all(node.children.map((child) => convertNode(child as SceneNode, rootOffset, false)))).filter((child): child is TeleportNode => !!child)
     : [];
@@ -842,13 +1082,16 @@ async function convertNode(node: SceneNode, rootOffset: { x: number; y: number }
     kind: 'frame',
     ...baseMeta,
     ...getNodeBorderRadiusData(node, width, height),
-    backgroundColor: primaryFillStyle.backgroundColor ?? 'transparent',
-    backgroundImage: primaryFillStyle.backgroundImage,
-    backgroundSize: primaryFillStyle.backgroundSize,
-    backgroundPosition: primaryFillStyle.backgroundPosition,
+    backgroundColor: fillLayers.length ? 'transparent' : (primaryFillStyle.backgroundColor ?? 'transparent'),
+    backgroundImage: fillLayers.length ? undefined : primaryFillStyle.backgroundImage,
+    backgroundSize: fillLayers.length ? undefined : primaryFillStyle.backgroundSize,
+    backgroundPosition: fillLayers.length ? undefined : primaryFillStyle.backgroundPosition,
+    brightness: fillLayers.length ? undefined : primaryFillStyle.brightness,
+    contrast: fillLayers.length ? undefined : primaryFillStyle.contrast,
+    saturation: fillLayers.length ? undefined : primaryFillStyle.saturation,
     overflow: 'clipsContent' in node && node.clipsContent ? 'hidden' : 'visible',
     layout,
-    children,
+    children: [...fillLayers, ...children],
   };
 }
 

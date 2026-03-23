@@ -7,6 +7,7 @@ import { sanitizeSvgMarkup } from './iconLibrary';
 import { getHoverAnimationStyle, getLoopAnimationStyle, useLoopAnimationPlayback } from './loopAnimation';
 import { getResolvedRichTextHtml } from './richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from './videoUtils';
+import { buildElementRotationTransform, hasElement3DRotation } from '../utils/elementTransform';
 
 gsap.registerPlugin(Flip);
 
@@ -17,6 +18,46 @@ function isObject(value) {
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function getConstraintMode(constraints, axis = 'horizontal') {
+  const raw = constraints && typeof constraints === 'object' ? constraints : {};
+  if (axis === 'horizontal') {
+    if (typeof raw.horizontal === 'string') return raw.horizontal;
+    if (raw.left && raw.right) return 'stretch';
+    if (raw.right && !raw.left) return 'right';
+    return 'left';
+  }
+  if (typeof raw.vertical === 'string') return raw.vertical;
+  if (raw.top && raw.bottom) return 'stretch';
+  if (raw.bottom && !raw.top) return 'bottom';
+  return 'top';
+}
+
+function clampFilterPercent(value, fallback = 100) {
+  const parsed = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(200, parsed));
+}
+
+function formatFilterNumber(value) {
+  return `${Math.round(value * 1000) / 1000}`;
+}
+
+function buildElementFilter(styles) {
+  if (!styles || typeof styles !== 'object') return undefined;
+  const blur = Math.max(0, typeof styles.blur === 'number' ? styles.blur : parseFloat(styles.blur) || 0);
+  const brightness = clampFilterPercent(styles.brightness, 100);
+  const contrast = clampFilterPercent(styles.contrast, 100);
+  const saturation = clampFilterPercent(styles.saturation, 100);
+  const filters = [];
+
+  if (Math.abs(brightness - 100) > 0.01) filters.push(`brightness(${formatFilterNumber(brightness)}%)`);
+  if (Math.abs(contrast - 100) > 0.01) filters.push(`contrast(${formatFilterNumber(contrast)}%)`);
+  if (Math.abs(saturation - 100) > 0.01) filters.push(`saturate(${formatFilterNumber(saturation)}%)`);
+  if (blur > 0.01) filters.push(`blur(${formatFilterNumber(blur)}px)`);
+
+  return filters.length ? filters.join(' ') : undefined;
 }
 
 function getScrollSequenceFrameList(value) {
@@ -309,7 +350,7 @@ function addPhysicsSpringSequence(timeline, node, startState, spring, at = 0) {
 }
 
 function addWrapperPhysicsSequence(timeline, node, spring, at = 0) {
-  gsap.set(node, { scaleX: 0.935, scaleY: 0.935, transformOrigin: 'top left' });
+  gsap.set(node, { scaleX: 0.935, scaleY: 0.935, transformOrigin: 'center center' });
   addPhysicsSpringSequence(timeline, node, {
     x: 0,
     y: 0,
@@ -340,7 +381,7 @@ function getEnterTweenVars(transition) {
       duration: getTransitionDurationMs(transition) / 1000,
       ease: transition.springMode === 'physics' ? `elastic.out(1, ${Math.max(0.2, transition.mass * 0.45)})` : `back.out(${1 + transition.bounce * 1.2})`,
       clearProps: 'opacity,transform,visibility,pointerEvents',
-      transformOrigin: 'top left',
+      transformOrigin: 'center center',
       startAt: { opacity: 0, y: 0, scale: Math.max(0.94, overshoot - 0.06) },
     };
   }
@@ -351,7 +392,7 @@ function getEnterTweenVars(transition) {
     duration: getTransitionDurationMs(transition) / 1000,
     ease: getTransitionEasing(transition),
     clearProps: 'opacity,transform,visibility,pointerEvents',
-    transformOrigin: 'top left',
+    transformOrigin: 'center center',
     startAt: { opacity: 0, y: 0, scale: 0.992 },
   };
 }
@@ -364,7 +405,7 @@ function getExitTweenVars(transition) {
     duration: getTransitionDurationMs(transition) / 1000,
     ease: transition.type === 'realistic' ? 'power2.in' : getTransitionEasing(transition),
     clearProps: 'opacity,transform,visibility,pointerEvents',
-    transformOrigin: 'top left',
+    transformOrigin: 'center center',
   };
 }
 
@@ -392,10 +433,10 @@ function animateVariantWrappers(current, next, transition, options = {}) {
   if (transition.type === 'realistic' && transition.springMode === 'physics') {
     const spring = getPhysicsSpringConfig(transition);
     const timeline = gsap.timeline({ defaults: { overwrite: true } });
-    gsap.set(current, { opacity: 1, x: 0, scaleX: 1, scaleY: 1, transformOrigin: 'top left' });
+    gsap.set(current, { opacity: 1, x: 0, scaleX: 1, scaleY: 1, transformOrigin: 'center center' });
     gsap.set(next, {
       opacity: crossfadeVariants ? 0 : 1,
-      transformOrigin: 'top left',
+      transformOrigin: 'center center',
     });
     timeline.to(current, {
       ...(crossfadeVariants ? { opacity: 0 } : null),
@@ -427,12 +468,12 @@ function animateVariantWrappers(current, next, transition, options = {}) {
   if (transition.type === 'realistic') {
     const profile = getRealisticProfile(transition);
     const timeline = gsap.timeline({ defaults: { overwrite: true } });
-    gsap.set(current, { opacity: 1, x: 0, scale: 1, transformOrigin: 'top left' });
+    gsap.set(current, { opacity: 1, x: 0, scale: 1, transformOrigin: 'center center' });
     gsap.set(next, {
       opacity: crossfadeVariants ? 0 : 1,
       x: -travel * 0.82 * direction,
       scale: 0.94,
-      transformOrigin: 'top left',
+      transformOrigin: 'center center',
     });
     timeline.to(current, {
       ...(crossfadeVariants ? { opacity: 0 } : null),
@@ -461,8 +502,8 @@ function animateVariantWrappers(current, next, transition, options = {}) {
   const duration = getTransitionDurationMs(transition) / 1000;
   const ease = getTransitionEasing(transition);
   const timeline = gsap.timeline({ defaults: { overwrite: true } });
-  gsap.set(current, { opacity: 1, x: 0, scale: 1, transformOrigin: 'top left' });
-  gsap.set(next, { opacity: 0, x: -travel * 0.72 * direction, scale: 0.992, transformOrigin: 'top left' });
+  gsap.set(current, { opacity: 1, x: 0, scale: 1, transformOrigin: 'center center' });
+  gsap.set(next, { opacity: 0, x: -travel * 0.72 * direction, scale: 0.992, transformOrigin: 'center center' });
   timeline.to(current, {
     opacity: 0,
     x: travel * 0.18 * direction,
@@ -654,6 +695,8 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const effectiveFlowPosition = isRelative || isSticky;
   const parentElement = element.parentId ? indexById.get(element.parentId) ?? null : null;
   const parentResolved = parentElement ? resolveElement(parentElement, bpId) : null;
+  const absoluteContainerW = parentResolved?.width ?? 0;
+  const absoluteContainerH = parentResolved?.height ?? 0;
   const parentDir = (() => {
     if (!effectiveFlowPosition) return 'block';
     if (parentResolved?.styles?.display === 'flex') return parentResolved.styles.flexDirection ?? 'row';
@@ -673,7 +716,23 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     : undefined;
   const fillFlexBasis = fillFlexGrow != null ? '0%' : undefined;
   const fillFlexShrink = fillFlexGrow != null ? 1 : undefined;
+  const explicitAlignSelf = ['auto', 'flex-start', 'center', 'flex-end', 'stretch'].includes(styles?.alignSelf)
+    ? styles.alignSelf
+    : undefined;
+  const constraintHorizontal = getConstraintMode(resolved?.constraints, 'horizontal');
+  const constraintVertical = getConstraintMode(resolved?.constraints, 'vertical');
+  const displayWidthPx = widthMode === 'relative' ? ((absoluteContainerW || 0) * (widthPct / 100)) : (widthMode === 'fill' ? (absoluteContainerW || 0) : width);
+  const displayHeightPx = heightMode === 'relative' ? ((absoluteContainerH || 0) * (heightPct / 100)) : (heightMode === 'fill' ? (absoluteContainerH || 0) : height);
+  const absoluteRight = (absoluteContainerW || 0) - (resolved?.x ?? 0) - displayWidthPx;
+  const absoluteBottom = (absoluteContainerH || 0) - (resolved?.y ?? 0) - displayHeightPx;
+  const absoluteCenterOffsetX = (resolved?.x ?? 0) - (((absoluteContainerW || 0) - displayWidthPx) / 2);
+  const absoluteCenterOffsetY = (resolved?.y ?? 0) - (((absoluteContainerH || 0) - displayHeightPx) / 2);
   const stickyAlignSelf = isSticky && parentCrossAlign ? parentCrossAlign : undefined;
+  const fillAlignSelf = explicitAlignSelf ?? (
+    (hFill && parentDir === 'row') || (wFill && parentDir === 'column')
+      ? 'stretch'
+      : undefined
+  );
   const stickyFlowMargins = (() => {
     if (!isSticky || !parentCrossAlign) return null;
     if (parentDir === 'column') {
@@ -721,7 +780,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const backgroundImage = String(styles?.backgroundColor ?? '').includes('gradient(')
     ? styles.backgroundColor
     : (backgroundImageUrl ? `url(${backgroundImageUrl})` : undefined);
-  const baseTransform = resolved?.rotation ? `rotate(${resolved.rotation}deg)` : '';
+  const baseTransform = buildElementRotationTransform(resolved ?? element ?? {});
   const isLoopPreviewActive = !!activeLoopAnimation
     && loopAnimationPreview?.elementId === element.id
     && loopAnimationPreview?.bpId === bpId
@@ -733,28 +792,75 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
   const loopAnimationPlayState = useLoopAnimationPlayback(nodeRef, isLoopPreviewActive, activeLoopAnimation?.offscreenBehavior);
   const loopAnimationStyle = getLoopAnimationStyle(isLoopPreviewActive ? activeLoopAnimation : null, baseTransform, loopAnimationPlayState);
   const baseOpacity = resolved?.hidden ? 0 : (styles?.opacity ?? 1);
-  const hoverAnimationStyle = (!loopAnimationStyle || isHoverAnimationActive)
-    ? getHoverAnimationStyle(isHoverPreviewActive ? activeHoverAnimation : null, baseTransform, baseOpacity, isHoverAnimationActive && isHoverPreviewActive)
+  const hoverAnimationStyle = isHoverPreviewActive
+    ? getHoverAnimationStyle(activeHoverAnimation, baseTransform, baseOpacity, isHoverAnimationActive)
     : null;
   const activeAnimationStyle = hoverAnimationStyle ?? loopAnimationStyle;
+  const elementFilter = buildElementFilter(styles);
+  const absoluteConstraintTransforms = [];
+  const absolutePositionStyle = !effectiveFlowPosition ? (() => {
+    const nextStyle = {
+      left: resolved?.x ?? 0,
+      top: resolved?.y ?? 0,
+      width: widthMode === 'hug' ? 'fit-content' : (widthMode === 'relative' ? `${widthPct}%` : width),
+      height: heightMode === 'hug' ? 'fit-content' : (heightMode === 'relative' ? `${heightPct}%` : height),
+    };
+
+    if (widthMode === 'fill') {
+      nextStyle.left = 0;
+      nextStyle.right = 0;
+      nextStyle.width = 'auto';
+    } else if (constraintHorizontal === 'stretch') {
+      nextStyle.left = resolved?.x ?? 0;
+      nextStyle.right = absoluteRight;
+      nextStyle.width = 'auto';
+    } else if (constraintHorizontal === 'right') {
+      delete nextStyle.left;
+      nextStyle.right = absoluteRight;
+    } else if (constraintHorizontal === 'center') {
+      nextStyle.left = `calc(50% + ${absoluteCenterOffsetX}px)`;
+      absoluteConstraintTransforms.push('translateX(-50%)');
+    }
+
+    if (heightMode === 'fill') {
+      nextStyle.top = 0;
+      nextStyle.bottom = 0;
+      nextStyle.height = 'auto';
+    } else if (constraintVertical === 'stretch') {
+      nextStyle.top = resolved?.y ?? 0;
+      nextStyle.bottom = absoluteBottom;
+      nextStyle.height = 'auto';
+    } else if (constraintVertical === 'bottom') {
+      delete nextStyle.top;
+      nextStyle.bottom = absoluteBottom;
+    } else if (constraintVertical === 'center') {
+      nextStyle.top = `calc(50% + ${absoluteCenterOffsetY}px)`;
+      absoluteConstraintTransforms.push('translateY(-50%)');
+    }
+
+    return nextStyle;
+  })() : null;
+  const baseTransformWithConstraints = [...absoluteConstraintTransforms, ...(baseTransform ? [baseTransform] : [])].join(' ') || undefined;
 
   const style = {
     position: isSticky ? 'sticky' : (isRelative ? 'relative' : 'absolute'),
     '--fb-sticky-top': isSticky ? `${stickyTop}px` : undefined,
-    left: (isRelative || isSticky) ? undefined : resolved?.x ?? 0,
-    top: isSticky ? stickyTop : ((isRelative && !isSticky) ? undefined : resolved?.y ?? 0),
-    width: wFill ? fillW : (widthMode === 'hug' ? 'fit-content' : widthMode === 'relative' ? `${widthPct}%` : width),
-    height: hFill ? fillH : (heightMode === 'hug' ? 'fit-content' : heightMode === 'relative' ? `${heightPct}%` : height),
+    ...(effectiveFlowPosition ? {} : absolutePositionStyle),
+    top: isSticky ? stickyTop : ((isRelative && !isSticky) ? undefined : absolutePositionStyle?.top),
+    width: effectiveFlowPosition ? (wFill ? fillW : (widthMode === 'hug' ? 'fit-content' : widthMode === 'relative' ? `${widthPct}%` : width)) : absolutePositionStyle?.width,
+    height: effectiveFlowPosition ? (hFill ? fillH : (heightMode === 'hug' ? 'fit-content' : heightMode === 'relative' ? `${heightPct}%` : height)) : absolutePositionStyle?.height,
     flexGrow: fillFlexGrow,
     flexShrink: fillFlexShrink,
     flexBasis: fillFlexBasis,
-    alignSelf: stickyAlignSelf,
+    alignSelf: isSticky ? (explicitAlignSelf ?? stickyAlignSelf) : fillAlignSelf,
     ...(stickyFlowMargins ?? {}),
     minWidth: effectiveFlowPosition ? flowMinWidth : (resolved?.minW ?? undefined),
     maxWidth: resolved?.maxW ?? undefined,
     minHeight: effectiveFlowPosition ? flowMinHeight : (resolved?.minH ?? undefined),
     maxHeight: resolved?.maxH ?? undefined,
-    transform: activeAnimationStyle ? undefined : (baseTransform || undefined),
+    transform: activeAnimationStyle ? undefined : baseTransformWithConstraints,
+    transformOrigin: 'center center',
+    transformStyle: hasElement3DRotation(resolved ?? element ?? {}) ? 'preserve-3d' : undefined,
     backgroundColor,
     backgroundImage,
     backgroundSize: backgroundImage ? (styles?.backgroundSize ?? 'cover') : undefined,
@@ -768,7 +874,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     overflow: styles?.overflow,
     boxShadow: styles?.boxShadow,
     mixBlendMode: styles?.mixBlendMode && styles.mixBlendMode !== 'normal' ? styles.mixBlendMode : undefined,
-    filter: (styles?.blur ?? 0) > 0 ? `blur(${styles.blur}px)` : undefined,
+    filter: elementFilter,
     backdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
     WebkitBackdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
     display: styles?.display,
@@ -786,6 +892,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     ...(activeAnimationStyle ?? {}),
   };
 
+  const textHasGradientFill = typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(');
   const textStyle = element.type === 'text' ? {
     fontFamily: familyToFontStack(styles?.fontFamily ?? 'Inter'),
     fontWeight: styles?.fontWeight ?? 400,
@@ -793,13 +900,17 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     fontSize: `${styles?.fontSize ?? 42}${styles?.fontSizeUnit ?? 'px'}`,
     lineHeight: `${styles?.lineHeight ?? 1.2}${styles?.lineHeightUnit ?? 'em'}`,
     letterSpacing: `${styles?.letterSpacing ?? 0}${styles?.letterSpacingUnit ?? 'em'}`,
-    color: styles?.color ?? '#000',
+    color: textHasGradientFill ? 'transparent' : (styles?.color ?? '#000'),
     textAlign: styles?.textAlign ?? 'left',
     textDecoration: styles?.textDecoration ?? 'none',
     whiteSpace: widthMode === 'hug' && heightMode === 'hug' ? 'pre' : 'pre-wrap',
     wordBreak: 'break-word',
     width: '100%',
     display: 'block',
+    backgroundImage: textHasGradientFill ? styles.backgroundColor : undefined,
+    backgroundClip: textHasGradientFill ? 'text' : undefined,
+    WebkitBackgroundClip: textHasGradientFill ? 'text' : undefined,
+    WebkitTextFillColor: textHasGradientFill ? 'transparent' : undefined,
     '--fb-text-stroke-width': strokeWidth > 0 ? `${strokeWidth}px` : undefined,
     '--fb-text-stroke-color': strokeWidth > 0 ? strokeColor : undefined,
   } : null;

@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import VariantTransitionModal from './VariantTransitionModal';
 import { UIIcons } from './UIIcons';
+import { resolveFloatingInspectorPosition } from '../utils/rect';
 
 const ENTER_PRESETS = [
   {
@@ -47,6 +48,13 @@ function summarizeEnterEffect(effect) {
   return parts.join(' · ');
 }
 
+function hasPatchState(state) {
+  if (!state || typeof state !== 'object') return false;
+  const layout = state.layout && typeof state.layout === 'object' ? state.layout : null;
+  const styles = state.styles && typeof state.styles === 'object' ? state.styles : null;
+  return Boolean((layout && Object.keys(layout).length) || (styles && Object.keys(styles).length));
+}
+
 function EffectNumberRow({ label, value, min, max, step = 0.01, onChange, rangeMin = null, rangeMax = null, rangeStep = null, className = '' }) {
   return (
     <label className={`fb-animation-modal__control-row${className ? ` ${className}` : ''}`}>
@@ -68,6 +76,42 @@ function summarizeVariantTargets(targets, variantOptions) {
     }
     return `${option?.label || 'Variant'} marker`;
   }).join(' · ');
+}
+
+function getAnimationModalTitle(type) {
+  if (type === 'enter') return 'Appear Animation';
+  if (type === 'scroll') return 'Scroll Animation';
+  if (type === 'loop') return 'Loop Animation';
+  if (type === 'hover') return 'Hover Animation';
+  return 'Scroll Variant';
+}
+
+function getAnimationModalSubtitle(draft, triggerLabel) {
+  if (!draft) return '';
+  if (draft.type === 'scroll') return triggerLabel || 'Link scroll range and start state.';
+  if (draft.type === 'enter') return 'Tune the effect and optional start-state patch.';
+  if (draft.type === 'loop') return 'Continuous motion with timing and off-screen behavior.';
+  if (draft.type === 'hover') return 'Interactive motion applied while the pointer is over the element.';
+  return triggerLabel || 'Switch variants from scroll markers.';
+}
+
+function SummaryChip({ label, value }) {
+  if (!value) return null;
+  return (
+    <div className="fb-element-animation-modal__summary-chip">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function CanvasEditActionButton({ icon, label, onClick }) {
+  return (
+    <button type="button" className="fb-secondary-btn fb-prop-action-btn fb-prop-action-btn--canvas" onClick={onClick}>
+      <span className="fb-prop-action-btn__icon" aria-hidden="true">{icon}</span>
+      <span>{label}</span>
+    </button>
+  );
 }
 
 function TransitionSummaryButton({ transition, onClick }) {
@@ -100,7 +144,7 @@ function EnterEffectEditorModal({ effect, preset, onCancel, onSave }) {
   };
 
   return (
-    <div className="fb-overlay-modal" onMouseDown={onCancel}>
+    <div className="fb-overlay-modal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
       <div className="fb-overlay-modal__card fb-enter-effect-modal" onMouseDown={(event) => event.stopPropagation()}>
         <button type="button" className="fb-variant-transition-modal__close" onClick={onCancel} aria-label="Close enter effect modal">×</button>
         <div className="fb-variant-transition-modal__title">Enter Effect</div>
@@ -170,6 +214,8 @@ function EnterEffectEditorModal({ effect, preset, onCancel, onSave }) {
 
 export default function ElementAnimationModal({
   animation,
+  anchorRect = null,
+  containerRect = null,
   variantOptions = [],
   onClose,
   onDelete,
@@ -181,6 +227,7 @@ export default function ElementAnimationModal({
   const [transitionOpen, setTransitionOpen] = useState(false);
   const [effectEditorOpen, setEffectEditorOpen] = useState(false);
   const isFloatingCompactEditor = draft?.type === 'loop' || draft?.type === 'hover';
+  const modalRef = useRef(null);
 
   useEffect(() => {
     setDraft(animation);
@@ -200,6 +247,23 @@ export default function ElementAnimationModal({
     return () => window.removeEventListener('keydown', handleEscape);
   }, [isFloatingCompactEditor, onClose]);
 
+  useEffect(() => {
+    if (isFloatingCompactEditor) return undefined;
+    const handlePointerDown = (event) => {
+      if (modalRef.current?.contains(event.target)) return;
+      onClose();
+    };
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isFloatingCompactEditor, onClose]);
+
   const triggerLabel = useMemo(() => {
     if (draft.type === 'scroll') {
       if (Number.isFinite(draft.startOffsetPx) && Number.isFinite(draft.endOffsetPx)) {
@@ -210,6 +274,13 @@ export default function ElementAnimationModal({
     if (draft.type === 'scroll-variant') return summarizeVariantTargets(draft.targets, variantOptions);
     return null;
   }, [draft, variantOptions]);
+  const title = getAnimationModalTitle(draft?.type);
+  const subtitle = getAnimationModalSubtitle(draft, triggerLabel);
+  const isDockedInspector = !isFloatingCompactEditor;
+  const dockedInspectorStyle = useMemo(() => {
+    if (!isDockedInspector) return undefined;
+    return resolveFloatingInspectorPosition({ anchorRect, containerRect });
+  }, [anchorRect, containerRect, isDockedInspector]);
 
   const saveAndClose = () => {
     onSave(draft);
@@ -217,8 +288,15 @@ export default function ElementAnimationModal({
   };
 
   const openCanvasEditor = (mode) => {
-    onSave(draft);
     onOpenEditor(mode, draft);
+  };
+
+  const resetStartState = () => {
+    if (draft.type !== 'scroll' && draft.type !== 'enter') return;
+    setDraft((current) => ({
+      ...current,
+      startState: { layout: {}, styles: {} },
+    }));
   };
 
   const content = (() => {
@@ -246,9 +324,13 @@ export default function ElementAnimationModal({
           <div className="fb-artboard-bp-note">{summarizeEnterEffect(draft.effect)}</div>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Start State</span>
-            <button type="button" className="fb-secondary-btn fb-prop-action-btn" onClick={() => openCanvasEditor('enter-start')}>
-              Edit on canvas
-            </button>
+            <div className="fb-animation-modal__action-group">
+              <CanvasEditActionButton icon={UIIcons.select} label="Edit on canvas" onClick={() => openCanvasEditor('enter-start')} />
+              <button type="button" className="fb-secondary-btn fb-prop-action-btn" onClick={resetStartState} disabled={!hasPatchState(draft.startState)}>
+                <span className="fb-prop-action-btn__icon" aria-hidden="true">{UIIcons.undo}</span>
+                <span>Reset</span>
+              </button>
+            </div>
           </div>
           <div className="fb-artboard-bp-note">Base UI is the final state. Canvas editing defines the appear start state.</div>
           <div className="fb-prop-row">
@@ -271,18 +353,20 @@ export default function ElementAnimationModal({
         <>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Markers</span>
-            <button type="button" className="fb-secondary-btn fb-prop-action-btn" onClick={() => openCanvasEditor('scroll-range')}>
-              Edit on canvas
-            </button>
+            <CanvasEditActionButton icon={UIIcons.flow} label="Markers on canvas" onClick={() => openCanvasEditor('scroll-range')} />
           </div>
-          <div className="fb-artboard-bp-note">Base UI is the start state. Drag the start and end markers on canvas.</div>
+          <div className="fb-artboard-bp-note">Base UI is the end state. Marker 0px is the selected element top. Start and end markers are measured from there with negative or positive px values.</div>
           <div className="fb-prop-row">
-            <span className="fb-prop-label">End State</span>
-            <button type="button" className="fb-secondary-btn fb-prop-action-btn" onClick={() => openCanvasEditor('scroll-effect')}>
-              Edit on canvas
-            </button>
+            <span className="fb-prop-label">Start State</span>
+            <div className="fb-animation-modal__action-group">
+              <CanvasEditActionButton icon={UIIcons.select} label="Edit on canvas" onClick={() => openCanvasEditor('scroll-start')} />
+              <button type="button" className="fb-secondary-btn fb-prop-action-btn" onClick={resetStartState} disabled={!hasPatchState(draft.startState)}>
+                <span className="fb-prop-action-btn__icon" aria-hidden="true">{UIIcons.undo}</span>
+                <span>Reset</span>
+              </button>
+            </div>
           </div>
-          <div className="fb-artboard-bp-note">While end-state editing is active, changes on canvas write into the scroll animation end state.</div>
+          <div className="fb-artboard-bp-note">While start-state editing is active, changes on canvas write into the scroll animation start state.</div>
           <div className="fb-artboard-bp-note">{triggerLabel}</div>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Playback</span>
@@ -480,24 +564,35 @@ export default function ElementAnimationModal({
 
   const card = (
     <div
-      className={`fb-overlay-modal__card fb-element-animation-modal${isFloatingCompactEditor ? ' fb-element-animation-modal--floating' : ''}`}
+      className={`fb-overlay-modal__card fb-element-animation-modal${isFloatingCompactEditor ? ' fb-element-animation-modal--floating' : ' fb-element-animation-modal--inspector'}`}
+      ref={modalRef}
+      style={dockedInspectorStyle}
       onMouseDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
       <button type="button" className="fb-variant-transition-modal__close" onClick={onClose} aria-label="Close animation modal">×</button>
+      {isDockedInspector ? <div className="fb-element-animation-modal__kicker">Animation</div> : null}
       <div className="fb-element-animation-modal__header">
         <button type="button" className="fb-element-animation-modal__back" onClick={onClose} aria-label="Close animation modal">{UIIcons.arrowLeft}</button>
-        <div className="fb-variant-transition-modal__title">
-          {draft.type === 'enter'
-            ? 'Appear Animation'
-            : (draft.type === 'scroll'
-              ? 'Scroll Animation'
-              : (draft.type === 'loop'
-                ? 'Loop Animation'
-                : (draft.type === 'hover' ? 'Hover Animation' : 'Scroll Variant')))}
+        <div>
+          <div className="fb-variant-transition-modal__title">{title}</div>
+          {isDockedInspector && subtitle ? <div className="fb-element-animation-modal__subtitle">{subtitle}</div> : null}
         </div>
       </div>
-      <div className="fb-element-animation-modal__body">
+      {isDockedInspector ? (
+        <div className="fb-element-animation-modal__summary">
+          <SummaryChip label="Playback" value={draft.playback === 'replay' ? 'Replay' : 'Once'} />
+          <SummaryChip label="Transition" value={draft.transition?.type === 'realistic' ? 'Realistic' : (draft.transition?.type === 'instant' ? 'Instant' : 'Ease')} />
+          {draft.type === 'enter' ? <SummaryChip label="Preset" value={draft.preset === 'custom' ? 'Custom' : findPresetLabel(draft.preset)} /> : null}
+          {draft.type === 'loop' ? <SummaryChip label="Loop" value={draft.loopType === 'mirror' ? 'Mirror' : 'Loop'} /> : null}
+        </div>
+      ) : null}
+      {isDockedInspector && (draft.type === 'scroll' || draft.type === 'scroll-variant' || draft.type === 'enter') ? (
+        <div className="fb-element-animation-modal__inline-note">
+          Use the canvas edit actions here, then exit editing from the overlay on canvas.
+        </div>
+      ) : null}
+      <div className={`fb-element-animation-modal__body${isDockedInspector ? ' fb-element-animation-modal__body--inspector' : ''}`}>
         {content}
       </div>
       <div className="fb-variant-transition-modal__actions">
@@ -507,14 +602,12 @@ export default function ElementAnimationModal({
     </div>
   );
 
-  return (
+  const modalTree = (
     <>
       {isFloatingCompactEditor ? (
         card
       ) : (
-        <div className="fb-overlay-modal" onMouseDown={onClose}>
-          {card}
-        </div>
+        card
       )}
       {effectEditorOpen ? (
         <EnterEffectEditorModal
@@ -546,4 +639,6 @@ export default function ElementAnimationModal({
       ) : null}
     </>
   );
+
+  return modalTree;
 }

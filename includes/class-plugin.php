@@ -317,11 +317,15 @@ class FrameBuilder_Plugin {
 		$assets_dir = FB_DIR . 'assets/';
 		$gsap_version = self::asset_version( $assets_dir . 'gsap.min.js' );
 		$flip_version = self::asset_version( $assets_dir . 'Flip.min.js' );
+		$scroll_trigger_version = self::asset_version( $assets_dir . 'ScrollTrigger.min.js' );
 		if ( file_exists( $assets_dir . 'gsap.min.js' ) ) {
 			wp_enqueue_script( 'framebuilder-gsap', $assets_url . 'gsap.min.js', [], $gsap_version, false );
 		}
 		if ( file_exists( $assets_dir . 'Flip.min.js' ) ) {
 			wp_enqueue_script( 'framebuilder-gsap-flip', $assets_url . 'Flip.min.js', [ 'framebuilder-gsap' ], $flip_version, false );
+		}
+		if ( file_exists( $assets_dir . 'ScrollTrigger.min.js' ) ) {
+			wp_enqueue_script( 'framebuilder-gsap-scrolltrigger', $assets_url . 'ScrollTrigger.min.js', [ 'framebuilder-gsap' ], $scroll_trigger_version, false );
 		}
 
 		// Register a dedicated handle so inline style is always output,

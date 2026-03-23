@@ -10,6 +10,14 @@ defined( 'ABSPATH' ) || exit;
 
 global $post;
 $html = get_post_meta( $post->ID, '_fb_published_html', true );
+$layout_raw = get_post_meta( $post->ID, '_fb_layout', true );
+if ( is_string( $layout_raw ) && '' !== trim( $layout_raw ) ) {
+	$layout = json_decode( wp_unslash( $layout_raw ), true );
+	if ( is_array( $layout ) ) {
+		$exporter = new FrameBuilder_Exporter( $layout );
+		$html = $exporter->generate_html();
+	}
+}
 $global_variables_raw = get_option( '_fb_global_variables', '[]' );
 $global_variables = json_decode( $global_variables_raw, true );
 if ( ! is_array( $global_variables ) ) $global_variables = [];

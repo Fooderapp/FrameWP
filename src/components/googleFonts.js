@@ -33,7 +33,9 @@ const DEFAULT_FAMILIES = [
 ];
 
 let cachedFamilies = DEFAULT_FAMILIES;
+let catalogPromise = null;
 const loadedRequests = new Set();
+const GOOGLE_FONTS_CATALOG_URL = 'https://cdn.jsdelivr.net/npm/google-fonts-complete@latest/google-fonts.json';
 
 function familyToQuery(family) {
   return encodeURIComponent(String(family || '').trim()).replace(/%20/g, '+');
@@ -48,7 +50,24 @@ function buildFamilyRequest(family, options = {}) {
 }
 
 export function getGoogleFontsCatalog() {
-  return Promise.resolve(cachedFamilies);
+  if (cachedFamilies.length > DEFAULT_FAMILIES.length) return Promise.resolve(cachedFamilies);
+  if (!catalogPromise) {
+    catalogPromise = fetch(GOOGLE_FONTS_CATALOG_URL, { credentials: 'omit' })
+      .then((response) => {
+        if (!response.ok) throw new Error('Could not fetch Google Fonts catalog');
+        return response.json();
+      })
+      .then((catalog) => {
+        const families = Object.keys(catalog ?? {}).filter(Boolean).sort((left, right) => left.localeCompare(right));
+        if (families.length) cachedFamilies = families;
+        return cachedFamilies;
+      })
+      .catch(() => cachedFamilies)
+      .finally(() => {
+        catalogPromise = null;
+      });
+  }
+  return catalogPromise;
 }
 
 export function getCachedGoogleFontsCatalog() {

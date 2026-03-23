@@ -2,8 +2,7 @@ import React, { useState, useRef, useLayoutEffect } from 'react';
 import { useEditorStore, resolveBackground, resolveElementWithVariables, resolvePagePadding, resolvePageLayout, isElementSelected } from '../store/editorStore';
 import CanvasElement from './CanvasElement';
 import AnimationArtboardOverlay from '../components/AnimationArtboardOverlay';
-
-const HEADER_H = 36;
+import { ARTBOARD_HEADER_HEIGHT, resolveArtboardGroupStyle, resolveArtboardHeaderStyle, resolveArtboardResizeHandleStyle, resolveArtboardSurfaceStyle } from '../utils/artboardGeometry';
 
 /** Simple number input that allows clearing the field before retyping */
 function ArtboardNumInput({ value, min = 100, onChange }) {
@@ -158,12 +157,12 @@ export default function Artboard({
     /* Group: positioned so content starts at (bp.x, bp.y), header is above */
     <div
       className="fb-artboard-group"
-      style={{ left: bp.x, top: isComponentSurface ? bp.y : bp.y - HEADER_H / scale }}
+      style={resolveArtboardGroupStyle(bp, scale, isComponentSurface)}
     >
       {!isComponentSurface && (
         <div
           className={`fb-artboard-header${isArtboardSelected ? ' fb-artboard-header--selected' : ''}`}
-          style={{ width: bp.width }}
+          style={resolveArtboardHeaderStyle(bp)}
           onMouseDown={(e) => {
             if (e.target.tagName === 'INPUT') return;
             e.stopPropagation();
@@ -192,7 +191,7 @@ export default function Artboard({
         ref={boardRef}
         className={`fb-artboard${isArtboardSelected ? ' fb-artboard--selected' : ''}`}
         data-bp={bp.id}
-        style={{ width: bp.width, height: bp.height, background: isComponentSurface ? 'transparent' : background }}
+        style={resolveArtboardSurfaceStyle(bp, background, isComponentSurface)}
         onClick={handleBoardClick}
         data-surface-mode={surfaceMode}
       >
@@ -304,7 +303,7 @@ export default function Artboard({
         })}
       </div>
 
-      <AnimationArtboardOverlay bpId={bp.id} boardRef={boardRef} surfaceMode={surfaceMode} />
+      <AnimationArtboardOverlay bpId={bp.id} boardRef={contentRef} surfaceMode={surfaceMode} />
 
       {/* Off-canvas layer — zero-size div at artboard origin, overflow visible.
           Elements here are outside artboard bounds so not clipped. */}
@@ -312,7 +311,7 @@ export default function Artboard({
         <div style={{
           position: 'absolute',
           left: 0,
-          top: isComponentSurface ? 0 : HEADER_H / scale,
+          top: isComponentSurface ? 0 : ARTBOARD_HEADER_HEIGHT / scale,
           width: 0,
           height: 0,
           overflow: 'visible',
@@ -343,6 +342,7 @@ export default function Artboard({
       {!isComponentSurface && (
         <div
           className="fb-artboard-resize-handle"
+          style={resolveArtboardResizeHandleStyle(bp)}
           onMouseDown={(e) => {
             e.stopPropagation();
             onSelectArtboard(bp.id);

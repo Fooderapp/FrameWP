@@ -7,106 +7,67 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function getMarkerAnchorTop(elementRect) {
-  if (!elementRect) return 0;
-  return typeof elementRect.anchorTop === 'number' ? elementRect.anchorTop : elementRect.top;
-}
-
-function getAnchorRatio(elementRect, boardHeight) {
-  if (!elementRect || !boardHeight) return 0;
-  return clamp(getMarkerAnchorTop(elementRect) / boardHeight, 0, 1);
-}
-
-function getResolvedMarkerRatio(value, anchorRatio, fallback = 0.5, offsetPx = null, boardHeight = 0) {
-  const numericOffsetPx = typeof offsetPx === 'number' ? offsetPx : parseFloat(offsetPx);
-  if (Number.isFinite(numericOffsetPx) && Number.isFinite(boardHeight) && boardHeight > 0) {
-    return clamp(anchorRatio + (numericOffsetPx / boardHeight), 0, 1);
-  }
+function toFiniteNumber(value) {
   const numericValue = typeof value === 'number' ? value : parseFloat(value);
-  return clamp(Number.isFinite(numericValue) ? numericValue : fallback, 0, 1);
+  return Number.isFinite(numericValue) ? numericValue : null;
 }
 
-function getResolvedMarkerLocalY(value, elementRect, boardHeight, fallback = 0.5, offsetPx = null) {
-  const anchorRatio = getAnchorRatio(elementRect, boardHeight);
-  return getResolvedMarkerRatio(value, anchorRatio, fallback, offsetPx, boardHeight) * boardHeight;
+function getMarkerAnchorTop(measurement) {
+  if (!measurement) return 0;
+  return Number.isFinite(measurement.anchorTop) ? measurement.anchorTop : 0;
 }
 
-function getCanonicalMarkerOffsetPx(value, elementRect, boardHeight, fallback = 0.5, offsetPx = null) {
-  const numericOffsetPx = typeof offsetPx === 'number' ? offsetPx : parseFloat(offsetPx);
-  if (Number.isFinite(numericOffsetPx)) return numericOffsetPx;
-  if (!elementRect || !boardHeight) return null;
-  return getResolvedMarkerLocalY(value, elementRect, boardHeight, fallback, offsetPx) - getMarkerAnchorTop(elementRect);
-}
-
-function getScrollSequenceMarkerAnchorTop(elementRect) {
-  if (!elementRect) return 0;
-  return typeof elementRect.top === 'number' ? elementRect.top : getMarkerAnchorTop(elementRect);
-}
-
-function getScrollSequenceAnchorRatio(elementRect, boardHeight) {
-  if (!elementRect || !boardHeight) return 0;
-  return clamp(getScrollSequenceMarkerAnchorTop(elementRect) / boardHeight, 0, 1);
-}
-
-function getResolvedScrollSequenceMarkerRatio(value, elementRect, boardHeight, fallback = 0.5, offsetPx = null) {
-  return getResolvedMarkerRatio(value, getScrollSequenceAnchorRatio(elementRect, boardHeight), fallback, offsetPx, boardHeight);
-}
-
-function getResolvedScrollSequenceMarkerLocalY(value, elementRect, boardHeight, fallback = 0.5, offsetPx = null) {
-  return getResolvedScrollSequenceMarkerRatio(value, elementRect, boardHeight, fallback, offsetPx) * boardHeight;
-}
-
-function getCanonicalScrollSequenceMarkerOffsetPx(value, elementRect, boardHeight, fallback = 0.5, offsetPx = null) {
-  const numericOffsetPx = typeof offsetPx === 'number' ? offsetPx : parseFloat(offsetPx);
-  if (Number.isFinite(numericOffsetPx)) return Math.max(0, numericOffsetPx);
-  if (!elementRect || !boardHeight) return null;
-  const canonicalOffsetPx = getResolvedScrollSequenceMarkerLocalY(value, elementRect, boardHeight, fallback, offsetPx) - getScrollSequenceMarkerAnchorTop(elementRect);
-  if (!Number.isFinite(canonicalOffsetPx)) return canonicalOffsetPx;
-  return Math.max(0, canonicalOffsetPx);
-}
-
-function isStickyElement(target) {
-  if (!target) return false;
-  if (target.classList?.contains('fb-el--sticky')) return true;
-  const position = window.getComputedStyle(target).position;
-  return position === 'sticky' || position === '-webkit-sticky';
-}
-
-function getCumulativeOffsetTop(target) {
-  if (!target) return 0;
-  let offset = 0;
-  let current = target;
-  while (current) {
-    offset += current.offsetTop || 0;
-    current = current.offsetParent;
+function getMarkerLocalY(value, offsetPx, measurement, boardHeight, fallbackRatio = 0.5) {
+  if (!measurement || !boardHeight) return 0;
+  const explicitOffsetPx = toFiniteNumber(offsetPx);
+  if (explicitOffsetPx != null) {
+    return getMarkerAnchorTop(measurement) + explicitOffsetPx;
   }
-  return offset;
+  const ratioValue = toFiniteNumber(value);
+  const resolvedRatio = clamp(ratioValue != null ? ratioValue : fallbackRatio, 0, 1);
+  return clamp(resolvedRatio * boardHeight, 0, boardHeight);
 }
 
-function getLocalOffsetWithinAncestor(target, ancestor) {
-  if (!target || !ancestor) return 0;
-  return getCumulativeOffsetTop(target) - getCumulativeOffsetTop(ancestor);
+function getMarkerRatio(value, offsetPx, measurement, boardHeight, fallbackRatio = 0.5) {
+  if (!boardHeight) return 0;
+  return clamp(getMarkerLocalY(value, offsetPx, measurement, boardHeight, fallbackRatio) / boardHeight, 0, 1);
 }
 
-function useElementRect(boardRef, elementId, deps) {
-  const [rect, setRect] = useState(null);
+function getMarkerOffsetPx(value, offsetPx, measurement, boardHeight, fallbackRatio = 0.5) {
+  const explicitOffsetPx = toFiniteNumber(offsetPx);
+  if (explicitOffsetPx != null) return explicitOffsetPx;
+  if (!measurement || !boardHeight) return null;
+  return getMarkerLocalY(value, offsetPx, measurement, boardHeight, fallbackRatio) - getMarkerAnchorTop(measurement);
+}
+
+function getMarkerStateForLocalY(localY, measurement, boardHeight) {
+  const clampedLocalY = clamp(localY, 0, boardHeight);
+  return {
+    localY: clampedLocalY,
+    ratio: boardHeight > 0 ? clamp(clampedLocalY / boardHeight, 0, 1) : 0,
+    offsetPx: clampedLocalY - getMarkerAnchorTop(measurement),
+  };
+}
+
+function useScrollMarkerMeasurement(boardRef, elementId, deps) {
+  const [measurement, setMeasurement] = useState(null);
 
   useLayoutEffect(() => {
     const update = () => {
       const board = boardRef.current;
       const target = board?.querySelector(`[data-id="${elementId}"]`);
       if (!board || !target) {
-        setRect(null);
+        setMeasurement(null);
         return;
       }
       const boardRect = board.getBoundingClientRect();
       const targetRect = target.getBoundingClientRect();
       const scaleX = board.clientWidth > 0 ? (boardRect.width / board.clientWidth) : 1;
       const scaleY = board.clientHeight > 0 ? (boardRect.height / board.clientHeight) : 1;
-      setRect({
+      setMeasurement({
         left: (targetRect.left - boardRect.left) / Math.max(scaleX, 0.0001),
         top: (targetRect.top - boardRect.top) / Math.max(scaleY, 0.0001),
-        anchorTop: getLocalOffsetWithinAncestor(target, board) / Math.max(scaleY, 0.0001),
+        anchorTop: ((targetRect.top - boardRect.top) + (board.scrollTop || 0)) / Math.max(scaleY, 0.0001),
         width: targetRect.width / Math.max(scaleX, 0.0001),
         height: targetRect.height / Math.max(scaleY, 0.0001),
       });
@@ -121,7 +82,7 @@ function useElementRect(boardRef, elementId, deps) {
     };
   }, deps);
 
-  return rect;
+  return measurement;
 }
 
 export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode = 'artboard' }) {
@@ -172,7 +133,7 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
 
   const editorMode = activeEditor?.kind === 'scroll-sequence' ? 'scroll-range' : (activeEditor?.mode ?? null);
   const activeRange = activeEditor?.kind === 'scroll-sequence' ? activeScrollSequence : activeAnimation;
-  const elementRect = useElementRect(boardRef, activeEditor?.elementId, [
+  const markerMeasurement = useScrollMarkerMeasurement(boardRef, activeEditor?.elementId, [
     boardRef,
     activeEditor?.elementId,
     editorMode,
@@ -192,11 +153,11 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
   const boardLeft = boardRef.current?.offsetLeft ?? 0;
 
   useLayoutEffect(() => {
-    if (!elementRect || !boardHeight || !activeEditor || !activeElement) return;
+    if (!markerMeasurement || !boardHeight || !activeEditor || !activeElement) return;
 
     if (activeEditor.kind === 'scroll-sequence' && activeScrollSequence) {
-      const nextStartOffsetPx = getCanonicalScrollSequenceMarkerOffsetPx(activeScrollSequence.scrollSequenceStart, elementRect, boardHeight, 0.2, activeScrollSequence.scrollSequenceStartOffsetPx);
-      const nextEndOffsetPx = getCanonicalScrollSequenceMarkerOffsetPx(activeScrollSequence.scrollSequenceEnd, elementRect, boardHeight, 0.68, activeScrollSequence.scrollSequenceEndOffsetPx);
+      const nextStartOffsetPx = getMarkerOffsetPx(activeScrollSequence.scrollSequenceStart, activeScrollSequence.scrollSequenceStartOffsetPx, markerMeasurement, boardHeight, 0.2);
+      const nextEndOffsetPx = getMarkerOffsetPx(activeScrollSequence.scrollSequenceEnd, activeScrollSequence.scrollSequenceEndOffsetPx, markerMeasurement, boardHeight, 0.68);
       if (nextStartOffsetPx == null || nextEndOffsetPx == null) return;
       if (activeScrollSequence.scrollSequenceStartOffsetPx === nextStartOffsetPx && activeScrollSequence.scrollSequenceEndOffsetPx === nextEndOffsetPx) return;
       updateElementLayout(activeElement.id, bpId, {
@@ -209,8 +170,8 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
     if (activeEditor.kind !== 'animation' || !activeAnimation) return;
 
     if (activeAnimation.type === 'scroll') {
-      const nextStartOffsetPx = getCanonicalMarkerOffsetPx(activeAnimation.start, elementRect, boardHeight, 0.2, activeAnimation.startOffsetPx);
-      const nextEndOffsetPx = getCanonicalMarkerOffsetPx(activeAnimation.end, elementRect, boardHeight, 0.68, activeAnimation.endOffsetPx);
+      const nextStartOffsetPx = getMarkerOffsetPx(activeAnimation.start, activeAnimation.startOffsetPx, markerMeasurement, boardHeight, 0.2);
+      const nextEndOffsetPx = getMarkerOffsetPx(activeAnimation.end, activeAnimation.endOffsetPx, markerMeasurement, boardHeight, 0.68);
       if (nextStartOffsetPx == null || nextEndOffsetPx == null) return;
       if (activeAnimation.startOffsetPx === nextStartOffsetPx && activeAnimation.endOffsetPx === nextEndOffsetPx) return;
       updateElementAnimation(activeElement.id, bpId, activeAnimation.id, {
@@ -223,7 +184,7 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
     if (activeAnimation.type === 'scroll-variant') {
       const nextTargets = (activeAnimation.targets ?? []).map((target) => ({
         ...target,
-        markerOffsetPx: getCanonicalMarkerOffsetPx(target.marker, elementRect, boardHeight, 0.5, target.markerOffsetPx),
+        markerOffsetPx: getMarkerOffsetPx(target.marker, target.markerOffsetPx, markerMeasurement, boardHeight, 0.5),
       }));
       const changed = nextTargets.some((target, index) => target.markerOffsetPx !== (activeAnimation.targets ?? [])[index]?.markerOffsetPx);
       if (!changed) return;
@@ -231,7 +192,7 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
         targets: nextTargets,
       });
     }
-  }, [activeEditor, activeAnimation, activeElement, activeScrollSequence, boardHeight, bpId, elementRect, updateElementAnimation, updateElementLayout]);
+  }, [activeEditor, activeAnimation, activeElement, activeScrollSequence, boardHeight, bpId, markerMeasurement, updateElementAnimation, updateElementLayout]);
 
   if (surfaceMode !== 'artboard' || !activeEditor || activeEditor.bpId !== bpId || !activeElement || !activeRange) {
     return null;
@@ -241,7 +202,7 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
   const railOffset = 40;
   const railLeft = boardWidth + railOffset;
   const sidePanelWidth = 220;
-  const anchorRatio = getAnchorRatio(elementRect, boardHeight);
+  const anchorTop = getMarkerAnchorTop(markerMeasurement);
 
   const handleOverlayExit = (event) => {
     event.preventDefault();
@@ -250,12 +211,12 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
     else closeAnimationEditor();
   };
 
-  const scrimPanels = elementRect && editorMode === 'scroll-effect'
+  const scrimPanels = markerMeasurement && (editorMode === 'scroll-start' || editorMode === 'scroll-effect')
     ? [
-        { key: 'top', style: { left: 0, top: 0, width: boardWidth, height: Math.max(0, elementRect.top) } },
-        { key: 'left', style: { left: 0, top: elementRect.top, width: Math.max(0, elementRect.left), height: elementRect.height } },
-        { key: 'right', style: { left: elementRect.left + elementRect.width, top: elementRect.top, width: Math.max(0, boardWidth - (elementRect.left + elementRect.width)), height: elementRect.height } },
-        { key: 'bottom', style: { left: 0, top: elementRect.top + elementRect.height, width: boardWidth, height: Math.max(0, boardHeight - (elementRect.top + elementRect.height)) } },
+        { key: 'top', style: { left: 0, top: 0, width: boardWidth, height: Math.max(0, markerMeasurement.top) } },
+        { key: 'left', style: { left: 0, top: markerMeasurement.top, width: Math.max(0, markerMeasurement.left), height: markerMeasurement.height } },
+        { key: 'right', style: { left: markerMeasurement.left + markerMeasurement.width, top: markerMeasurement.top, width: Math.max(0, boardWidth - (markerMeasurement.left + markerMeasurement.width)), height: markerMeasurement.height } },
+        { key: 'bottom', style: { left: 0, top: markerMeasurement.top + markerMeasurement.height, width: boardWidth, height: Math.max(0, boardHeight - (markerMeasurement.top + markerMeasurement.height)) } },
       ]
     : [{ key: 'full', style: { left: 0, top: 0, width: boardWidth, height: boardHeight } }];
 
@@ -267,94 +228,51 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
     const boardRect = board.getBoundingClientRect();
     const boardScaleY = boardHeight > 0 ? (boardRect.height / boardHeight) : 1;
     const pointerToLocalY = (clientY) => ((clientY - boardRect.top) / Math.max(boardScaleY, 0.0001));
-    const currentLocalY = (() => {
-      if (field === 'marker' && activeEditor.kind === 'animation') {
-        const target = (activeAnimation?.targets ?? []).find((entry) => entry.id === targetId) ?? null;
-        return getResolvedMarkerLocalY(target?.marker, elementRect, boardHeight, 0.5, target?.markerOffsetPx);
-      }
-      if (field === 'start') {
-        return activeEditor.kind === 'scroll-sequence'
-          ? getResolvedScrollSequenceMarkerLocalY(
-              activeScrollSequence?.scrollSequenceStart,
-              elementRect,
-              boardHeight,
-              0.2,
-              activeScrollSequence?.scrollSequenceStartOffsetPx
-            )
-          : getResolvedMarkerLocalY(
-              activeAnimation?.start,
-              elementRect,
-              boardHeight,
-              0.2,
-              activeAnimation?.startOffsetPx
-            );
-      }
-      return activeEditor.kind === 'scroll-sequence'
-        ? getResolvedScrollSequenceMarkerLocalY(
-            activeScrollSequence?.scrollSequenceEnd,
-            elementRect,
-            boardHeight,
-            0.68,
-            activeScrollSequence?.scrollSequenceEndOffsetPx
-          )
-        : getResolvedMarkerLocalY(
-            activeAnimation?.end,
-            elementRect,
-            boardHeight,
-            0.68,
-            activeAnimation?.endOffsetPx
-          );
-    })();
-    const pointerOffsetPx = currentLocalY - pointerToLocalY(event.clientY);
     const onMove = (moveEvent) => {
-      const localY = clamp(pointerToLocalY(moveEvent.clientY) + pointerOffsetPx, 0, boardHeight);
-      const ratio = clamp(localY / boardHeight, 0, 1);
-      const markerAnchorTop = activeEditor.kind === 'scroll-sequence'
-        ? getScrollSequenceMarkerAnchorTop(elementRect)
-        : getMarkerAnchorTop(elementRect);
-      const nextOffsetPx = elementRect ? (localY - markerAnchorTop) : ((ratio - anchorRatio) * boardHeight);
+      const localY = clamp(pointerToLocalY(moveEvent.clientY), 0, boardHeight);
       if (activeEditor.kind === 'scroll-sequence') {
         if (field === 'start') {
-          const resolvedEnd = getResolvedScrollSequenceMarkerRatio(activeScrollSequence?.scrollSequenceEnd, elementRect, boardHeight, ratio, activeScrollSequence?.scrollSequenceEndOffsetPx);
-          const nextStart = Math.min(ratio, resolvedEnd);
-          const nextStartY = nextStart * boardHeight;
+          const resolvedEndLocalY = getMarkerLocalY(activeScrollSequence?.scrollSequenceEnd, activeScrollSequence?.scrollSequenceEndOffsetPx, markerMeasurement, boardHeight, 0.68);
+          const nextStartState = getMarkerStateForLocalY(Math.min(localY, resolvedEndLocalY), markerMeasurement, boardHeight);
           updateElementLayout(activeElement.id, bpId, {
-            scrollSequenceStart: nextStart,
-            scrollSequenceStartOffsetPx: elementRect ? (nextStartY - markerAnchorTop) : nextOffsetPx,
+            scrollSequenceStart: nextStartState.ratio,
+            scrollSequenceStartOffsetPx: nextStartState.offsetPx,
           });
           return;
         }
-        const resolvedStart = getResolvedScrollSequenceMarkerRatio(activeScrollSequence?.scrollSequenceStart, elementRect, boardHeight, ratio, activeScrollSequence?.scrollSequenceStartOffsetPx);
-        const nextEnd = Math.max(ratio, resolvedStart);
-        const nextEndY = nextEnd * boardHeight;
+        const resolvedStartLocalY = getMarkerLocalY(activeScrollSequence?.scrollSequenceStart, activeScrollSequence?.scrollSequenceStartOffsetPx, markerMeasurement, boardHeight, 0.2);
+        const nextEndState = getMarkerStateForLocalY(Math.max(localY, resolvedStartLocalY), markerMeasurement, boardHeight);
         updateElementLayout(activeElement.id, bpId, {
-          scrollSequenceEnd: nextEnd,
-          scrollSequenceEndOffsetPx: elementRect ? (nextEndY - markerAnchorTop) : nextOffsetPx,
+          scrollSequenceEnd: nextEndState.ratio,
+          scrollSequenceEndOffsetPx: nextEndState.offsetPx,
         });
         return;
       }
       updateElementAnimation(activeElement.id, bpId, activeAnimation.id, (entry) => {
         if (field === 'marker') {
+          const nextMarkerState = getMarkerStateForLocalY(localY, markerMeasurement, boardHeight);
           const nextTargets = (entry.targets ?? []).map((target) => (
-            target.id === targetId ? { ...target, marker: ratio, markerOffsetPx: nextOffsetPx } : target
-          )).sort((left, right) => (left.marker ?? 0) - (right.marker ?? 0));
+            target.id === targetId ? { ...target, marker: nextMarkerState.ratio, markerOffsetPx: nextMarkerState.offsetPx } : target
+          )).sort((left, right) => {
+            const leftLocalY = getMarkerLocalY(left.marker, left.markerOffsetPx, markerMeasurement, boardHeight, 0.5);
+            const rightLocalY = getMarkerLocalY(right.marker, right.markerOffsetPx, markerMeasurement, boardHeight, 0.5);
+            return leftLocalY - rightLocalY;
+          });
           return {
             ...entry,
             targets: nextTargets,
-            marker: nextTargets[0]?.marker ?? ratio,
+            marker: nextTargets[0]?.marker ?? nextMarkerState.ratio,
             targetVariantId: nextTargets[0]?.targetVariantId ?? null,
           };
         }
         if (field === 'start') {
-          const resolvedEnd = getResolvedMarkerRatio(entry.end, anchorRatio, ratio, entry.endOffsetPx, boardHeight);
-          const nextStart = Math.min(ratio, resolvedEnd);
-          const nextStartY = nextStart * boardHeight;
-          return { ...entry, start: nextStart, startOffsetPx: elementRect ? (nextStartY - markerAnchorTop) : nextOffsetPx };
+          const resolvedEndLocalY = getMarkerLocalY(entry.end, entry.endOffsetPx, markerMeasurement, boardHeight, 0.68);
+          const nextStartState = getMarkerStateForLocalY(Math.min(localY, resolvedEndLocalY), markerMeasurement, boardHeight);
+          return { ...entry, start: nextStartState.ratio, startOffsetPx: nextStartState.offsetPx };
         }
-        const resolvedStart = getResolvedMarkerRatio(entry.start, anchorRatio, ratio, entry.startOffsetPx, boardHeight);
-        const nextEnd = Math.max(ratio, resolvedStart);
-        const nextEndY = nextEnd * boardHeight;
-        return { ...entry, end: nextEnd, endOffsetPx: elementRect ? (nextEndY - markerAnchorTop) : nextOffsetPx };
+        const resolvedStartLocalY = getMarkerLocalY(entry.start, entry.startOffsetPx, markerMeasurement, boardHeight, 0.2);
+        const nextEndState = getMarkerStateForLocalY(Math.max(localY, resolvedStartLocalY), markerMeasurement, boardHeight);
+        return { ...entry, end: nextEndState.ratio, endOffsetPx: nextEndState.offsetPx };
       });
     };
     const onUp = () => {
@@ -379,21 +297,21 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
     </div>
   );
 
-  const start = getResolvedMarkerRatio(
+  const startRatio = getMarkerRatio(
     activeEditor.kind === 'scroll-sequence' ? activeScrollSequence?.scrollSequenceStart : activeAnimation?.start,
-    activeEditor.kind === 'scroll-sequence' ? getScrollSequenceAnchorRatio(elementRect, boardHeight) : anchorRatio,
-    0.2,
     activeEditor.kind === 'scroll-sequence' ? activeScrollSequence?.scrollSequenceStartOffsetPx : activeAnimation?.startOffsetPx,
-    boardHeight
+    markerMeasurement,
+    boardHeight,
+    0.2
   );
-  const end = getResolvedMarkerRatio(
+  const endRatio = getMarkerRatio(
     activeEditor.kind === 'scroll-sequence' ? activeScrollSequence?.scrollSequenceEnd : activeAnimation?.end,
-    activeEditor.kind === 'scroll-sequence' ? getScrollSequenceAnchorRatio(elementRect, boardHeight) : anchorRatio,
-    0.68,
     activeEditor.kind === 'scroll-sequence' ? activeScrollSequence?.scrollSequenceEndOffsetPx : activeAnimation?.endOffsetPx,
-    boardHeight
+    markerMeasurement,
+    boardHeight,
+    0.68
   );
-  const center = (start + end) / 2;
+  const center = (startRatio + endRatio) / 2;
   const targets = activeEditor.kind === 'animation' && Array.isArray(activeAnimation?.targets) ? activeAnimation.targets : [];
 
   return (
@@ -411,24 +329,28 @@ export default function AnimationArtboardOverlay({ bpId, boardRef, surfaceMode =
             ? 'Drag the scroll sequence start and end markers'
             : (editorMode === 'enter-start'
               ? 'Editing appear start state'
-              : (editorMode === 'scroll-effect'
-                ? 'Editing scroll end state'
-                : (editorMode === 'scroll-variant-marker' ? 'Drag each variant trigger marker' : 'Drag the start and end markers')))}
+              : (editorMode === 'scroll-start'
+                ? 'Editing scroll start state'
+                : (editorMode === 'scroll-effect'
+                  ? 'Editing scroll end state'
+                  : (editorMode === 'scroll-variant-marker'
+                    ? 'Drag each variant trigger marker'
+                    : 'Drag the start and end markers'))))}
         </span>
         <button type="button" className="fb-secondary-btn" onClick={handleOverlayExit}>Exit Editing</button>
       </div>
       <div className="fb-animation-overlay__rail" style={{ left: railLeft }}>
         {editorMode === 'scroll-range' ? (
           <>
-            {renderLine('Start', start, true, 'start', '', '#ff8a3d')}
+            {renderLine('Start', startRatio, true, 'start', '', '#ff8a3d')}
             {renderLine('Progress', center, false, null, 'fb-animation-overlay__line--center', '#41d1ff')}
-            {renderLine('End', end, true, 'end', '', '#b5ff4d')}
+            {renderLine('End', endRatio, true, 'end', '', '#b5ff4d')}
           </>
         ) : null}
         {editorMode === 'scroll-variant-marker'
           ? targets.map((target, index) => renderLine(
               `${variantLabelMap.get(target.targetVariantId) || `Variant ${index + 1}`}`,
-              getResolvedMarkerRatio(target.marker, anchorRatio, 0.5, target.markerOffsetPx, boardHeight),
+              getMarkerRatio(target.marker, target.markerOffsetPx, markerMeasurement, boardHeight, 0.5),
               true,
               'marker',
               '',

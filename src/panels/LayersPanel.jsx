@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, isElementSelected } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement } from '../store/editorStore';
 import { UIIcons } from '../components/UIIcons';
 
 function LayerComponentCreateModal({ defaultName, errorMessage = '', onCancel, onSubmit }) {
@@ -139,11 +139,37 @@ function hasHoveredDescendant(el, allElements, hoveredId) {
   return false;
 }
 
-// Is a root element off-canvas for a given bp?
-function checkOffCanvas(el, bpId, bpDef) {
-  if (!bpDef || el.parentId) return false;
-  const r = resolveElement(el, bpId);
-  return (r.x + r.width <= 0 || r.x >= bpDef.width || r.y + r.height <= 0 || r.y >= bpDef.height);
+function isFlowRootAtBreakpoint(el, bpId, currentPage) {
+  if (!el || el.parentId) return false;
+  const resolved = resolveElement(el, bpId);
+  const pageLayout = resolvePageLayout(currentPage?.layout, bpId);
+  return pageLayout !== null && !resolved.absoluteInLayout && resolved.positionType !== 'fixed';
+}
+
+function isDesktopOffCanvas(el, bpDefs, currentPage) {
+  const desktopBp = bpDefs?.desktop;
+  if (!desktopBp || !el || el.parentId) return false;
+  const resolved = resolveElement(el, 'desktop');
+  if (resolved.hidden) return false;
+  if (isFlowRootAtBreakpoint(el, 'desktop', currentPage)) return false;
+  return resolved.x + resolved.width <= 0
+    || resolved.x >= desktopBp.width
+    || resolved.y + resolved.height <= 0
+    || resolved.y >= desktopBp.height;
+}
+
+// Mirror the artboard off-canvas rules so Layers and canvas classify roots the same way.
+function checkOffCanvas(el, bpId, bpDef, bpDefs) {
+  if (!bpDef || !el || el.parentId) return false;
+  const currentPage = useEditorStore.getState().getCurrentPage?.() ?? null;
+  const resolved = resolveElement(el, bpId);
+  if (resolved.hidden) return false;
+  if (bpId !== 'desktop' && isDesktopOffCanvas(el, bpDefs, currentPage)) return true;
+  if (isFlowRootAtBreakpoint(el, bpId, currentPage)) return false;
+  return resolved.x + resolved.width <= 0
+    || resolved.x >= bpDef.width
+    || resolved.y + resolved.height <= 0
+    || resolved.y >= bpDef.height;
 }
 
 function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, offCanvas = false }) {
@@ -179,6 +205,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
     [allElements, el, hoveredId],
   );
   const resolved = resolveElementWithVariables(el, bpId || 'desktop', pageVariables, globalVariables);
+  const isLocked = !!(resolved.locked ?? el.locked ?? el.base?.locked);
   const isMainSurfaceComponent = activeSurface === 'page' && !!el.componentInstance;
   const componentMeta = el.componentInstance?.componentId
     ? components.find((component) => component.id === el.componentInstance.componentId)
@@ -338,17 +365,24 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
             {displayName}
           </span>
         )}
-        {hasLoopAnimation || hasHoverAnimation ? (
-          <span className={`fb-loop-indicator fb-loop-indicator--layer${(hasLoopAnimation ? loopIndicatorLive : hoverIndicatorLive) ? ' is-live' : ''}`} aria-label={hasLoopAnimation ? 'Loop animation' : 'Hover animation'} title={hasLoopAnimation ? 'Loop animation' : 'Hover animation'} />
-        ) : null}
-        <span className={`fb-layer-vis${resolved.hidden ? ' fb-layer-vis--visible' : ''}`}
-          title={resolved.hidden ? 'Show' : 'Hide'}
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleVisibility(el.id, bpId || 'desktop');
-          }}
-        >
-          {resolved.hidden ? Icons.eyeOff : Icons.eye}
+        <span className="fb-layer-actions">
+          {hasLoopAnimation || hasHoverAnimation ? (
+            <span className={`fb-loop-indicator fb-loop-indicator--layer${(hasLoopAnimation ? loopIndicatorLive : hoverIndicatorLive) ? ' is-live' : ''}`} aria-label={hasLoopAnimation ? 'Loop animation' : 'Hover animation'} title={hasLoopAnimation ? 'Loop animation' : 'Hover animation'} />
+          ) : null}
+          {isLocked ? (
+            <span className="fb-layer-lock" aria-label="Locked layer" title="Locked layer">
+              {UIIcons.lock}
+            </span>
+          ) : null}
+          <span className={`fb-layer-vis${resolved.hidden ? ' fb-layer-vis--visible' : ''}`}
+            title={resolved.hidden ? 'Show' : 'Hide'}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleVisibility(el.id, bpId || 'desktop');
+            }}
+          >
+            {resolved.hidden ? Icons.eyeOff : Icons.eye}
+          </span>
         </span>
       </div>
       {expanded && hasChildren ? (
@@ -448,13 +482,15 @@ export default function LayersPanel() {
     }
   };
 
+  const hasStoredStyleClipboard = !!readStoredElementStyleClipboard();
+
   const BP_ORDER  = ['desktop', 'tablet', 'mobile'];
 
-  // An element is "outside" if it's off-canvas on ANY breakpoint.
-  // It is excluded from that bp's artboard group and listed in "Outside Artboards".
-  const outsideEls = rootEls.filter(el =>
-    BP_ORDER.some(bpId => checkOffCanvas(el, bpId, bpDefs[bpId]))
-  );
+  const outsideBpId = activeBpId ?? 'desktop';
+  const outsideBp = bpDefs[outsideBpId] ?? bpDefs.desktop;
+  const outsideEls = outsideBp
+    ? rootEls.filter((el) => checkOffCanvas(el, outsideBpId, outsideBp, bpDefs))
+    : [];
 
   return (
     <>
@@ -480,7 +516,7 @@ export default function LayersPanel() {
         if (!bp) return null;
         const isActive = activeBpId === bpId;
         // Show all on-canvas elements for this bp, including hidden ones.
-        const visibleEls = rootEls.filter(el => !checkOffCanvas(el, bpId, bp));
+        const visibleEls = rootEls.filter(el => !checkOffCanvas(el, bpId, bp, bpDefs));
         return (
           <div key={bpId} className={`fb-layer-artboard${isActive ? ' fb-layer-artboard--active' : ''}`}>
             <div
@@ -525,7 +561,7 @@ export default function LayersPanel() {
             <span className="fb-layer-artboard-dim">{outsideEls.length}</span>
           </div>
           {outsideEls.map(el => (
-            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
+            <LayerItem key={el.id} el={el} depth={0} bpId={outsideBpId} offCanvas onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
           ))}
         </div>
       )}
@@ -539,6 +575,29 @@ export default function LayersPanel() {
         onMouseDown={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
       >
+        <button
+          type="button"
+          className="fb-context-menu__item"
+          onClick={() => {
+            copyElementStylesToStoredClipboard(contextMenu.elementId, contextMenu.bpId);
+            setContextMenu(null);
+          }}
+          disabled={!contextMenu.elementId}
+        >
+          Copy style
+        </button>
+        <button
+          type="button"
+          className="fb-context-menu__item"
+          onClick={() => {
+            if (!pasteStoredElementStylesToElement(contextMenu.elementId, contextMenu.bpId)) return;
+            pushHistory();
+            setContextMenu(null);
+          }}
+          disabled={!contextMenu.elementId || !hasStoredStyleClipboard}
+        >
+          Paste style
+        </button>
         <button
           type="button"
           className="fb-context-menu__item"
