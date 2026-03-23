@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && npm run deploy:vendor && npm run deploy:php",
+    "test:domain": "node --experimental-specifier-resolution=node --test tests/domain/*.test.mjs tests/domain/componentEditorStore.test.mjs",
     "preview": "vite preview",
-    "deploy:vendor": "DEST='/Users/nagybertalan/Local Sites/canvaswp/app/public/wp-content/plugins/framebuilder/assets' && mkdir -p \"$DEST\" && cp node_modules/gsap/dist/gsap.min.js \"$DEST/\" && cp node_modules/gsap/dist/Flip.min.js \"$DEST/\"",
+    "deploy:vendor": "DEST='/Users/nagybertalan/Local Sites/canvaswp/app/public/wp-content/plugins/framebuilder/assets' && mkdir -p \"$DEST\" && cp node_modules/gsap/dist/gsap.min.js \"$DEST/\" && cp node_modules/gsap/dist/Flip.min.js \"$DEST/\" && cp node_modules/gsap/dist/ScrollTrigger.min.js \"$DEST/\"",
     "deploy:php": "DEST='/Users/nagybertalan/Local Sites/canvaswp/app/public/wp-content/plugins/framebuilder' && mkdir -p \"$DEST/includes\" \"$DEST/templates\" && cp framebuilder.php \"$DEST/\" && cp includes/*.php \"$DEST/includes/\" && cp templates/*.php \"$DEST/templates/\""
   },
   "dependencies": {

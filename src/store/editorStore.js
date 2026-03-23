@@ -7,16 +7,21 @@ import {
   removeSvgStroke,
   sanitizeSvgMarkup,
   setSvgStrokeWidth,
-} from '../components/iconLibrary';
-import { clearRichTextInlineStyle, plainTextToRichTextHtml, richTextHtmlToPlainText, sanitizeRichTextHtml } from '../components/richText';
+} from '../components/iconLibrary.js';
+import { clearRichTextInlineStyle, plainTextToRichTextHtml, richTextHtmlToPlainText, sanitizeRichTextHtml } from '../components/richText.js';
+import { makeId } from '../utils/id.js';
+import { applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, makeDefaultElementAnimations, normalizeAnimationMarkerOffsetPx, normalizeElementAnimation, normalizeElementAnimations, resolveElementAnimations, updateAnimationEndState, updateElementAnimationCollection } from '../domain/animationModel.js';
+import { COMPONENT_VARIANT_STATE_ORDER, getBaseComponentVariantId, getComponentControlValue, getComponentVariantStateLabel, getDefaultComponentVariants, getPrimaryComponentVariant, insertStateVariant, insertVariantAfterFamily, isDefaultComponentVariant, normalizeComponentControl, normalizeComponentControls, normalizeComponentControlValue, normalizeComponentInstanceProps, normalizeComponentInteraction, resolveComponentVariantMode } from '../domain/componentModel.js';
+import { applyVariantOverrides, composeVariantSnapshot, ensureComponentPrimaryRoot, extractVariantOverrides, getEditorVariantRoot, getLiveComponentEditorVariants as syncComponentEditorVariants, getSnapshotRoot, instantiateEditorVariantSnapshot, makeComponentPrimaryRoot } from '../domain/componentSnapshotModel.js';
+import { clampFinite, normalizeComponentTransition, normalizeViewportValue } from '../domain/componentTransition.js';
+import { normalizeConstraints, sanitizeLayoutUpdates } from '../domain/layoutModel.js';
+
+export { applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, resolveElementAnimations } from '../domain/animationModel.js';
+export { getLiveComponentEditorVariants } from '../domain/componentSnapshotModel.js';
 
 function getMediaUrl(value) {
   if (value && typeof value === 'object' && typeof value.url === 'string') return value.url.trim();
   return typeof value === 'string' ? value.trim() : '';
-}
-
-function makeId(prefix = 'id') {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export const ASSET_STORAGE_COMPONENT_ID = '__fb_asset_storage__';
@@ -29,11 +34,61 @@ function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+const ELEMENT_STYLE_CLIPBOARD_KEY = 'fb:element-style-clipboard';
+
 function pick(obj, keys) {
   return keys.reduce((acc, key) => {
     if (obj && key in obj) acc[key] = obj[key];
     return acc;
   }, {});
+}
+
+export function readStoredElementStyleClipboard() {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(ELEMENT_STYLE_CLIPBOARD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.styles || typeof parsed.styles !== 'object') return null;
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+export function writeStoredElementStyleClipboard(payload) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(ELEMENT_STYLE_CLIPBOARD_KEY, JSON.stringify(payload));
+  } catch (error) {
+    return;
+  }
+}
+
+export function copyElementStylesToStoredClipboard(elementId, bpId = 'desktop') {
+  if (!elementId) return null;
+  const state = useEditorStore.getState();
+  const element = state.getAllElements().find((entry) => entry.id === elementId) ?? null;
+  if (!element) return null;
+  const payload = {
+    sourceElementId: elementId,
+    sourceElementType: element.type ?? null,
+    sourceBpId: bpId || 'desktop',
+    styles: deepClone(resolveElement(element, bpId || 'desktop')?.styles ?? {}),
+  };
+  writeStoredElementStyleClipboard(payload);
+  return payload;
+}
+
+export function pasteStoredElementStylesToElement(elementId, bpId = 'desktop') {
+  if (!elementId) return false;
+  const payload = readStoredElementStyleClipboard();
+  if (!payload?.styles || typeof payload.styles !== 'object') return false;
+  const state = useEditorStore.getState();
+  const element = state.getAllElements().find((entry) => entry.id === elementId) ?? null;
+  if (!element) return false;
+  state.updateElementStyles(elementId, bpId || 'desktop', deepClone(payload.styles));
+  return true;
 }
 
 function getAjaxUrl() {
@@ -174,12 +229,6 @@ function releaseDocumentLockWithBeacon(postId) {
   }).catch(() => {});
 }
 
-const LAYOUT_NUMERIC_KEYS = new Set([
-  'x', 'y', 'width', 'height', 'rotation',
-  'minW', 'maxW', 'minH', 'maxH',
-  'widthPct', 'heightPct', 'widthFr', 'heightFr',
-]);
-
 const VARIABLE_TYPES = new Set(['string', 'boolean', 'color', 'number', 'image', 'post', 'product']);
 const VARIABLE_SCOPES = new Set(['page', 'global']);
 const VARIABLE_BINDING_BREAKPOINTS = ['desktop', 'tablet', 'mobile'];
@@ -194,16 +243,26 @@ const VARIABLE_PROPERTY_COMPATIBILITY = {
   src: ['image'],
 };
 
-function sanitizeLayoutUpdates(updates) {
-  if (!updates || typeof updates !== 'object') return updates;
-
-  return Object.fromEntries(
-    Object.entries(updates).flatMap(([key, value]) => {
-      if (!LAYOUT_NUMERIC_KEYS.has(key) || value == null) return [[key, value]];
-      const numericValue = typeof value === 'number' ? value : parseFloat(value);
-      return Number.isFinite(numericValue) ? [[key, numericValue]] : [];
-    })
-  );
+function normalizeElementConstraints(element) {
+  if (!element || typeof element !== 'object') return element;
+  const nextBase = {
+    ...(element.base ?? {}),
+    constraints: normalizeConstraints(element.base?.constraints),
+  };
+  const nextOverrides = { ...(element.overrides ?? {}) };
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const override = nextOverrides[bpId];
+    if (!override || typeof override !== 'object' || override.constraints == null) return;
+    nextOverrides[bpId] = {
+      ...override,
+      constraints: normalizeConstraints(override.constraints),
+    };
+  });
+  return {
+    ...element,
+    base: nextBase,
+    overrides: nextOverrides,
+  };
 }
 
 function applyElementLayoutUpdate(elements, elementId, bpId, safeUpdates) {
@@ -544,228 +603,6 @@ function removeVariableReferencesFromFlow(flow, variableScope, variableId) {
   };
 }
 
-const ELEMENT_ANIMATION_TYPES = new Set(['enter', 'scroll', 'scroll-variant', 'loop', 'hover']);
-const ELEMENT_ANIMATION_PLAYBACK = new Set(['once', 'replay']);
-const LOOP_ANIMATION_TYPES = new Set(['loop', 'mirror']);
-const LOOP_ANIMATION_OFFSCREEN = new Set(['play', 'pause']);
-
-const ENTER_EFFECT_PRESETS = {
-  fadeUp: { opacity: 0, scale: 1, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: 0, offsetY: 40 },
-  fadeIn: { opacity: 0, scale: 1, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: 0, offsetY: 0 },
-  scaleIn: { opacity: 0, scale: 0.92, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: 0, offsetY: 0 },
-  slideLeft: { opacity: 0, scale: 1, rotateMode: '2d', rotate: 0, rotateX: 0, rotateY: 0, skewX: 0, skewY: 0, offsetX: -48, offsetY: 0 },
-};
-
-function makeDefaultElementAnimations() {
-  return { desktop: [], tablet: null, mobile: null };
-}
-
-function normalizeAnimationTransition(transition, fallback = { type: 'ease', duration: 0.6, easePreset: 'easeInOut' }) {
-  return normalizeComponentTransition({
-    ...fallback,
-    ...(transition ?? {}),
-  });
-}
-
-function normalizeEnterEffect(effect, preset = 'fadeUp') {
-  const presetValues = ENTER_EFFECT_PRESETS[preset] ?? ENTER_EFFECT_PRESETS.fadeUp;
-  const rotateMode = effect?.rotateMode === '3d' ? '3d' : '2d';
-  return {
-    opacity: clampFinite(effect?.opacity, presetValues.opacity, 0, 1),
-    scale: clampFinite(effect?.scale, presetValues.scale, 0.1, 4),
-    rotateMode,
-    rotate: clampFinite(effect?.rotate, presetValues.rotate, -1080, 1080),
-    rotateX: clampFinite(effect?.rotateX, presetValues.rotateX, -1080, 1080),
-    rotateY: clampFinite(effect?.rotateY, presetValues.rotateY, -1080, 1080),
-    skewX: clampFinite(effect?.skewX, presetValues.skewX, -180, 180),
-    skewY: clampFinite(effect?.skewY, presetValues.skewY, -180, 180),
-    offsetX: clampFinite(effect?.offsetX, presetValues.offsetX, -4000, 4000),
-    offsetY: clampFinite(effect?.offsetY, presetValues.offsetY, -4000, 4000),
-  };
-}
-
-function normalizeScrollEndState(endState) {
-  return {
-    layout: sanitizeLayoutUpdates(endState?.layout ?? {}) ?? {},
-    styles: { ...(endState?.styles ?? {}) },
-  };
-}
-
-function normalizeAnimationPatchState(state) {
-  return {
-    layout: sanitizeLayoutUpdates(state?.layout ?? {}) ?? {},
-    styles: { ...(state?.styles ?? {}) },
-  };
-}
-
-function normalizeAnimationMarkerOffset(value) {
-  const numericValue = typeof value === 'number' ? value : parseFloat(value);
-  if (!Number.isFinite(numericValue)) return null;
-  return Math.min(2, Math.max(-2, numericValue));
-}
-
-function normalizeAnimationMarkerOffsetPx(value) {
-  const numericValue = typeof value === 'number' ? value : parseFloat(value);
-  if (!Number.isFinite(numericValue)) return null;
-  return Math.min(20000, Math.max(-20000, numericValue));
-}
-
-function normalizeScrollVariantTargets(targets, legacyTargetVariantId = null, legacyMarker = 0.5) {
-  const source = Array.isArray(targets) && targets.length
-    ? targets
-    : [{ targetVariantId: legacyTargetVariantId, marker: legacyMarker }];
-  const normalized = source.map((target, index) => ({
-    id: typeof target?.id === 'string' && target.id ? target.id : makeId('animtarget'),
-    targetVariantId: typeof target?.targetVariantId === 'string' && target.targetVariantId ? target.targetVariantId : null,
-    marker: clampFinite(target?.marker, index === 0 ? legacyMarker : Math.min(0.9, 0.35 + (index * 0.2)), 0, 1),
-    markerOffset: normalizeAnimationMarkerOffset(target?.markerOffset),
-    markerOffsetPx: normalizeAnimationMarkerOffsetPx(target?.markerOffsetPx),
-  }));
-  normalized.sort((left, right) => (left.marker ?? 0) - (right.marker ?? 0));
-  return normalized;
-}
-
-function normalizeLoopEffect(effect) {
-  return normalizeEnterEffect(effect, 'fadeUp');
-}
-
-function normalizeHoverEffect(effect) {
-  return normalizeEnterEffect(effect, 'fadeUp');
-}
-
-function normalizeElementAnimation(animation, index = 0) {
-  const type = ELEMENT_ANIMATION_TYPES.has(animation?.type) ? animation.type : 'enter';
-  const preset = typeof animation?.preset === 'string' && animation.preset
-    ? animation.preset
-    : (type === 'scroll-variant' || type === 'loop' || type === 'hover' ? 'custom' : 'fadeUp');
-  const transitionFallback = type === 'scroll-variant'
-    ? { type: 'ease', duration: 0.45, easePreset: 'easeInOut' }
-    : (type === 'loop'
-      ? { type: 'ease', duration: 1.2, easePreset: 'linear', bezier: { x1: 0, y1: 0, x2: 1, y2: 1 } }
-      : (type === 'hover'
-        ? { type: 'ease', duration: 0.22, easePreset: 'easeInOut' }
-        : { type: 'ease', duration: 0.7, easePreset: 'easeInOut' }));
-  const base = {
-    id: typeof animation?.id === 'string' && animation.id ? animation.id : makeId('anim'),
-    type,
-    name: typeof animation?.name === 'string' && animation.name.trim()
-      ? animation.name.trim()
-      : (type === 'enter'
-        ? 'Appear'
-        : (type === 'scroll'
-          ? 'Scroll animation'
-          : (type === 'loop'
-            ? 'Loop animation'
-            : (type === 'hover' ? 'Hover animation' : 'Scroll variant')))),
-    preset,
-    transition: normalizeAnimationTransition(animation?.transition, transitionFallback),
-  };
-
-  if (type === 'enter') {
-    return {
-      ...base,
-      playback: ELEMENT_ANIMATION_PLAYBACK.has(animation?.playback) ? animation.playback : 'once',
-      effect: normalizeEnterEffect(animation?.effect, preset),
-      startState: normalizeAnimationPatchState(animation?.startState),
-    };
-  }
-
-  if (type === 'scroll') {
-    return {
-      ...base,
-      start: clampFinite(animation?.start, 0.2, 0, 1),
-      end: clampFinite(animation?.end, 0.68, 0, 1),
-      startOffset: normalizeAnimationMarkerOffset(animation?.startOffset),
-      endOffset: normalizeAnimationMarkerOffset(animation?.endOffset),
-      startOffsetPx: normalizeAnimationMarkerOffsetPx(animation?.startOffsetPx),
-      endOffsetPx: normalizeAnimationMarkerOffsetPx(animation?.endOffsetPx),
-      playback: ELEMENT_ANIMATION_PLAYBACK.has(animation?.playback) ? animation.playback : 'once',
-      effect: normalizeEnterEffect(animation?.effect, preset),
-      endState: normalizeAnimationPatchState(animation?.endState),
-    };
-  }
-
-  if (type === 'loop') {
-    return {
-      ...base,
-      loopType: LOOP_ANIMATION_TYPES.has(animation?.loopType) ? animation.loopType : 'loop',
-      offscreenBehavior: LOOP_ANIMATION_OFFSCREEN.has(animation?.offscreenBehavior) ? animation.offscreenBehavior : 'pause',
-      delay: clampFinite(animation?.delay, 0, 0, 60),
-      effect: normalizeLoopEffect(animation?.effect),
-    };
-  }
-
-  if (type === 'hover') {
-    return {
-      ...base,
-      effect: normalizeHoverEffect(animation?.effect),
-    };
-  }
-
-  const targets = normalizeScrollVariantTargets(animation?.targets, animation?.targetVariantId, animation?.marker);
-  return {
-    ...base,
-    marker: targets[0]?.marker ?? 0.5,
-    targetVariantId: targets[0]?.targetVariantId ?? null,
-    targets,
-    playback: ELEMENT_ANIMATION_PLAYBACK.has(animation?.playback) ? animation.playback : 'once',
-    order: clampFinite(animation?.order, index, 0, 999),
-  };
-}
-
-function normalizeElementAnimationCollection(collection) {
-  if (!Array.isArray(collection)) return [];
-  return collection.map((entry, index) => normalizeElementAnimation(entry, index));
-}
-
-function normalizeElementAnimations(animations) {
-  const safe = animations && typeof animations === 'object' ? animations : {};
-  return {
-    desktop: normalizeElementAnimationCollection(safe.desktop),
-    tablet: Array.isArray(safe.tablet) ? normalizeElementAnimationCollection(safe.tablet) : null,
-    mobile: Array.isArray(safe.mobile) ? normalizeElementAnimationCollection(safe.mobile) : null,
-  };
-}
-
-export function resolveElementAnimations(element, bpId) {
-  const animations = normalizeElementAnimations(element?.animations);
-  if (bpId === 'mobile') return animations.mobile ?? animations.tablet ?? animations.desktop;
-  if (bpId === 'tablet') return animations.tablet ?? animations.desktop;
-  return animations.desktop;
-}
-
-function getAnimationCollectionForWrite(element, bpId) {
-  const animations = normalizeElementAnimations(element?.animations);
-  if (bpId === 'desktop') return normalizeElementAnimationCollection(animations.desktop);
-  if (Array.isArray(animations?.[bpId])) return normalizeElementAnimationCollection(animations[bpId]);
-  return normalizeElementAnimationCollection(resolveElementAnimations(element, bpId));
-}
-
-function updateElementAnimationCollection(element, bpId, updater) {
-  const animations = normalizeElementAnimations(element?.animations);
-  const current = getAnimationCollectionForWrite(element, bpId);
-  const nextCollection = normalizeElementAnimationCollection(updater(current));
-  return {
-    ...element,
-    animations: {
-      ...animations,
-      [bpId]: nextCollection,
-    },
-  };
-}
-
-function updateAnimationEndState(entry, key, updates) {
-  return normalizeElementAnimation({
-    ...entry,
-    endState: {
-      ...entry?.endState,
-      [key]: key === 'layout'
-        ? { ...(entry?.endState?.layout ?? {}), ...(sanitizeLayoutUpdates(updates) ?? {}) }
-        : { ...(entry?.endState?.styles ?? {}), ...(updates ?? {}) },
-    },
-  });
-}
-
 function valuesMatchForAnimationOverride(nextValue, baseValue) {
   if (Object.is(nextValue, baseValue)) return true;
   if (nextValue == null && baseValue == null) return true;
@@ -852,27 +689,6 @@ function pruneElementBreakpointOverrides(element) {
       mobile: mobileOverride,
     },
   };
-}
-
-export function applyAnimationPreviewPatch(resolved, patch) {
-  if (!patch) return resolved;
-  return {
-    ...resolved,
-    ...(patch.layout ?? {}),
-    styles: {
-      ...(resolved?.styles ?? {}),
-      ...(patch.styles ?? {}),
-    },
-  };
-}
-
-export function getAnimationEditorPreviewPatch(element, bpId, animationEditor) {
-  if (!animationEditor || animationEditor.elementId !== element?.id || animationEditor.bpId !== bpId) return null;
-  const entry = resolveElementAnimations(element, bpId).find((item) => item.id === animationEditor.animationId) ?? null;
-  if (!entry) return null;
-  if (animationEditor.mode === 'scroll-effect' && entry.type === 'scroll') return entry?.endState ?? null;
-  if (animationEditor.mode === 'enter-start' && entry.type === 'enter') return entry?.startState ?? null;
-  return null;
 }
 
 function getElementIdPrefix(type) {
@@ -1167,9 +983,9 @@ function normalizeEmbedElementFields(element) {
 }
 
 function normalizeElementDynamicFields(element) {
-  const normalizedElement = pruneElementBreakpointOverrides(
+  const normalizedElement = normalizeElementConstraints(pruneElementBreakpointOverrides(
     normalizeEmbedElementFields(normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element)))))
-  );
+  ));
   return {
     ...normalizedElement,
     animations: normalizeElementAnimations(element?.animations),
@@ -1254,66 +1070,6 @@ const COMPONENT_EDITOR_VARIANT_GAP = 140;
 const COMPONENT_EDITOR_VARIANT_TOP = 100;
 const COMPONENT_EDITOR_VARIANT_SIDE_PAD = 120;
 
-const COMPONENT_ROOT_LAYOUT_KEYS = [
-  'width', 'height', 'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
-  'minW', 'maxW', 'minH', 'maxH', 'hidden', 'constraints', 'lockAspectRatio', 'rotation',
-];
-
-function makeComponentPrimaryRoot(config = {}) {
-  return {
-    id: config.id ?? makeId('cmp-root'),
-    type: 'frame',
-    name: 'Primary',
-    parentId: null,
-    children: [],
-    componentRoot: true,
-    base: {
-      x: config.x ?? 0,
-      y: config.y ?? 0,
-      width: config.width ?? 240,
-      height: config.height ?? 160,
-      rotation: config.rotation ?? 0,
-      locked: config.locked ?? false,
-      hidden: false,
-      widthMode: config.widthMode ?? 'fixed',
-      heightMode: config.heightMode ?? 'fixed',
-      widthPct: config.widthPct ?? null,
-      heightPct: config.heightPct ?? null,
-      widthFr: config.widthFr ?? 1,
-      heightFr: config.heightFr ?? 1,
-      lockAspectRatio: config.lockAspectRatio ?? false,
-      minW: config.minW ?? null,
-      maxW: config.maxW ?? null,
-      minH: config.minH ?? null,
-      maxH: config.maxH ?? null,
-      constraints: deepClone(config.constraints ?? { top: true, left: true, right: false, bottom: false }),
-      styles: {
-        backgroundColor: 'transparent',
-        borderRadius: 0,
-        borderWidth: 0,
-        borderColor: 'transparent',
-        borderStyle: 'solid',
-        opacity: 1,
-        mixBlendMode: 'normal',
-        overflow: 'visible',
-        display: null,
-        flexDirection: 'row',
-        flexWrap: 'nowrap',
-        gap: 0,
-        paddingTop: 0,
-        paddingRight: 0,
-        paddingBottom: 0,
-        paddingLeft: 0,
-        alignItems: 'flex-start',
-        justifyContent: 'flex-start',
-        boxShadow: '',
-        zIndex: config.zIndex ?? 1,
-      },
-    },
-    overrides: { tablet: {}, mobile: {} },
-  };
-}
-
 function makeAssetStorageComponent() {
   const root = makeComponentPrimaryRoot({
     width: 2400,
@@ -1345,185 +1101,6 @@ function makeAssetStorageComponent() {
     snapshot: [root],
     controls: [],
   });
-}
-
-function ensureComponentPrimaryRoot(snapshot = []) {
-  const normalized = deepClone(snapshot ?? []);
-  const root = getSnapshotRoot(normalized);
-  if (!root) return [];
-
-  normalized.forEach((el) => {
-    delete el.componentInstance;
-  });
-
-  if (root.componentRoot) {
-    root.name = 'Primary';
-    root.parentId = null;
-    root.base = {
-      ...root.base,
-      widthMode: 'fixed',
-      heightMode: 'fixed',
-    };
-    return normalized;
-  }
-
-  const rootBase = root.base ?? {};
-  const wrapper = makeComponentPrimaryRoot({
-    ...pick(rootBase, COMPONENT_ROOT_LAYOUT_KEYS),
-    zIndex: rootBase.styles?.zIndex ?? 1,
-  });
-
-  ['tablet', 'mobile'].forEach((bpId) => {
-    const sourceOverride = root.overrides?.[bpId] ?? {};
-    const nextOverride = pick(sourceOverride, COMPONENT_ROOT_LAYOUT_KEYS);
-    const zIndex = sourceOverride.styles?.zIndex;
-    if (zIndex != null) nextOverride.styles = { zIndex };
-    if (Object.keys(nextOverride).length) wrapper.overrides[bpId] = nextOverride;
-  });
-
-  wrapper.children = [root.id];
-  root.parentId = wrapper.id;
-  root.base = {
-    ...root.base,
-    x: 0,
-    y: 0,
-    rotation: 0,
-    positionType: 'relative',
-    absoluteInLayout: false,
-  };
-  ['tablet', 'mobile'].forEach((bpId) => {
-    const override = root.overrides?.[bpId];
-    if (!override) return;
-    root.overrides[bpId] = {
-      ...override,
-      ...(override.x != null ? { x: 0 } : {}),
-      ...(override.y != null ? { y: 0 } : {}),
-      ...(override.rotation != null ? { rotation: 0 } : {}),
-      ...(override.positionType != null ? { positionType: 'relative' } : {}),
-      ...(override.absoluteInLayout != null ? { absoluteInLayout: false } : {}),
-    };
-  });
-
-  return [wrapper, ...normalized];
-}
-
-const COMPONENT_TRANSITION_TYPES = new Set(['instant', 'ease', 'realistic']);
-const COMPONENT_EASE_PRESETS = new Set(['easeInOut', 'easeOut', 'easeIn', 'linear', 'custom']);
-const COMPONENT_VARIANT_MODES = new Set(['default', 'hover', 'pressed']);
-const COMPONENT_VARIANT_STATE_ORDER = ['hover', 'pressed'];
-const COMPONENT_VARIANT_STATE_LABELS = {
-  default: 'Default',
-  hover: 'Hover',
-  pressed: 'Pressed',
-};
-const COMPONENT_CONTROL_TYPES = new Set(['text', 'textarea', 'number', 'boolean', 'select', 'color', 'image', 'url']);
-const COMPONENT_CONTROL_BINDABLE_PROPERTIES = new Set([
-  'text',
-  'src',
-  'hidden',
-  'variant',
-  'styles.backgroundColor',
-  'styles.color',
-  'styles.borderRadius',
-  'styles.borderWidth',
-  'styles.opacity',
-]);
-
-function normalizeComponentControlOption(option, index = 0) {
-  if (typeof option === 'string') {
-    const value = option.trim();
-    return { label: value || `Option ${index + 1}`, value: value || `option-${index + 1}` };
-  }
-
-  const rawValue = option?.value;
-  const value = typeof rawValue === 'string'
-    ? rawValue.trim()
-    : `${rawValue ?? ''}`.trim();
-  const rawLabel = typeof option?.label === 'string' ? option.label.trim() : '';
-
-  return {
-    label: rawLabel || value || `Option ${index + 1}`,
-    value: value || `option-${index + 1}`,
-  };
-}
-
-function normalizeComponentControlValue(type, value, options = []) {
-  if (type === 'boolean') return value === true;
-  if (type === 'number') return clampFinite(value, 0);
-  if (type === 'color') {
-    const next = typeof value === 'string' ? value.trim() : '';
-    return next || '#000000';
-  }
-
-  const next = typeof value === 'string'
-    ? value
-    : (value == null ? '' : `${value}`);
-
-  if (type === 'select') {
-    const match = options.find((option) => option.value === next);
-    return match?.value ?? options[0]?.value ?? '';
-  }
-
-  return next;
-}
-
-function normalizeComponentControlBinding(binding) {
-  const elementId = typeof binding?.elementId === 'string' && binding.elementId.trim()
-    ? binding.elementId.trim()
-    : null;
-  const property = typeof binding?.property === 'string' && COMPONENT_CONTROL_BINDABLE_PROPERTIES.has(binding.property)
-    ? binding.property
-    : null;
-  if (!elementId || !property) return null;
-  return { elementId, property };
-}
-
-function normalizeComponentControl(control, index = 0) {
-  const type = COMPONENT_CONTROL_TYPES.has(control?.type) ? control.type : 'text';
-  const options = type === 'select'
-    ? (Array.isArray(control?.options) ? control.options : []).map((option, optionIndex) => normalizeComponentControlOption(option, optionIndex))
-    : [];
-  const dedupedOptions = options.filter((option, optionIndex, allOptions) => allOptions.findIndex((candidate) => candidate.value === option.value) === optionIndex);
-  const bindings = (Array.isArray(control?.bindings) ? control.bindings : [])
-    .map(normalizeComponentControlBinding)
-    .filter(Boolean);
-
-  return {
-    id: typeof control?.id === 'string' && control.id.trim() ? control.id.trim() : makeId('cmp-ctrl'),
-    type,
-    label: typeof control?.label === 'string' && control.label.trim() ? control.label.trim() : `Control ${index + 1}`,
-    defaultValue: normalizeComponentControlValue(type, control?.defaultValue, dedupedOptions),
-    options: dedupedOptions,
-    bindings,
-  };
-}
-
-function normalizeComponentControls(controls) {
-  const seen = new Set();
-  return (Array.isArray(controls) ? controls : [])
-    .map((control, index) => normalizeComponentControl(control, index))
-    .filter((control) => {
-      if (seen.has(control.id)) return false;
-      seen.add(control.id);
-      return true;
-    });
-}
-
-function normalizeComponentInstanceProps(component, props) {
-  const normalizedProps = isPlainObject(props) ? props : {};
-  const nextProps = {};
-  (component?.controls ?? []).forEach((control) => {
-    if (!Object.prototype.hasOwnProperty.call(normalizedProps, control.id)) return;
-    nextProps[control.id] = normalizeComponentControlValue(control.type, normalizedProps[control.id], control.options ?? []);
-  });
-  return nextProps;
-}
-
-function getComponentControlValue(control, props = {}) {
-  if (Object.prototype.hasOwnProperty.call(props, control.id)) {
-    return normalizeComponentControlValue(control.type, props[control.id], control.options ?? []);
-  }
-  return normalizeComponentControlValue(control.type, control.defaultValue, control.options ?? []);
 }
 
 function setValueAtPath(target, path, value) {
@@ -1650,120 +1227,8 @@ function buildComponentInstanceSubtree(component, {
   };
 }
 
-function getComponentVariantStateLabel(mode) {
-  return COMPONENT_VARIANT_STATE_LABELS[mode] ?? 'State';
-}
-
-function isDefaultComponentVariant(variant) {
-  return (variant?.mode ?? 'default') === 'default';
-}
-
-function getDefaultComponentVariants(component) {
-  return (component?.variants ?? []).filter(isDefaultComponentVariant);
-}
-
-function getPrimaryComponentVariant(component) {
-  return getDefaultComponentVariants(component)[0] ?? component?.variants?.[0] ?? null;
-}
-
-function getBaseComponentVariantId(variants, variantId = null) {
-  const selected = (variants ?? []).find((variant) => variant.id === variantId) ?? null;
-  if (!selected) return getDefaultComponentVariants({ variants })[0]?.id ?? null;
-  return isDefaultComponentVariant(selected) ? selected.id : (selected.parentVariantId ?? null);
-}
-
-function insertVariantAfterFamily(variants, baseVariantId, nextVariant) {
-  const existing = variants ?? [];
-  const baseId = getBaseComponentVariantId(existing, baseVariantId) ?? baseVariantId;
-  const familyIndexes = existing.reduce((acc, variant, index) => {
-    if (variant.id === baseId || variant.parentVariantId === baseId) acc.push(index);
-    return acc;
-  }, []);
-  const insertIndex = familyIndexes.length ? (familyIndexes[familyIndexes.length - 1] + 1) : existing.length;
-  return [
-    ...existing.slice(0, insertIndex),
-    nextVariant,
-    ...existing.slice(insertIndex),
-  ];
-}
-
-function insertStateVariant(variants, baseVariantId, stateVariant) {
-  const existing = variants ?? [];
-  const family = existing.filter((variant) => variant.id === baseVariantId || variant.parentVariantId === baseVariantId);
-  const stateOrderIndex = COMPONENT_VARIANT_STATE_ORDER.indexOf(stateVariant.mode);
-  const sameFamilyInsertIndex = family.findIndex((variant) => {
-    if (isDefaultComponentVariant(variant)) return false;
-    return COMPONENT_VARIANT_STATE_ORDER.indexOf(variant.mode) > stateOrderIndex;
-  });
-  if (sameFamilyInsertIndex === -1) return insertVariantAfterFamily(existing, baseVariantId, stateVariant);
-  const familyVariant = family[sameFamilyInsertIndex];
-  const insertIndex = existing.findIndex((variant) => variant.id === familyVariant.id);
-  return [
-    ...existing.slice(0, insertIndex),
-    stateVariant,
-    ...existing.slice(insertIndex),
-  ];
-}
-
-function clampFinite(value, fallback, min = -Infinity, max = Infinity) {
-  const numericValue = typeof value === 'number' ? value : parseFloat(value);
-  if (!Number.isFinite(numericValue)) return fallback;
-  return Math.min(max, Math.max(min, numericValue));
-}
-
-function normalizeViewportValue(viewport, fallback = { x: 80, y: 80, scale: 0.55 }) {
-  return {
-    x: clampFinite(viewport?.x, fallback?.x ?? 80, -100000, 100000),
-    y: clampFinite(viewport?.y, fallback?.y ?? 80, -100000, 100000),
-    scale: clampFinite(viewport?.scale, fallback?.scale ?? 0.55, 0.08, 8),
-  };
-}
-
-function normalizeComponentBezier(bezier) {
-  return {
-    x1: clampFinite(bezier?.x1, 0.44, 0, 1),
-    y1: clampFinite(bezier?.y1, 0, 0, 1),
-    x2: clampFinite(bezier?.x2, 0.56, 0, 1),
-    y2: clampFinite(bezier?.y2, 1, 0, 1),
-  };
-}
-
-function normalizeComponentTransition(transition) {
-  const type = COMPONENT_TRANSITION_TYPES.has(transition?.type) ? transition.type : 'instant';
-  const easePreset = COMPONENT_EASE_PRESETS.has(transition?.easePreset) ? transition.easePreset : 'easeInOut';
-  const springMode = transition?.springMode === 'physics' ? 'physics' : 'time';
-  const duration = clampFinite(transition?.duration, 0.3, 0, 20);
-  return {
-    type,
-    duration,
-    easePreset,
-    springMode,
-    physicsDuration: clampFinite(transition?.physicsDuration, duration, 0, 20),
-    bounce: clampFinite(transition?.bounce, 0.2, 0, 1),
-    stiffness: clampFinite(transition?.stiffness, 500, 1, 2000),
-    damping: clampFinite(transition?.damping, 24, 1, 300),
-    mass: clampFinite(transition?.mass, 1, 0.1, 20),
-    bezier: normalizeComponentBezier(transition?.bezier),
-  };
-}
-
-function normalizeComponentInteraction(interaction) {
-  const targetVariantId = typeof interaction?.targetVariantId === 'string' && interaction.targetVariantId
-    ? interaction.targetVariantId
-    : null;
-  if (!targetVariantId) return null;
-  return {
-    targetVariantId,
-    trigger: typeof interaction?.trigger === 'string' ? interaction.trigger : 'click',
-    delay: clampFinite(interaction?.delay, 0, 0, 60),
-    transition: normalizeComponentTransition(interaction?.transition),
-  };
-}
-
 function normalizeComponentVariant(variant, fallbackName = 'Variant', { primary = false } = {}) {
-  const mode = primary
-    ? 'default'
-    : (COMPONENT_VARIANT_MODES.has(variant?.mode) ? variant.mode : 'default');
+  const mode = resolveComponentVariantMode(variant?.mode, { primary });
   const parentVariantId = mode === 'default'
     ? null
     : (typeof variant?.parentVariantId === 'string' && variant.parentVariantId ? variant.parentVariantId : null);
@@ -1876,104 +1341,6 @@ function deepMerge(baseValue, patchValue) {
   return merged;
 }
 
-function applyVariantOverrides(primarySnapshot, overrideSnapshot = []) {
-  const normalizedPrimary = ensureComponentPrimaryRoot(primarySnapshot ?? []);
-  const baseMap = new Map(normalizedPrimary.map((el) => [el.id, deepClone(el)]));
-  const deleteIds = new Set();
-
-  const collectDeleteIds = (elementId) => {
-    if (deleteIds.has(elementId)) return;
-    deleteIds.add(elementId);
-    const el = baseMap.get(elementId);
-    (el?.children ?? []).forEach(collectDeleteIds);
-  };
-
-  overrideSnapshot.forEach((entry) => {
-    if (entry?.__deleted) collectDeleteIds(entry.id);
-  });
-
-  let next = normalizedPrimary
-    .filter((el) => !deleteIds.has(el.id))
-    .map((el) => ({ ...deepClone(el), children: (el.children ?? []).filter((childId) => !deleteIds.has(childId)) }));
-
-  const nextMap = new Map(next.map((el) => [el.id, el]));
-  overrideSnapshot.forEach((entry) => {
-    if (!entry || entry.__deleted) return;
-    if (nextMap.has(entry.id)) {
-      const merged = deepMerge(nextMap.get(entry.id), entry);
-      delete merged.__added;
-      nextMap.set(entry.id, merged);
-    } else {
-      const added = deepClone(entry);
-      delete added.__added;
-      nextMap.set(added.id, added);
-    }
-  });
-
-  next = Array.from(nextMap.values());
-  return ensureComponentPrimaryRoot(next);
-}
-
-function composeVariantSnapshot(component, variantId = null) {
-  const primaryVariant = getPrimaryComponentVariant(component);
-  if (!primaryVariant) return [];
-  const primarySnapshot = ensureComponentPrimaryRoot(primaryVariant.snapshot ?? []);
-  const variant = getComponentVariant(component, variantId ?? primaryVariant.id);
-  if (!variant || variant.id === primaryVariant.id) return primarySnapshot;
-  if (isDefaultComponentVariant(variant)) {
-    return applyVariantOverrides(primarySnapshot, variant.snapshot ?? []);
-  }
-  const visited = new Set([variant.id]);
-  let parentVariantId = variant.parentVariantId;
-  while (parentVariantId && visited.has(parentVariantId)) parentVariantId = null;
-  const parentSnapshot = parentVariantId
-    ? composeVariantSnapshot(component, parentVariantId)
-    : primarySnapshot;
-  return applyVariantOverrides(parentSnapshot, variant.snapshot ?? []);
-}
-
-function stripComponentEditorMeta(element) {
-  const next = deepClone(element);
-  delete next.componentEditorVariantId;
-  delete next.componentSourceId;
-  delete next.componentVariantName;
-  delete next.componentVariantOrder;
-  delete next.componentVariantPrimary;
-  delete next.componentVariantMode;
-  delete next.componentVariantParentId;
-  return next;
-}
-
-function instantiateEditorVariantSnapshot(snapshot, variant, order, rootX, rootY) {
-  const root = getSnapshotRoot(snapshot);
-  if (!root) return [];
-
-  const idMap = {};
-  snapshot.forEach((el) => {
-    idMap[el.id] = makeId(getElementIdPrefix(el.type));
-  });
-
-  return deepClone(snapshot).map((el) => {
-    const isRoot = el.id === root.id;
-    return {
-      ...el,
-      id: idMap[el.id],
-      parentId: isRoot ? null : (idMap[el.parentId] ?? null),
-      children: (el.children ?? []).map((childId) => idMap[childId]).filter(Boolean),
-      componentEditorVariantId: variant.id,
-      componentSourceId: el.id,
-      componentVariantName: variant.name,
-      componentVariantOrder: order,
-      componentVariantPrimary: order === 0,
-      componentVariantMode: variant.mode ?? 'default',
-      componentVariantParentId: variant.parentVariantId ?? null,
-      base: isRoot
-        ? { ...el.base, x: rootX, y: rootY }
-        : el.base,
-    };
-  });
-}
-
 function buildComponentEditorElements(component) {
   const defaultVariants = getDefaultComponentVariants(component);
   let cursorX = COMPONENT_EDITOR_VARIANT_SIDE_PAD;
@@ -2006,107 +1373,6 @@ function buildComponentEditorElements(component) {
     width: Math.max(1400, cursorX + COMPONENT_EDITOR_VARIANT_SIDE_PAD),
     height: Math.max(960, maxBottom + 360),
   };
-}
-
-function getEditorVariantRoot(elements, variantId) {
-  return (elements ?? []).find((el) => !el.parentId && el.componentRoot && el.componentEditorVariantId === variantId) ?? null;
-}
-
-function extractEditorVariantSnapshot(elements, variantId) {
-  const root = getEditorVariantRoot(elements, variantId);
-  if (!root) return [];
-
-  const byRuntimeId = new Map((elements ?? []).map((el) => [el.id, el]));
-  const subtree = [];
-  const visit = (runtimeId) => {
-    const el = byRuntimeId.get(runtimeId);
-    if (!el) return;
-    subtree.push(el);
-    (el.children ?? []).forEach(visit);
-  };
-  visit(root.id);
-
-  const runtimeToSource = new Map(subtree.map((el) => [el.id, el.componentSourceId ?? el.id]));
-  const normalized = subtree.map((el) => {
-    const next = stripComponentEditorMeta(el);
-    next.id = el.componentSourceId ?? el.id;
-    next.parentId = el.parentId ? (runtimeToSource.get(el.parentId) ?? null) : null;
-    next.children = (el.children ?? []).map((childId) => runtimeToSource.get(childId)).filter(Boolean);
-    delete next.componentInstance;
-    if (next.componentRoot) {
-      next.name = 'Primary';
-      next.base = { ...next.base, x: 0, y: 0 };
-    }
-    return next;
-  });
-
-  return ensureComponentPrimaryRoot(normalized);
-}
-
-function extractVariantOverrides(primarySnapshot, variantSnapshot) {
-  const normalizedPrimary = ensureComponentPrimaryRoot(primarySnapshot ?? []);
-  const normalizedVariant = ensureComponentPrimaryRoot(variantSnapshot ?? []);
-  const primaryMap = new Map(normalizedPrimary.map((el) => [el.id, el]));
-  const variantMap = new Map(normalizedVariant.map((el) => [el.id, el]));
-  const overrides = [];
-
-  normalizedPrimary.forEach((primaryEl) => {
-    if (!variantMap.has(primaryEl.id)) overrides.push({ id: primaryEl.id, __deleted: true });
-  });
-
-  normalizedVariant.forEach((variantEl) => {
-    const primaryEl = primaryMap.get(variantEl.id);
-    if (!primaryEl) {
-      overrides.push({ ...deepClone(variantEl), __added: true });
-      return;
-    }
-
-    const delta = { id: variantEl.id };
-    ['type', 'name', 'parentId', 'children', 'base', 'overrides'].forEach((key) => {
-      const keyDiff = diffValue(primaryEl[key], variantEl[key]);
-      if (keyDiff !== undefined) delta[key] = keyDiff;
-    });
-
-    if (Object.keys(delta).length > 1) overrides.push(delta);
-  });
-
-  return overrides;
-}
-
-function syncComponentEditorVariants(componentEditor) {
-  const currentVariants = componentEditor?.variants ?? [];
-  if (!currentVariants.length) return [];
-  const pageElements = componentEditor.page?.elements ?? [];
-  const presentVariants = currentVariants.filter((variant) => !!getEditorVariantRoot(pageElements, variant.id));
-  if (!presentVariants.length) return currentVariants;
-
-  const primaryVariant = getPrimaryComponentVariant({ variants: presentVariants });
-  const primarySnapshot = extractEditorVariantSnapshot(pageElements, primaryVariant?.id);
-  if (!primarySnapshot.length) return currentVariants;
-
-  const fullSnapshotsById = new Map();
-  fullSnapshotsById.set(primaryVariant.id, primarySnapshot);
-
-  return presentVariants.map((variant) => {
-    if (variant.id === primaryVariant.id) {
-      return { ...variant, name: 'Primary', mode: 'default', parentVariantId: null, snapshot: primarySnapshot, interaction: normalizeComponentInteraction(variant.interaction) };
-    }
-    const fullVariantSnapshot = extractEditorVariantSnapshot(pageElements, variant.id);
-    fullSnapshotsById.set(variant.id, fullVariantSnapshot);
-    const parentSnapshot = isDefaultComponentVariant(variant)
-      ? primarySnapshot
-      : (fullSnapshotsById.get(variant.parentVariantId) ?? extractEditorVariantSnapshot(pageElements, variant.parentVariantId) ?? primarySnapshot);
-    return {
-      ...variant,
-      name: isDefaultComponentVariant(variant) ? variant.name : getComponentVariantStateLabel(variant.mode),
-      interaction: isDefaultComponentVariant(variant) ? normalizeComponentInteraction(variant.interaction) : null,
-      snapshot: extractVariantOverrides(parentSnapshot, fullVariantSnapshot),
-    };
-  });
-}
-
-export function getLiveComponentEditorVariants(componentEditor) {
-  return syncComponentEditorVariants(componentEditor);
 }
 
 function buildComponentLibraryForPersistence(state) {
@@ -2148,6 +1414,7 @@ const makeDefaultPage = () => ({
   title: 'Untitled Page',
   // tablet/mobile start as null = inherit from parent breakpoint
   background: { desktop: '#ffffff', tablet: null, mobile: null },
+  smoothScroll: { desktop: false, tablet: null, mobile: null },
   // padding: null per bp = inherit from parent breakpoint
   padding: { desktop: { top: 0, right: 0, bottom: 0, left: 0 }, tablet: null, mobile: null },
   // layout: null per bp = inherit; object = { flexDirection, alignItems, justifyContent, flexWrap, gap }
@@ -2218,6 +1485,7 @@ function normalizePageData(page) {
     ...fallback,
     ...(page ?? {}),
     background: { ...fallback.background, ...(page?.background ?? {}) },
+    smoothScroll: { ...fallback.smoothScroll, ...(page?.smoothScroll ?? {}) },
     padding: { ...fallback.padding, ...(page?.padding ?? {}) },
     layout: { ...fallback.layout, ...(page?.layout ?? {}) },
     variables: normalizeVariableList(page?.variables, 'page'),
@@ -3161,6 +2429,13 @@ export function resolveBackground(background, bpId) {
   return bg.desktop ?? '#ffffff';
 }
 
+export function resolvePageSmoothScroll(smoothScroll, bpId) {
+  const value = smoothScroll ?? {};
+  if (bpId === 'mobile') return value.mobile ?? value.tablet ?? value.desktop ?? false;
+  if (bpId === 'tablet') return value.tablet ?? value.desktop ?? false;
+  return value.desktop ?? false;
+}
+
 // Cascade page padding: null = inherit from parent breakpoint
 const ZERO_PAD = { top: 0, right: 0, bottom: 0, left: 0 };
 export function resolvePagePadding(padding, bpId) {
@@ -3255,11 +2530,6 @@ function collectSubtree(elements, rootId) {
   };
   visit(rootId);
   return subtree;
-}
-
-function getSnapshotRoot(snapshot) {
-  const idSet = new Set(snapshot.map(el => el.id));
-  return snapshot.find(el => !idSet.has(el.parentId)) ?? snapshot[0] ?? null;
 }
 
 function normalizeComponentSnapshot(subtree, rootId) {
@@ -4711,11 +3981,9 @@ export const useEditorStore = create((set, get) => {
             elementId: payload.elementId,
             bpId: payload.bpId ?? 'desktop',
             animationId: payload.animationId,
-            mode: payload.mode === 'enter-start'
-              ? 'enter-start'
-              : (payload.mode === 'scroll-effect'
-                ? 'scroll-effect'
-                : (payload.mode === 'scroll-variant-marker' ? 'scroll-variant-marker' : 'scroll-range')),
+            mode: ['enter-start', 'scroll-start', 'scroll-effect', 'scroll-variant-marker'].includes(payload.mode)
+              ? payload.mode
+              : 'scroll-range',
           }
         : null,
     }),
@@ -5002,13 +4270,14 @@ export const useEditorStore = create((set, get) => {
      *  Desktop → base.styles. Tablet/Mobile → overrides[bpId].styles */
     updateElementStyles(elementId, bpId, styleUpdates) {
       const animationEditor = get().animationEditor;
-      if ((animationEditor?.mode === 'scroll-effect' || animationEditor?.mode === 'enter-start') && animationEditor.elementId === elementId && animationEditor.bpId === bpId) {
+      if ((animationEditor?.mode === 'scroll-effect' || animationEditor?.mode === 'scroll-start' || animationEditor?.mode === 'enter-start') && animationEditor.elementId === elementId && animationEditor.bpId === bpId) {
         const targetElement = get().getAllElements().find((entry) => entry.id === elementId) ?? null;
         const currentPage = get().pages.find((page) => page.id === get().currentPageId) ?? null;
         const pageVariables = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
         const resolvedBase = targetElement ? resolveElementWithVariables(targetElement, bpId, pageVariables, get().globalVariables) : null;
         get().updateElementAnimation(elementId, bpId, animationEditor.animationId, (entry) => {
-          const currentPatch = animationEditor.mode === 'enter-start' ? entry?.startState : entry?.endState;
+          const isStartPatchMode = animationEditor.mode === 'enter-start' || animationEditor.mode === 'scroll-start';
+          const currentPatch = isStartPatchMode ? entry?.startState : entry?.endState;
           const nextStyles = { ...(currentPatch?.styles ?? {}) };
           Object.entries(styleUpdates ?? {}).forEach(([key, value]) => {
             const baseValue = resolvedBase?.styles?.[key];
@@ -5017,8 +4286,8 @@ export const useEditorStore = create((set, get) => {
           });
           return normalizeElementAnimation({
             ...entry,
-            [animationEditor.mode === 'enter-start' ? 'startState' : 'endState']: {
-              ...(animationEditor.mode === 'enter-start' ? entry?.startState : entry?.endState),
+            [isStartPatchMode ? 'startState' : 'endState']: {
+              ...(isStartPatchMode ? entry?.startState : entry?.endState),
               styles: nextStyles,
             },
           });
@@ -5082,23 +4351,47 @@ export const useEditorStore = create((set, get) => {
       const safeUpdates = sanitizeLayoutUpdates(updates);
       if (!safeUpdates || !Object.keys(safeUpdates).length) return;
       const animationEditor = get().animationEditor;
-      if ((animationEditor?.mode === 'scroll-effect' || animationEditor?.mode === 'enter-start') && animationEditor.elementId === elementId && animationEditor.bpId === bpId) {
+      if ((animationEditor?.mode === 'scroll-effect' || animationEditor?.mode === 'scroll-start' || animationEditor?.mode === 'enter-start') && animationEditor.elementId === elementId && animationEditor.bpId === bpId) {
         const targetElement = get().getAllElements().find((entry) => entry.id === elementId) ?? null;
         const currentPage = get().pages.find((page) => page.id === get().currentPageId) ?? null;
         const pageVariables = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
         const resolvedBase = targetElement ? resolveElementWithVariables(targetElement, bpId, pageVariables, get().globalVariables) : null;
+        const pageLayout = resolvePageLayout(currentPage?.layout, bpId);
         get().updateElementAnimation(elementId, bpId, animationEditor.animationId, (entry) => {
-          const currentPatch = animationEditor.mode === 'enter-start' ? entry?.startState : entry?.endState;
+          const isStartPatchMode = animationEditor.mode === 'enter-start' || animationEditor.mode === 'scroll-start';
+          const currentPatch = isStartPatchMode ? entry?.startState : entry?.endState;
           const nextLayout = { ...(currentPatch?.layout ?? {}) };
           Object.entries(safeUpdates ?? {}).forEach(([key, value]) => {
             const baseValue = resolvedBase?.[key];
             if (valuesMatchForAnimationOverride(value, baseValue)) delete nextLayout[key];
             else nextLayout[key] = value;
           });
+          const isFlowPositioned = !!resolvedBase && (
+            ['relative', 'sticky'].includes(resolvedBase.positionType ?? 'absolute')
+            || (!targetElement?.parentId && pageLayout !== null && !resolvedBase.absoluteInLayout && resolvedBase.positionType !== 'fixed')
+          );
+          const hasAnimatedSizeOverride = Object.prototype.hasOwnProperty.call(nextLayout, 'width') || Object.prototype.hasOwnProperty.call(nextLayout, 'height');
+          if (isFlowPositioned && hasAnimatedSizeOverride) {
+            const baseX = typeof resolvedBase?.x === 'number' ? resolvedBase.x : (parseFloat(resolvedBase?.x) || 0);
+            const baseY = typeof resolvedBase?.y === 'number' ? resolvedBase.y : (parseFloat(resolvedBase?.y) || 0);
+            const baseWidth = typeof resolvedBase?.width === 'number' ? resolvedBase.width : (parseFloat(resolvedBase?.width) || 0);
+            const baseHeight = typeof resolvedBase?.height === 'number' ? resolvedBase.height : (parseFloat(resolvedBase?.height) || 0);
+            const nextWidth = Object.prototype.hasOwnProperty.call(nextLayout, 'width') ? (parseFloat(nextLayout.width) || 0) : baseWidth;
+            const nextHeight = Object.prototype.hasOwnProperty.call(nextLayout, 'height') ? (parseFloat(nextLayout.height) || 0) : baseHeight;
+
+            const centeredX = baseX + ((baseWidth - nextWidth) / 2);
+            const centeredY = baseY + ((baseHeight - nextHeight) / 2);
+
+            if (valuesMatchForAnimationOverride(centeredX, resolvedBase?.x)) delete nextLayout.x;
+            else nextLayout.x = centeredX;
+
+            if (valuesMatchForAnimationOverride(centeredY, resolvedBase?.y)) delete nextLayout.y;
+            else nextLayout.y = centeredY;
+          }
           return normalizeElementAnimation({
             ...entry,
-            [animationEditor.mode === 'enter-start' ? 'startState' : 'endState']: {
-              ...(animationEditor.mode === 'enter-start' ? entry?.startState : entry?.endState),
+            [isStartPatchMode ? 'startState' : 'endState']: {
+              ...(isStartPatchMode ? entry?.startState : entry?.endState),
               layout: nextLayout,
             },
           });
@@ -5274,6 +4567,30 @@ export const useEditorStore = create((set, get) => {
       });
     },
 
+    /** Update page smooth-scroll behavior for a specific breakpoint (null = inherit from parent) */
+    setPageSmoothScroll(bpId, value) {
+      set(state => {
+        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
+          return {
+            componentEditor: {
+              ...state.componentEditor,
+              page: {
+                ...state.componentEditor.page,
+                smoothScroll: { ...(state.componentEditor.page.smoothScroll ?? {}), [bpId]: value },
+              },
+            },
+          };
+        }
+        return {
+          pages: state.pages.map(p =>
+            p.id === state.currentPageId
+              ? { ...p, smoothScroll: { ...(p.smoothScroll ?? {}), [bpId]: value } }
+              : p
+          ),
+        };
+      });
+    },
+
     /** Update page padding for a specific breakpoint (null = inherit from parent) */
     setPagePadding(bpId, padObj) {
       set(state => {
@@ -5394,7 +4711,7 @@ export const useEditorStore = create((set, get) => {
 
     /** Bulk-add a flat array of pre-cloned elements (for paste). */
     addElements(elements) {
-      withPage(els => [...els, ...elements]);
+      withPage(els => [...els, ...(Array.isArray(elements) ? elements.map(normalizeElementDynamicFields) : [])]);
     },
 
     /** Move element under a new parent (or null = root). Prevents circular nesting. */
