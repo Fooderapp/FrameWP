@@ -1,6 +1,7 @@
 import React from 'react';
 import { useEditorStore } from '../store/editorStore';
 import { getIconPresetMarkup } from '../components/iconLibrary';
+import { isFormElementType } from '../domain/formModel';
 
 export const ELEMENT_TYPES = [
   {
@@ -82,18 +83,163 @@ export const ELEMENT_TYPES = [
   },
 ];
 
-export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null, onItemDragEnd = null, compact = false, toolbarPalette = false }) {
+export const FORM_ELEMENT_TYPES = [
+  {
+    type: 'form',
+    label: 'Form',
+    hint: 'Container and state shell for a form flow',
+    meta: 'Form',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.25" y="2" width="11.5" height="12" rx="1.6" />
+        <path d="M5 5.25h6" />
+        <path d="M5 8h6" />
+        <path d="M5 10.75h3.5" />
+      </svg>
+    ),
+  },
+  {
+    type: 'text-field',
+    label: 'Text Field',
+    hint: 'Single-line text, email, phone, and more',
+    meta: 'Field',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.25" y="4" width="11.5" height="8" rx="1.6" />
+        <path d="M5 8h6" />
+      </svg>
+    ),
+  },
+  {
+    type: 'textarea-field',
+    label: 'Textarea',
+    hint: 'Simple multi-line plain text input',
+    meta: 'Field',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.25" y="2.75" width="11.5" height="10.5" rx="1.6" />
+        <path d="M5 5.5h6" />
+        <path d="M5 8h6" />
+        <path d="M5 10.5h4" />
+      </svg>
+    ),
+  },
+  {
+    type: 'rich-text-editor',
+    label: 'Rich Text',
+    hint: 'Formatted content editor with toolbar actions',
+    meta: 'Field',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.25" y="2.75" width="11.5" height="10.5" rx="1.6" />
+        <path d="M4.75 5.25h2.5" />
+        <path d="M5.5 5.25v5" />
+        <path d="M8.75 5.25h2.5" />
+        <path d="M10 5.25v5" />
+        <path d="M8.75 7.75h2.5" />
+      </svg>
+    ),
+  },
+  {
+    type: 'radio-group',
+    label: 'Radio Group',
+    hint: 'Single choice, standard or image cards',
+    meta: 'Choice',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="4.5" cy="5" r="1.75" />
+        <path d="M8 5h4" />
+        <circle cx="4.5" cy="11" r="1.75" />
+        <path d="M8 11h4" />
+      </svg>
+    ),
+  },
+  {
+    type: 'dropdown',
+    label: 'Dropdown',
+    hint: 'Select menus with option sets',
+    meta: 'Choice',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.25" y="4" width="11.5" height="8" rx="1.6" />
+        <path d="m9.5 7 2 2 2-2" />
+      </svg>
+    ),
+  },
+  {
+    type: 'checkbox',
+    label: 'Checkbox',
+    hint: 'Boolean consent and multi-select inputs',
+    meta: 'Choice',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.75" y="3.25" width="9.5" height="9.5" rx="1.4" />
+        <path d="m5.25 8 1.8 1.9 3.3-4" />
+      </svg>
+    ),
+  },
+  {
+    type: 'file-upload',
+    label: 'File Upload',
+    hint: 'Dropzone with file restrictions and uploads',
+    meta: 'Upload',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8 3v6" />
+        <path d="m5.75 5.25 2.25-2.25 2.25 2.25" />
+        <path d="M3.5 10.5v1a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5v-1" />
+      </svg>
+    ),
+  },
+  {
+    type: 'captcha',
+    label: 'Captcha',
+    hint: 'Bot protection with provider-backed validation',
+    meta: 'Security',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M13 8a5 5 0 1 1-1.45-3.54" />
+        <path d="M13 3v3h-3" />
+        <path d="m5.75 8 1.25 1.25 3-3" />
+      </svg>
+    ),
+  },
+  {
+    type: 'submit-button',
+    label: 'Submit Button',
+    hint: 'Dedicated form submit control wired into form runtime',
+    meta: 'Action',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="2.2" />
+        <path d="M5 8h6" />
+        <path d="m9 6.25 2 1.75L9 9.75" />
+      </svg>
+    ),
+  },
+];
+
+export function ElementPickerGrid({ items = ELEMENT_TYPES, onItemChosen = null, onItemDragStart = null, onItemDragEnd = null, compact = false, toolbarPalette = false }) {
   const pendingDraw = useEditorStore(s => s.pendingDraw);
   const setPendingDraw = useEditorStore(s => s.setPendingDraw);
 
-  const handleDragStart = (e, type) => {
+  const handleDragStart = (e, item) => {
+    if (item?.disabled) {
+      e.preventDefault();
+      return;
+    }
     setPendingDraw(null);
     e.dataTransfer.effectAllowed = 'copy';
-    e.dataTransfer.setData('fb-element-type', type);
-    onItemDragStart?.(e, type);
+    e.dataTransfer.setData('fb-element-type', item.type);
+    onItemDragStart?.(e, item.type);
   };
 
-  const handleClick = (type) => {
+  const handleClick = (item) => {
+    if (item?.disabled) {
+      onItemChosen?.(null, item.type);
+      return;
+    }
+    const type = item.type;
     const nextValue = pendingDraw === type ? null : type;
     setPendingDraw(nextValue);
     onItemChosen?.(nextValue, type);
@@ -101,23 +247,25 @@ export function ElementPickerGrid({ onItemChosen = null, onItemDragStart = null,
 
   return (
     <div className={`fb-elements-grid${compact ? ' fb-elements-grid--compact' : ''}${toolbarPalette ? ' fb-elements-grid--toolbar' : ''}`}>
-      {ELEMENT_TYPES.map(({ type, icon, label, hint, meta }) => (
+      {items.map(({ type, icon, label, hint, meta, disabled = false }) => (
         <div
           key={type}
-          className={`fb-element-card${pendingDraw === type ? ' fb-element-card--active' : ''}${toolbarPalette ? ' fb-element-card--toolbar' : ''}`}
-          draggable
-          onDragStart={(e) => handleDragStart(e, type)}
+          className={`fb-element-card${pendingDraw === type ? ' fb-element-card--active' : ''}${toolbarPalette ? ' fb-element-card--toolbar' : ''}${disabled ? ' fb-element-card--disabled' : ''}`}
+          draggable={!disabled}
+          onDragStart={(e) => handleDragStart(e, { type, disabled })}
           onDragEnd={() => onItemDragEnd?.(type)}
-          onClick={() => handleClick(type)}
-          title={pendingDraw === type ? `Click on canvas to draw ${label} — Esc to cancel` : `Click to draw ${label}, or drag to place`}
+          onClick={() => handleClick({ type, disabled })}
+          title={disabled ? `${label} is coming soon` : (pendingDraw === type ? `Click on canvas to draw ${label} — Esc to cancel` : `Click to draw ${label}, or drag to place`)}
+          aria-disabled={disabled ? 'true' : 'false'}
+          data-form-element={isFormElementType(type) ? 'true' : 'false'}
         >
           <div className="fb-element-card__icon-wrap">
             <div className="fb-element-card__icon">{icon}</div>
-            {toolbarPalette ? <span className="fb-element-card__meta">{meta}</span> : null}
+            {toolbarPalette ? <span className="fb-element-card__meta">{disabled ? 'Soon' : meta}</span> : null}
           </div>
           <div className="fb-element-card__body">
             <div className="fb-element-card__label">{label}</div>
-            {toolbarPalette ? <div className="fb-element-card__hint">{hint}</div> : null}
+            {toolbarPalette ? <div className="fb-element-card__hint">{disabled ? `${hint} Coming in the form builder update.` : hint}</div> : null}
           </div>
         </div>
       ))}

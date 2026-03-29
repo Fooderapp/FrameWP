@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { useEditorStore, createFrame, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
+import { useEditorStore, createFrame, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
 import { getAssetStyleUpdatesForElement, parseAssetDragPayload } from '../store/assetStyles';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
@@ -7,6 +7,7 @@ import { buildGradient, parseGradient } from '../components/FillPicker';
 import { extractSvgMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
 import { plainTextToRichTextHtml, sanitizeRichTextHtml } from '../components/richText';
 import { hasAnyElementRotation } from '../utils/elementTransform';
+import { isFormContainerType, isFormFieldType } from '../domain/formModel';
 
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
@@ -16,6 +17,30 @@ const PEN_CLOSE_SNAP_PX = 16;
 const TELEPORT_MARKER = 'FRAMEWP_TELEPORT';
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
+
+function isCanvasContainerElement(candidate) {
+  return candidate?.type === 'frame' || isFormContainerType(candidate?.type);
+}
+
+function createElementByType(type, x, y) {
+  if (type === 'form') return createForm(x, y);
+  if (type === 'text-field') return createFormTextField(x, y);
+  if (type === 'textarea-field') return createFormTextareaField(x, y);
+  if (type === 'rich-text-editor') return createFormRichTextEditor(x, y);
+  if (type === 'radio-group') return createFormRadioGroup(x, y);
+  if (type === 'dropdown') return createFormDropdown(x, y);
+  if (type === 'checkbox') return createFormCheckbox(x, y);
+  if (type === 'file-upload') return createFormFileUpload(x, y);
+  if (type === 'captcha') return createFormCaptcha(x, y);
+  if (type === 'submit-button') return createFormSubmitButton(x, y);
+  if (type === 'image') return createImage(x, y);
+  if (type === 'video') return createVideo(x, y);
+  if (type === 'embed') return createEmbed(x, y);
+  if (type === 'scroll-sequence') return createScrollSequence(x, y);
+  if (type === 'text') return createText(x, y);
+  if (type === 'icon') return createIcon(x, y);
+  return createFrame(x, y);
+}
 
 function resolveCanvasEditingElement(element, bpId, animationEditor) {
   const resolved = resolveElement ? resolveElement(element, bpId) : element;
@@ -936,6 +961,62 @@ function getElementWorldMetrics({ el, bpId, bp, page, boardDom, scale }) {
   };
 }
 
+function isSelectionDescendant(allElementsById, elementId, selectedIds) {
+  let cursorId = allElementsById.get(elementId)?.parentId ?? null;
+  while (cursorId) {
+    if (selectedIds.has(cursorId)) return true;
+    cursorId = allElementsById.get(cursorId)?.parentId ?? null;
+  }
+  return false;
+}
+
+function getParentContentWorldOrigin({ parentId, bp, bpId, page, boardDom, scale, allElementsById }) {
+  if (!bp) return { x: 0, y: 0 };
+
+  if (!parentId) {
+    const pad = resolvePagePadding(page?.padding, bpId);
+    return {
+      x: bp.x + (pad?.left ?? 0),
+      y: bp.y + (pad?.top ?? 0),
+    };
+  }
+
+  const parentEl = allElementsById.get(parentId) ?? null;
+  if (!parentEl) {
+    return { x: bp.x, y: bp.y };
+  }
+
+  const parentMetrics = getElementWorldMetrics({ el: parentEl, bpId, bp, page, boardDom, scale });
+  const parentDom = boardDom?.querySelector(`[data-id="${parentId}"]`) ?? null;
+  return {
+    x: (parentMetrics?.domWorldX ?? bp.x) + ((parentDom?.clientLeft ?? 0) / scale),
+    y: (parentMetrics?.domWorldY ?? bp.y) + ((parentDom?.clientTop ?? 0) / scale),
+  };
+}
+
+function inferAutoFrameDirection(items, unionBounds) {
+  if (!items.length) return 'column';
+  const horizontalSpread = unionBounds.width;
+  const verticalSpread = unionBounds.height;
+  if (items.length === 2) {
+    return horizontalSpread > verticalSpread ? 'row' : 'column';
+  }
+  return horizontalSpread > verticalSpread * 1.15 ? 'row' : 'column';
+}
+
+function sortFrameItems(items, direction) {
+  const axis = direction === 'row' ? 'x' : 'y';
+  const crossAxis = direction === 'row' ? 'y' : 'x';
+  return [...items].sort((left, right) => {
+    const primaryLeft = axis === 'x' ? left.metrics.domWorldX : left.metrics.domWorldY;
+    const primaryRight = axis === 'x' ? right.metrics.domWorldX : right.metrics.domWorldY;
+    if (Math.abs(primaryLeft - primaryRight) > 4) return primaryLeft - primaryRight;
+    const secondaryLeft = crossAxis === 'x' ? left.metrics.domWorldX : left.metrics.domWorldY;
+    const secondaryRight = crossAxis === 'x' ? right.metrics.domWorldX : right.metrics.domWorldY;
+    return secondaryLeft - secondaryRight;
+  });
+}
+
 function getComponentInstanceAncestor(allEls, element) {
   let cursor = element;
   while (cursor) {
@@ -1123,7 +1204,7 @@ function getAxisAlignedBounds(rect) {
   };
 }
 
-function CanvasContextMenu({ menu, hasClipboard, hasStyleClipboard, onClose, onCopy, onCopyStyle, onCut, onPaste, onPasteStyle, onDelete }) {
+function CanvasContextMenu({ menu, hasClipboard, hasStyleClipboard, onClose, onCopy, onCopyStyle, onCut, onPaste, onPasteStyle, onDelete, onAddToFrameFree, onAddToFrameAuto }) {
   if (!menu) return null;
 
   return (
@@ -1180,6 +1261,24 @@ function CanvasContextMenu({ menu, hasClipboard, hasStyleClipboard, onClose, onC
       >
         Delete
       </button>
+      {menu.canWrapSelection ? (
+        <>
+          <button
+            type="button"
+            className="fb-context-menu__item"
+            onClick={() => { onAddToFrameFree(); onClose(); }}
+          >
+            Add to Frame (Free)
+          </button>
+          <button
+            type="button"
+            className="fb-context-menu__item"
+            onClick={() => { onAddToFrameAuto(); onClose(); }}
+          >
+            Add to Frame (Auto)
+          </button>
+        </>
+      ) : null}
       <button
         type="button"
         className="fb-context-menu__item"
@@ -2252,7 +2351,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
             />
           );
         })}
-        {!el.locked && !isDragging && onStartRadiusDrag && Object.entries(radiusAnchorPoints).map(([corner, point]) => {
+        {!el.locked && !isDragging && onStartRadiusDrag && !isFormFieldType(el.type) && Object.entries(radiusAnchorPoints).map(([corner, point]) => {
           const styleKey = corner === 'all' ? 'borderRadius' : `borderRadius${corner}`;
           const radiusValue = resolved.styles?.[styleKey] ?? resolved.styles?.borderRadius;
           const startRadius = typeof radiusValue === 'number' ? radiusValue : parseFloat(radiusValue) || 0;
@@ -2449,6 +2548,125 @@ export default function InfiniteCanvas() {
   const clipboard = useRef(null);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const wrapSelectionInFrame = useCallback((mode = 'free') => {
+    const state = useEditorStore.getState();
+    const activeSelection = state.selection;
+    const bpId = activeSelection?.bpId ?? null;
+    const selectedIds = getSelectionElementIds(activeSelection);
+    if (!bpId || selectedIds.length < 2) return false;
+
+    const bp = state.breakpointDefs[bpId] ?? null;
+    if (!bp) return false;
+
+    const allElements = state.getAllElements();
+    const allElementsById = new Map(allElements.map((element) => [element.id, element]));
+    const selectedSet = new Set(selectedIds);
+    const rootSelectionIds = selectedIds.filter((elementId) => !isSelectionDescendant(allElementsById, elementId, selectedSet));
+    if (rootSelectionIds.length < 2) return false;
+
+    const boardDom = document.querySelector(`.fb-artboard[data-bp="${bpId}"]`);
+    const scale = Math.max(MIN_SCALE, Number.isFinite(state.viewport.scale) ? state.viewport.scale : 1);
+    const currentPage = state.getCurrentPage();
+    const selectedItems = rootSelectionIds
+      .map((elementId) => allElementsById.get(elementId) ?? null)
+      .filter(Boolean)
+      .map((element) => ({
+        element,
+        metrics: getElementWorldMetrics({ el: element, bpId, bp, page: currentPage, boardDom, scale }),
+      }))
+      .filter((item) => item.metrics);
+    if (selectedItems.length < 2) return false;
+
+    const commonParentId = selectedItems.every((item) => (item.element.parentId ?? null) === (selectedItems[0].element.parentId ?? null))
+      ? (selectedItems[0].element.parentId ?? null)
+      : null;
+
+    const unionBounds = selectedItems.reduce((acc, item) => ({
+      left: Math.min(acc.left, item.metrics.domWorldX),
+      top: Math.min(acc.top, item.metrics.domWorldY),
+      right: Math.max(acc.right, item.metrics.domWorldX + item.metrics.domWidth),
+      bottom: Math.max(acc.bottom, item.metrics.domWorldY + item.metrics.domHeight),
+    }), {
+      left: selectedItems[0].metrics.domWorldX,
+      top: selectedItems[0].metrics.domWorldY,
+      right: selectedItems[0].metrics.domWorldX + selectedItems[0].metrics.domWidth,
+      bottom: selectedItems[0].metrics.domWorldY + selectedItems[0].metrics.domHeight,
+    });
+
+    const parentOrigin = getParentContentWorldOrigin({
+      parentId: commonParentId,
+      bp,
+      bpId,
+      page: currentPage,
+      boardDom,
+      scale,
+      allElementsById,
+    });
+
+    const frame = createFrame(
+      Math.round(unionBounds.left - parentOrigin.x),
+      Math.round(unionBounds.top - parentOrigin.y),
+      mode === 'auto' ? 'Auto Frame' : 'Frame',
+    );
+    frame.base = {
+      ...frame.base,
+      absoluteInLayout: commonParentId ? false : true,
+      width: Math.max(1, Math.round(unionBounds.right - unionBounds.left)),
+      height: Math.max(1, Math.round(unionBounds.bottom - unionBounds.top)),
+    };
+
+    state.addElement(frame, commonParentId, bpId);
+
+    const frameDirection = inferAutoFrameDirection(selectedItems, {
+      width: unionBounds.right - unionBounds.left,
+      height: unionBounds.bottom - unionBounds.top,
+    });
+    const orderedItems = mode === 'auto'
+      ? sortFrameItems(selectedItems, frameDirection)
+      : allElements.filter((element) => rootSelectionIds.includes(element.id)).map((element) => selectedItems.find((item) => item.element.id === element.id)).filter(Boolean);
+
+    if (mode === 'free') {
+      state.updateElementStyles(frame.id, bpId, {
+        display: null,
+        flexDirection: null,
+      });
+    } else {
+      state.updateElementStyles(frame.id, bpId, {
+        display: 'flex',
+        flexDirection: frameDirection,
+        flexWrap: 'nowrap',
+        alignItems: 'flex-start',
+        justifyContent: 'flex-start',
+        gap: 0,
+      });
+    }
+
+    orderedItems.forEach((item) => {
+      state.reparentElement(item.element.id, frame.id);
+      if (mode === 'free') {
+        state.updateElementLayout(item.element.id, bpId, {
+          x: Math.round(item.metrics.domWorldX - unionBounds.left),
+          y: Math.round(item.metrics.domWorldY - unionBounds.top),
+          positionType: 'absolute',
+          absoluteInLayout: false,
+        });
+        return;
+      }
+
+      state.updateElementLayout(item.element.id, bpId, {
+        x: 0,
+        y: 0,
+        positionType: 'relative',
+        absoluteInLayout: false,
+      });
+    });
+
+    state.setSelection({ elementId: frame.id, elementIds: [frame.id], bpId });
+    state.setArtboardSel(null);
+    state.pushHistory();
+    return true;
+  }, []);
 
   const startCommentDrag = useCallback((event, comment) => {
     if (!comment || event.button !== 0) return;
@@ -2773,7 +2991,7 @@ export default function InfiniteCanvas() {
     const candidateId = elementId ?? st.selection?.elementId ?? null;
     if (!candidateId) return false;
     const candidate = st.getAllElements().find((el) => el.id === candidateId) ?? null;
-    if (!candidate || candidate.type !== 'frame') return false;
+    if (!isCanvasContainerElement(candidate)) return false;
     const resolved = resolveElement(candidate, resolvedBpId);
     return !resolved.hidden;
   }, []);
@@ -2859,7 +3077,7 @@ export default function InfiniteCanvas() {
     const { subtree, rootId, bpId: copiedBpId } = clipboard.current;
     const targetBpId = bpId || st.selection?.bpId || copiedBpId || 'desktop';
     const selectedEl = st.getSelectedElement?.() ?? null;
-    const activeSelectedFrameId = selectedEl && selectedEl.type === 'frame' && st.selection?.bpId === targetBpId
+    const activeSelectedFrameId = selectedEl && isCanvasContainerElement(selectedEl) && st.selection?.bpId === targetBpId
       ? selectedEl.id
       : null;
     const targetParentId = parentId ?? activeSelectedFrameId ?? null;
@@ -3083,7 +3301,7 @@ export default function InfiniteCanvas() {
       const dataId = node.dataset?.id;
       if (!dataId || descendants.has(dataId)) continue;
       const candidate = allEls.find(el => el.id === dataId);
-      if (!candidate || candidate.type !== 'frame') continue;
+      if (!isCanvasContainerElement(candidate)) continue;
       const componentContainer = st.activeSurface === 'page'
         ? getComponentInstanceAncestor(allEls, candidate)
         : null;
@@ -3292,6 +3510,13 @@ export default function InfiniteCanvas() {
         useEditorStore.getState().setActiveCanvasTool('comment');
         return;
       }
+      if (!isEditableTarget && (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'g') {
+        const didWrap = wrapSelectionInFrame(e.shiftKey ? 'auto' : 'free');
+        if (didWrap) {
+          e.preventDefault();
+          return;
+        }
+      }
       if (e.code === 'Space' && !e.target.matches('input,textarea')) {
         e.preventDefault();
         spaceDown.current = true;
@@ -3448,7 +3673,7 @@ export default function InfiniteCanvas() {
       window.removeEventListener('paste', onPaste);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [canPasteIntoFrame, commitPenDraft, copyElementToClipboard, cutElementToClipboard, deleteElement, importTeleportPayloadAt, pasteClipboardAt, pasteSvgMarkupAt, penDraft, pushHistory]);
+  }, [canPasteIntoFrame, commitPenDraft, copyElementToClipboard, cutElementToClipboard, deleteElement, importTeleportPayloadAt, pasteClipboardAt, pasteSvgMarkupAt, penDraft, pushHistory, wrapSelectionInFrame]);
 
   // ── Initial fit-to-canvas ─────────────────────────────────
   useEffect(() => {
@@ -3548,16 +3773,21 @@ export default function InfiniteCanvas() {
     const localX = bp ? Math.max(0, Math.round(worldX - bp.x - (pad?.left ?? 0))) : 80;
     const localY = bp ? Math.max(0, Math.round(worldY - bp.y - (pad?.top ?? 0))) : 80;
 
-    if (elementId && !isElementSelected(useEditorStore.getState().selection, elementId, bpId)) {
+    const currentSelection = useEditorStore.getState().selection;
+    if (elementId && !isElementSelected(currentSelection, elementId, bpId)) {
       setSelection({ elementId, bpId });
       setArtboardSel(null);
     }
+
+    const selectionIds = getSelectionElementIds(useEditorStore.getState().selection);
+    const canWrapSelection = !!elementId && selectionIds.length > 1 && selectionIds.includes(elementId);
 
     setContextMenu({
       clientX: e.clientX,
       clientY: e.clientY,
       bpId,
       elementId,
+      canWrapSelection,
       canPasteIntoFrame: canPasteIntoFrame(bpId, elementId),
       localX,
       localY,
@@ -4094,7 +4324,7 @@ export default function InfiniteCanvas() {
           const dataId = domEl.dataset?.id;
           if (!dataId) continue;
           const candidate = allEls.find(el => el.id === dataId);
-          if (!candidate || candidate.type !== 'frame') continue;
+          if (!isCanvasContainerElement(candidate)) continue;
           const candidateResolved = resolveElement(candidate, targetBpId);
           if (candidateResolved.hidden) continue;
           parentId = dataId;
@@ -4108,21 +4338,9 @@ export default function InfiniteCanvas() {
           break;
         }
       }
-      const newEl = drawType === 'image'
-        ? createImage(localX, localY)
-        : drawType === 'video'
-          ? createVideo(localX, localY)
-        : drawType === 'embed'
-          ? createEmbed(localX, localY)
-        : drawType === 'scroll-sequence'
-          ? createScrollSequence(localX, localY)
-        : drawType === 'text'
-          ? createText(localX, localY)
-          : drawType === 'icon'
-            ? createIcon(localX, localY)
-            : ['circle', 'line', 'polygon', 'path', 'pen'].includes(drawType)
-              ? createShapePreset(drawType === 'pen' ? 'path' : drawType, localX, localY)
-            : createFrame(localX, localY);
+      const newEl = ['circle', 'line', 'polygon', 'path', 'pen'].includes(drawType)
+        ? createShapePreset(drawType === 'pen' ? 'path' : drawType, localX, localY)
+        : createElementByType(drawType, localX, localY);
       if (drawType === 'circle') {
         const circleSize = Math.max(elW, elH);
         newEl.base.width = circleSize;
@@ -5149,32 +5367,8 @@ export default function InfiniteCanvas() {
     const elX = placement?.x ?? 80;
     const elY = placement?.y ?? 80;
 
-    if (type === 'frame') {
-      const el = createFrame(elX, elY);
-      addElement(el, null, targetBpId);
-      pushHistory();
-    } else if (type === 'image') {
-      const el = createImage(elX, elY);
-      addElement(el, null, targetBpId);
-      pushHistory();
-    } else if (type === 'video') {
-      const el = createVideo(elX, elY);
-      addElement(el, null, targetBpId);
-      pushHistory();
-    } else if (type === 'embed') {
-      const el = createEmbed(elX, elY);
-      addElement(el, null, targetBpId);
-      pushHistory();
-    } else if (type === 'scroll-sequence') {
-      const el = createScrollSequence(elX, elY);
-      addElement(el, null, targetBpId);
-      pushHistory();
-    } else if (type === 'text') {
-      const el = createText(elX, elY);
-      addElement(el, null, targetBpId);
-      pushHistory();
-    } else if (type === 'icon') {
-      const el = createIcon(elX, elY);
+    if (type) {
+      const el = createElementByType(type, elX, elY);
       addElement(el, null, targetBpId);
       pushHistory();
     }
@@ -5205,32 +5399,8 @@ export default function InfiniteCanvas() {
       if (rootId) pushHistory();
       return;
     }
-    if (type === 'frame') {
-      const el = createFrame(localX, localY);
-      addElement(el, targetElementId, targetBpId);
-      pushHistory();
-    } else if (type === 'image') {
-      const el = createImage(localX, localY);
-      addElement(el, targetElementId, targetBpId);
-      pushHistory();
-    } else if (type === 'video') {
-      const el = createVideo(localX, localY);
-      addElement(el, targetElementId, targetBpId);
-      pushHistory();
-    } else if (type === 'embed') {
-      const el = createEmbed(localX, localY);
-      addElement(el, targetElementId, targetBpId);
-      pushHistory();
-    } else if (type === 'scroll-sequence') {
-      const el = createScrollSequence(localX, localY);
-      addElement(el, targetElementId, targetBpId);
-      pushHistory();
-    } else if (type === 'text') {
-      const el = createText(localX, localY);
-      addElement(el, targetElementId, targetBpId);
-      pushHistory();
-    } else if (type === 'icon') {
-      const el = createIcon(localX, localY);
+    if (type) {
+      const el = createElementByType(type, localX, localY);
       addElement(el, targetElementId, targetBpId);
       pushHistory();
     } else if (draggedId && draggedId !== targetElementId) {
@@ -5716,6 +5886,12 @@ export default function InfiniteCanvas() {
           if (!contextMenu?.elementId) return;
           if (!pasteStoredElementStylesToElement(contextMenu.elementId, contextMenu.bpId)) return;
           pushHistory();
+        }}
+        onAddToFrameFree={() => {
+          wrapSelectionInFrame('free');
+        }}
+        onAddToFrameAuto={() => {
+          wrapSelectionInFrame('auto');
         }}
         onDelete={() => {
           if (!contextMenu?.elementId) return;

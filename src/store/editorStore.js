@@ -14,7 +14,10 @@ import { applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, makeDefault
 import { COMPONENT_VARIANT_STATE_ORDER, getBaseComponentVariantId, getComponentControlValue, getComponentVariantStateLabel, getDefaultComponentVariants, getPrimaryComponentVariant, insertStateVariant, insertVariantAfterFamily, isDefaultComponentVariant, normalizeComponentControl, normalizeComponentControls, normalizeComponentControlValue, normalizeComponentInstanceProps, normalizeComponentInteraction, resolveComponentVariantMode } from '../domain/componentModel.js';
 import { applyVariantOverrides, composeVariantSnapshot, ensureComponentPrimaryRoot, extractVariantOverrides, getEditorVariantRoot, getLiveComponentEditorVariants as syncComponentEditorVariants, getSnapshotRoot, instantiateEditorVariantSnapshot, makeComponentPrimaryRoot } from '../domain/componentSnapshotModel.js';
 import { clampFinite, normalizeComponentTransition, normalizeViewportValue } from '../domain/componentTransition.js';
+import { createSubmissionNodeConfig, normalizeSubmissionFieldEntries } from '../domain/formSubmissionModel.js';
 import { normalizeConstraints, sanitizeLayoutUpdates } from '../domain/layoutModel.js';
+import { getDefaultFormConfig, getDefaultFormOptions, isFormContainerType, isFormFieldType } from '../domain/formModel.js';
+import { FORM_STYLE_DEFAULTS } from '../domain/formStyleModel.js';
 
 export { applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, resolveElementAnimations } from '../domain/animationModel.js';
 export { getLiveComponentEditorVariants } from '../domain/componentSnapshotModel.js';
@@ -507,6 +510,7 @@ function normalizeElementInteractions(interactions) {
 const FLOW_TRIGGER_TYPES = new Set(['element-click', 'page-load', 'form-submit', 'custom']);
 const FLOW_NODE_TYPES = new Set([
   'trigger',
+  'submission-form',
   'condition',
   'navigate',
   'set-variable',
@@ -630,21 +634,232 @@ function getLegacyElementFlowsForPage(page) {
   return elements.map(buildLegacyFlowFromElement).filter(Boolean);
 }
 
+function flowHasSubmissionFormNode(flow) {
+  return Array.isArray(flow?.nodes) && flow.nodes.some((node) => node?.type === 'submission-form');
+}
+
+function getFirstSubmissionFormNode(flow) {
+  return Array.isArray(flow?.nodes) ? flow.nodes.find((node) => node?.type === 'submission-form') || null : null;
+}
+
+function getFormRelatedElementIds(elements, formId) {
+  const normalizedElements = Array.isArray(elements) ? elements : [];
+  const childIdsByParent = new Map();
+  let formExists = false;
+
+  normalizedElements.forEach((element) => {
+    if (!element || typeof element !== 'object' || !element.id) return;
+    const elementId = `${element.id}`;
+    if (elementId === formId && isFormContainerType(element.type)) formExists = true;
+    const parentId = typeof element.parentId === 'string' ? element.parentId : '';
+    if (!parentId) return;
+    const existing = childIdsByParent.get(parentId) ?? [];
+    existing.push(elementId);
+    childIdsByParent.set(parentId, existing);
+  });
+
+  if (!formExists) return new Set([formId]);
+
+  const relatedIds = new Set([formId]);
+  const queue = [formId];
+  while (queue.length) {
+    const currentId = queue.shift();
+    (childIdsByParent.get(currentId) ?? []).forEach((childId) => {
+      if (relatedIds.has(childId)) return;
+      relatedIds.add(childId);
+      queue.push(childId);
+    });
+  }
+
+  return relatedIds;
+}
+
+function getFormFieldValueType(type) {
+  if (type === 'checkbox') return 'boolean';
+  if (type === 'file-upload') return 'image';
+  return 'string';
+}
+
+function normalizeFormFieldNameForSubmission(element) {
+  const base = element?.base && typeof element.base === 'object' ? element.base : {};
+  return `${base.fieldName || element?.name || element?.id || ''}`
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '') || `field_${element?.id || 'field'}`;
+}
+
+function buildSubmissionFieldEntries(elements, formId) {
+  const normalizedElements = Array.isArray(elements) ? elements : [];
+  const byId = new Map(normalizedElements.map((element) => [element.id, element]));
+  const formElement = byId.get(formId) ?? null;
+  if (!formElement) return [];
+  const childIds = Array.isArray(formElement.children) ? formElement.children : [];
+  const ordered = childIds
+    .map((childId) => byId.get(childId) || null)
+    .filter((element) => element && isFormFieldType(element.type));
+  const fallback = normalizedElements.filter((element) => element?.parentId === formId && isFormFieldType(element.type));
+  const fields = ordered.length ? ordered : fallback;
+  return fields.map((field) => {
+    const fieldName = normalizeFormFieldNameForSubmission(field);
+    return {
+      id: field.id,
+      fieldName,
+      label: `${field?.base?.label || field?.name || 'Field'}`.trim() || 'Field',
+      type: field.type,
+      valueType: getFormFieldValueType(field.type),
+      path: `submission.values.${fieldName}`,
+    };
+  });
+}
+
+function createFormTriggerNode(formId, existingNode = null) {
+  const position = existingNode?.position && typeof existingNode.position === 'object' ? existingNode.position : { x: 0, y: 0 };
+  return {
+    id: typeof existingNode?.id === 'string' && existingNode.id ? existingNode.id : makeId('flow-node'),
+    type: 'trigger',
+    label: typeof existingNode?.label === 'string' && existingNode.label.trim() ? existingNode.label.trim() : 'Trigger',
+    position: {
+      x: Number.isFinite(Number(position.x)) ? Number(position.x) : 0,
+      y: Number.isFinite(Number(position.y)) ? Number(position.y) : 0,
+    },
+    config: {
+      triggerType: 'form-submit',
+      formId,
+    },
+  };
+}
+
+function createCanonicalSubmissionNode(existingNode, elements, formId) {
+  const normalizedFields = normalizeSubmissionFieldEntries(existingNode?.config?.fields);
+  const fields = normalizedFields.length ? normalizedFields : buildSubmissionFieldEntries(elements, formId);
+  const position = existingNode?.position && typeof existingNode.position === 'object' ? existingNode.position : { x: 240, y: 0 };
+  return {
+    id: typeof existingNode?.id === 'string' && existingNode.id ? existingNode.id : makeId('flow-node'),
+    type: 'submission-form',
+    label: typeof existingNode?.label === 'string' && existingNode.label.trim() ? existingNode.label.trim() : 'Submission Form',
+    position: {
+      x: Number.isFinite(Number(position.x)) ? Number(position.x) : 240,
+      y: Number.isFinite(Number(position.y)) ? Number(position.y) : 0,
+    },
+    config: createSubmissionNodeConfig(fields, existingNode?.config?.actions),
+  };
+}
+
+function findPreferredFormSubmissionFlow(flows, formId, relatedIds, preferredFlowId = '') {
+  const exactFlows = flows.filter((flow) => flow?.trigger?.type === 'form-submit' && flow.trigger?.formId === formId);
+  const legacyFlows = flows.filter((flow) => (
+    flowHasSubmissionFormNode(flow)
+      && flow?.trigger?.type === 'element-click'
+      && relatedIds.has(flow.trigger?.elementId)
+  ));
+
+  return exactFlows.find((flow) => flow.id === preferredFlowId)
+    || exactFlows.find((flow) => flowHasSubmissionFormNode(flow))
+    || exactFlows[0]
+    || legacyFlows.find((flow) => flow.id === preferredFlowId)
+    || legacyFlows[0]
+    || null;
+}
+
+function canonicalizeFormSubmissionFlowList(flows, elements, formId, options = {}) {
+  const normalizedFlows = normalizePageFlowList(flows);
+  const relatedIds = getFormRelatedElementIds(elements, formId);
+  const preferredFlow = findPreferredFormSubmissionFlow(normalizedFlows, formId, relatedIds, options.preferredFlowId || '');
+  const preferredSubmissionNode = getFirstSubmissionFormNode(preferredFlow);
+  const triggerNode = createFormTriggerNode(formId, preferredFlow?.nodes?.find((node) => node?.type === 'trigger') || null);
+  const submissionNode = createCanonicalSubmissionNode(preferredSubmissionNode, elements, formId);
+
+  const keptNodes = Array.isArray(preferredFlow?.nodes)
+    ? preferredFlow.nodes.filter((node) => node?.type !== 'trigger' && node?.type !== 'submission-form')
+    : [];
+  const keptNodeIds = new Set([triggerNode.id, submissionNode.id, ...keptNodes.map((node) => node.id)]);
+  let nextEdges = Array.isArray(preferredFlow?.edges)
+    ? preferredFlow.edges.filter((edge) => keptNodeIds.has(edge.source) && keptNodeIds.has(edge.target))
+    : [];
+
+  const priorSubmittedEdge = Array.isArray(preferredFlow?.edges)
+    ? preferredFlow.edges.find((edge) => edge?.source === triggerNode.id && edge?.sourcePort === 'submitted' && edge?.target !== submissionNode.id) || null
+    : null;
+
+  nextEdges = nextEdges.filter((edge) => !(edge.source === triggerNode.id && edge.sourcePort === 'submitted'));
+  if (!nextEdges.some((edge) => edge.source === triggerNode.id && edge.target === submissionNode.id && edge.sourcePort === 'submitted')) {
+    nextEdges.push({
+      id: makeId('flow-edge'),
+      source: triggerNode.id,
+      target: submissionNode.id,
+      sourcePort: 'submitted',
+      targetPort: 'in',
+    });
+  }
+  if (priorSubmittedEdge && !nextEdges.some((edge) => edge.source === submissionNode.id && edge.target === priorSubmittedEdge.target && edge.sourcePort === 'next')) {
+    nextEdges.push({
+      id: makeId('flow-edge'),
+      source: submissionNode.id,
+      target: priorSubmittedEdge.target,
+      sourcePort: 'next',
+      targetPort: priorSubmittedEdge.targetPort || 'in',
+    });
+  }
+
+  const canonicalFlow = normalizePageFlow({
+    ...(preferredFlow ?? {}),
+    id: preferredFlow?.id || makeId('flow'),
+    name: typeof options.name === 'string' && options.name.trim() ? options.name.trim() : getDefaultFlowName(preferredFlow),
+    trigger: { type: 'form-submit', formId },
+    nodes: [triggerNode, submissionNode, ...keptNodes],
+    edges: nextEdges,
+    legacySourceElementId: '',
+    isLegacyProxy: false,
+  });
+
+  const nextFlows = normalizedFlows.filter((flow) => {
+    if (!flow || flow.id === canonicalFlow.id) return false;
+    if (flow.trigger?.type === 'form-submit' && flow.trigger?.formId === formId) return false;
+    if (flowHasSubmissionFormNode(flow) && flow.trigger?.type === 'element-click' && relatedIds.has(flow.trigger?.elementId)) return false;
+    return true;
+  });
+
+  const nextFlowList = [...nextFlows, canonicalFlow];
+  const didChange = JSON.stringify(nextFlowList) !== JSON.stringify(normalizedFlows);
+
+  return {
+    flow: canonicalFlow,
+    flows: didChange ? nextFlowList : normalizedFlows,
+    didChange,
+  };
+}
+
 function removeVariableReferencesFromFlow(flow, variableScope, variableId) {
   const normalizedFlow = normalizePageFlow(flow);
   if (!normalizedFlow) return null;
   return {
     ...normalizedFlow,
     nodes: normalizedFlow.nodes.map((node) => {
-      if (node.type !== 'set-variable') return node;
-      if (node.config?.variableScope !== variableScope || node.config?.variableId !== variableId) return node;
-      return {
-        ...node,
-        config: {
-          ...node.config,
-          variableId: '',
-        },
-      };
+      if (node.type === 'set-variable') {
+        if (node.config?.variableScope !== variableScope || node.config?.variableId !== variableId) return node;
+        return {
+          ...node,
+          config: {
+            ...node.config,
+            variableId: '',
+          },
+        };
+      }
+      if (node.type === 'condition') {
+        const nextConfig = { ...node.config };
+        let didChange = false;
+        if (nextConfig.variableScope === variableScope && nextConfig.variableId === variableId) {
+          nextConfig.variableId = '';
+          didChange = true;
+        }
+        if (nextConfig.compareSource === 'variable' && nextConfig.compareVariableScope === variableScope && nextConfig.compareVariableId === variableId) {
+          nextConfig.compareVariableId = '';
+          didChange = true;
+        }
+        return didChange ? { ...node, config: nextConfig } : node;
+      }
+      return node;
     }),
   };
 }
@@ -739,6 +954,16 @@ function pruneElementBreakpointOverrides(element) {
 
 function getElementIdPrefix(type) {
   if (type === 'text') return 'txt';
+  if (type === 'form') return 'frm';
+  if (type === 'text-field') return 'fld';
+  if (type === 'textarea-field') return 'txa';
+  if (type === 'rich-text-editor') return 'rte';
+  if (type === 'radio-group') return 'rad';
+  if (type === 'dropdown') return 'drp';
+  if (type === 'checkbox') return 'chk';
+  if (type === 'file-upload') return 'upl';
+  if (type === 'captcha') return 'cap';
+  if (type === 'submit-button') return 'sbt';
   if (type === 'image') return 'img';
   if (type === 'icon') return 'ico';
   if (type === 'video') return 'vid';
@@ -1568,6 +1793,269 @@ export function createFrame(x = 80, y = 80, name) {
   };
 }
 
+export function createForm(x = 80, y = 80, name) {
+  const frame = createFrame(x, y, name || 'Form');
+  return {
+    ...frame,
+    id: `frm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'form',
+    name: name || 'Form',
+    base: {
+      ...frame.base,
+      width: 360,
+      height: 280,
+      formConfig: getDefaultFormConfig(),
+      styles: {
+        ...frame.base.styles,
+        backgroundColor: 'rgba(248,250,252,0.96)',
+        borderWidth: 1,
+        borderColor: 'rgba(148,163,184,0.42)',
+        borderStyle: 'solid',
+        borderRadius: 20,
+        boxShadow: '0 12px 28px rgba(15,23,42,0.08)',
+        flexDirection: 'column',
+        gap: 14,
+        paddingTop: 18,
+        paddingRight: 18,
+        paddingBottom: 18,
+        paddingLeft: 18,
+      },
+    },
+  };
+}
+
+function createBaseFormField(type, x = 80, y = 80, name, config = {}) {
+  return {
+    id: `${getElementIdPrefix(type)}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type,
+    name,
+    parentId: null,
+    children: [],
+    base: {
+      x,
+      y,
+      width: config.width ?? 280,
+      height: config.height ?? 48,
+      rotation: 0,
+      locked: false,
+      hidden: false,
+      widthMode: config.widthMode ?? 'fixed',
+      heightMode: config.heightMode ?? 'fixed',
+      positionType: 'relative',
+      absoluteInLayout: false,
+      lockAspectRatio: false,
+      minW: null,
+      maxW: null,
+      minH: null,
+      maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      fieldName: config.fieldName ?? '',
+      label: config.label ?? name,
+      placeholder: config.placeholder ?? '',
+      helperText: config.helperText ?? '',
+      required: config.required === true,
+      defaultValue: config.defaultValue ?? '',
+      fieldOptions: config.fieldOptions ?? [],
+      styles: {
+        backgroundColor: config.backgroundColor ?? '#ffffff',
+        borderRadius: config.borderRadius ?? 14,
+        borderWidth: config.borderWidth ?? 1,
+        borderColor: config.borderColor ?? 'rgba(15,23,42,0.12)',
+        borderStyle: 'solid',
+        gap: config.gap ?? FORM_STYLE_DEFAULTS.fieldGap,
+        paddingTop: config.paddingTop ?? FORM_STYLE_DEFAULTS.fieldPaddingTop,
+        paddingRight: config.paddingRight ?? FORM_STYLE_DEFAULTS.fieldPaddingRight,
+        paddingBottom: config.paddingBottom ?? FORM_STYLE_DEFAULTS.fieldPaddingBottom,
+        paddingLeft: config.paddingLeft ?? FORM_STYLE_DEFAULTS.fieldPaddingLeft,
+        color: config.color ?? '#0f172a',
+        checkboxAccentColor: config.checkboxAccentColor ?? FORM_STYLE_DEFAULTS.checkboxAccentColor,
+        placeholderColor: config.placeholderColor ?? FORM_STYLE_DEFAULTS.placeholderColor,
+        helperColor: config.helperColor ?? FORM_STYLE_DEFAULTS.helperColor,
+        iconColor: config.iconColor ?? FORM_STYLE_DEFAULTS.iconColor,
+        selectIcon: config.selectIcon ?? FORM_STYLE_DEFAULTS.selectIcon,
+        formStatePreview: config.formStatePreview ?? FORM_STYLE_DEFAULTS.formStatePreview,
+        hoverBorderColor: config.hoverBorderColor ?? FORM_STYLE_DEFAULTS.hoverBorderColor,
+        hoverBackgroundColor: config.hoverBackgroundColor ?? FORM_STYLE_DEFAULTS.hoverBackgroundColor,
+        focusBorderColor: config.focusBorderColor ?? FORM_STYLE_DEFAULTS.focusBorderColor,
+        focusBackgroundColor: config.focusBackgroundColor ?? FORM_STYLE_DEFAULTS.focusBackgroundColor,
+        focusBoxShadow: config.focusBoxShadow ?? FORM_STYLE_DEFAULTS.focusBoxShadow,
+        focusRingColor: config.focusRingColor ?? FORM_STYLE_DEFAULTS.focusRingColor,
+        focusRingWidth: config.focusRingWidth ?? FORM_STYLE_DEFAULTS.focusRingWidth,
+        checkedBorderColor: config.checkedBorderColor ?? FORM_STYLE_DEFAULTS.checkedBorderColor,
+        checkedBackgroundColor: config.checkedBackgroundColor ?? FORM_STYLE_DEFAULTS.checkedBackgroundColor,
+        checkedBoxShadow: config.checkedBoxShadow ?? FORM_STYLE_DEFAULTS.checkedBoxShadow,
+        stateTransitionDuration: config.stateTransitionDuration ?? FORM_STYLE_DEFAULTS.stateTransitionDuration,
+        stateTransitionEasing: config.stateTransitionEasing ?? FORM_STYLE_DEFAULTS.stateTransitionEasing,
+        fontFamily: config.fontFamily ?? 'Inter',
+        fontWeight: config.fontWeight ?? 500,
+        fontStyle: config.fontStyle ?? 'normal',
+        fontSize: config.fontSize ?? 14,
+        fontSizeUnit: 'px',
+        lineHeight: config.lineHeight ?? 1.4,
+        lineHeightUnit: 'em',
+        letterSpacing: config.letterSpacing ?? 0,
+        letterSpacingUnit: 'em',
+        textAlign: config.textAlign ?? 'left',
+        textDecoration: config.textDecoration ?? 'none',
+        opacity: 1,
+        mixBlendMode: 'normal',
+        overflow: 'visible',
+        boxShadow: '0 1px 2px rgba(15,23,42,0.06)',
+        zIndex: 1,
+      },
+    },
+    animations: makeDefaultElementAnimations(),
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
+export function createFormTextField(x = 80, y = 80, name) {
+  return createBaseFormField('text-field', x, y, name || 'Text Field', {
+    placeholder: 'Type here...',
+  });
+}
+
+export function createFormTextareaField(x = 80, y = 80, name) {
+  return createBaseFormField('textarea-field', x, y, name || 'Textarea Field', {
+    width: 280,
+    height: 112,
+    placeholder: 'Write a longer message...',
+    helperText: 'Multi-line plain text is submitted as text.',
+  });
+}
+
+export function createFormRichTextEditor(x = 80, y = 80, name) {
+  return createBaseFormField('rich-text-editor', x, y, name || 'Rich Text Editor', {
+    width: 280,
+    height: 180,
+    heightMode: 'hug',
+    placeholder: 'Write formatted content...',
+    helperText: 'Rich text content is submitted as HTML.',
+  });
+}
+
+export function createFormDropdown(x = 80, y = 80, name) {
+  return createBaseFormField('dropdown', x, y, name || 'Dropdown', {
+    placeholder: 'Select an option',
+    fieldOptions: getDefaultFormOptions('dropdown'),
+  });
+}
+
+export function createFormCheckbox(x = 80, y = 80, name) {
+  return createBaseFormField('checkbox', x, y, name || 'Checkbox', {
+    width: 280,
+    height: 32,
+    defaultValue: false,
+  });
+}
+
+export function createFormRadioGroup(x = 80, y = 80, name) {
+  return createBaseFormField('radio-group', x, y, name || 'Radio Group', {
+    width: 280,
+    height: 112,
+    fieldOptions: getDefaultFormOptions('radio-group'),
+  });
+}
+
+export function createFormFileUpload(x = 80, y = 80, name) {
+  return createBaseFormField('file-upload', x, y, name || 'File Upload', {
+    width: 280,
+    height: 108,
+    placeholder: 'Drop files here or browse',
+    helperText: 'Choose a file or drop it here before submitting.',
+    allowMultipleFiles: false,
+  });
+}
+
+export function createFormCaptcha(x = 80, y = 80, name) {
+  return createBaseFormField('captcha', x, y, name || 'Captcha', {
+    width: 280,
+    height: 74,
+    placeholder: 'Captcha provider block',
+    backgroundColor: 'rgba(236,253,245,0.98)',
+    borderColor: 'rgba(16,185,129,0.28)',
+  });
+}
+
+export function createFormSubmitButton(x = 80, y = 80, name) {
+  return {
+    id: `${getElementIdPrefix('submit-button')}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'submit-button',
+    name: name || 'Submit Button',
+    parentId: null,
+    children: [],
+    base: {
+      x,
+      y,
+      width: 180,
+      height: 48,
+      rotation: 0,
+      locked: false,
+      hidden: false,
+      widthMode: 'fixed',
+      heightMode: 'fixed',
+      positionType: 'relative',
+      absoluteInLayout: false,
+      lockAspectRatio: false,
+      minW: null,
+      maxW: null,
+      minH: null,
+      maxH: null,
+      constraints: { top: true, left: true, right: false, bottom: false },
+      label: 'Submit',
+      styles: {
+        backgroundColor: '#0f172a',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: 'rgba(15,23,42,0.14)',
+        borderStyle: 'solid',
+        gap: FORM_STYLE_DEFAULTS.fieldGap,
+        paddingTop: FORM_STYLE_DEFAULTS.submitPaddingTop,
+        paddingRight: FORM_STYLE_DEFAULTS.submitPaddingRight,
+        paddingBottom: FORM_STYLE_DEFAULTS.submitPaddingBottom,
+        paddingLeft: FORM_STYLE_DEFAULTS.submitPaddingLeft,
+        color: '#ffffff',
+        formButtonStatePreview: FORM_STYLE_DEFAULTS.formButtonStatePreview,
+        hoverBackgroundColor: '#1f2937',
+        hoverBorderColor: 'rgba(15,23,42,0.22)',
+        hoverTextColor: '#ffffff',
+        pressedBackgroundColor: FORM_STYLE_DEFAULTS.pressedBackgroundColor,
+        pressedBorderColor: FORM_STYLE_DEFAULTS.pressedBorderColor,
+        pressedTextColor: FORM_STYLE_DEFAULTS.pressedTextColor,
+        processingBackgroundColor: FORM_STYLE_DEFAULTS.processingBackgroundColor,
+        processingBorderColor: FORM_STYLE_DEFAULTS.processingBorderColor,
+        processingTextColor: FORM_STYLE_DEFAULTS.processingTextColor,
+        successBackgroundColor: FORM_STYLE_DEFAULTS.successBackgroundColor,
+        successBorderColor: FORM_STYLE_DEFAULTS.successBorderColor,
+        successTextColor: FORM_STYLE_DEFAULTS.successTextColor,
+        errorBackgroundColor: FORM_STYLE_DEFAULTS.errorBackgroundColor,
+        errorBorderColor: FORM_STYLE_DEFAULTS.errorBorderColor,
+        errorTextColor: FORM_STYLE_DEFAULTS.errorTextColor,
+        focusRingColor: FORM_STYLE_DEFAULTS.focusRingColor,
+        focusRingWidth: FORM_STYLE_DEFAULTS.focusRingWidth,
+        fontFamily: 'Inter',
+        fontWeight: 600,
+        fontStyle: 'normal',
+        fontSize: 14,
+        fontSizeUnit: 'px',
+        lineHeight: 1.2,
+        lineHeightUnit: 'em',
+        letterSpacing: 0,
+        letterSpacingUnit: 'em',
+        textAlign: 'center',
+        textDecoration: 'none',
+        opacity: 1,
+        mixBlendMode: 'normal',
+        overflow: 'hidden',
+        boxShadow: '0 8px 18px rgba(15,23,42,0.16)',
+        zIndex: 1,
+      },
+    },
+    animations: makeDefaultElementAnimations(),
+    overrides: { tablet: {}, mobile: {} },
+  };
+}
+
 export function createImage(x = 80, y = 80, name) {
   return {
     id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -2284,7 +2772,7 @@ export function getShapePresetKind(element = null) {
     : (typeof element.base?.shapeType === 'string' && element.base.shapeType ? element.base.shapeType : null);
   if (explicitType) return explicitType;
 
-  if (element.type === 'frame') {
+  if (element.type === 'frame' || isFormContainerType(element.type)) {
     const name = `${element.name ?? element.base?.name ?? ''}`.trim().toLowerCase();
     if (name === 'circle') return 'circle';
     if (name === 'line') return 'line';
@@ -2845,24 +3333,44 @@ export const useEditorStore = create((set, get) => {
     // ── Variables (page + site-wide) ──────────────────────
     globalVariables: [],
     setGlobalVariables: (variables) => set({ globalVariables: normalizeVariableList(variables, 'global') }),
-    variableSources: { pages: [], posts: [], products: [] },
+    variableSources: { pages: [], posts: [], products: [], formTargets: {} },
     setVariableSources: (sources) => set({
       variableSources: {
         pages: Array.isArray(sources?.pages) ? sources.pages : [],
         posts: Array.isArray(sources?.posts) ? sources.posts : [],
         products: Array.isArray(sources?.products) ? sources.products : [],
+        formTargets: sources?.formTargets && typeof sources.formTargets === 'object' ? sources.formTargets : {},
       },
     }),
     variablesModalOpen: false,
     setVariablesModalOpen: (open) => set({ variablesModalOpen: !!open }),
     flowEditorState: { open: false, elementId: '', flowId: '' },
-    openFlowEditor: (context = {}) => set({
-      flowEditorState: {
-        open: true,
-        elementId: typeof context.elementId === 'string' ? context.elementId : '',
-        flowId: typeof context.flowId === 'string' ? context.flowId : '',
-      },
-    }),
+    openFlowEditor: (context = {}) => {
+      const elementId = typeof context.elementId === 'string' ? context.elementId : '';
+      let flowId = typeof context.flowId === 'string' ? context.flowId : '';
+      if (elementId) {
+        const page = getActivePage();
+        const element = (page?.elements ?? []).find((entry) => entry.id === elementId) || null;
+        if (isFormContainerType(element?.type)) {
+          flowId = get().ensureFormSubmissionFlow(elementId, {
+            name: `${element?.name || 'Element'} submission`,
+            flowId,
+          }) || flowId;
+        } else if (!flowId) {
+          flowId = get().ensureElementFlow(elementId, {
+            triggerType: 'element-click',
+            name: `${element?.name || 'Element'} interaction`,
+          }) || flowId;
+        }
+      }
+      set({
+        flowEditorState: {
+          open: true,
+          elementId,
+          flowId,
+        },
+      });
+    },
     closeFlowEditor: () => set({ flowEditorState: { open: false, elementId: '', flowId: '' } }),
 
     getCurrentPageVariables() {
@@ -2932,6 +3440,7 @@ export const useEditorStore = create((set, get) => {
                 pages: Array.isArray(data.pages) ? data.pages : [],
                 posts: Array.isArray(data.posts) ? data.posts : [],
                 products: Array.isArray(data.products) ? data.products : [],
+                formTargets: data.formTargets && typeof data.formTargets === 'object' ? data.formTargets : {},
               },
             });
           }
@@ -3068,20 +3577,34 @@ export const useEditorStore = create((set, get) => {
     ensureElementFlow(elementId, options = {}) {
       if (!elementId) return null;
       const page = getActivePage();
-      const existing = normalizePageFlowList(page?.flows).find((flow) => flow.trigger?.type === 'element-click' && flow.trigger?.elementId === elementId) || null;
-      if (existing) return existing.id;
       const element = (page?.elements ?? []).find((entry) => entry.id === elementId) || null;
+      const requestedTriggerType = typeof options.triggerType === 'string' && FLOW_TRIGGER_TYPES.has(options.triggerType)
+        ? options.triggerType
+        : (isFormContainerType(element?.type) ? 'form-submit' : 'element-click');
+      const existing = normalizePageFlowList(page?.flows).find((flow) => (
+        requestedTriggerType === 'form-submit'
+          ? flow.trigger?.type === 'form-submit' && flow.trigger?.formId === elementId
+          : flow.trigger?.type === 'element-click' && flow.trigger?.elementId === elementId
+      )) || null;
+      if (existing) return existing.id;
       const triggerNodeId = makeId('flow-node');
+      const flowName = typeof options.name === 'string' && options.name.trim()
+        ? options.name.trim()
+        : `${element?.name || 'Element'} ${requestedTriggerType === 'form-submit' ? 'submission' : 'interaction'}`;
       const flow = normalizePageFlow({
         id: makeId('flow'),
-        name: typeof options.name === 'string' && options.name.trim() ? options.name.trim() : `${element?.name || 'Element'} interaction`,
-        trigger: { type: 'element-click', elementId, event: 'click' },
+        name: flowName,
+        trigger: requestedTriggerType === 'form-submit'
+          ? { type: 'form-submit', formId: elementId }
+          : { type: 'element-click', elementId, event: 'click' },
         nodes: [{
           id: triggerNodeId,
           type: 'trigger',
           label: 'Trigger',
           position: { x: 0, y: 0 },
-          config: { triggerType: 'element-click', elementId, event: 'click' },
+          config: requestedTriggerType === 'form-submit'
+            ? { triggerType: 'form-submit', formId: elementId }
+            : { triggerType: 'element-click', elementId, event: 'click' },
         }],
         edges: [],
       });
@@ -3089,6 +3612,22 @@ export const useEditorStore = create((set, get) => {
       get().updateCurrentPage((currentPage) => ({
         ...currentPage,
         flows: [...normalizePageFlowList(currentPage?.flows), flow],
+      }));
+      return flow.id;
+    },
+
+    ensureFormSubmissionFlow(formId, options = {}) {
+      if (!formId) return null;
+      const page = getActivePage();
+      const { flow, flows, didChange } = canonicalizeFormSubmissionFlowList(page?.flows, page?.elements, formId, {
+        name: typeof options.name === 'string' ? options.name : '',
+        preferredFlowId: typeof options.flowId === 'string' ? options.flowId : '',
+      });
+      if (!flow) return null;
+      if (!didChange) return flow.id;
+      get().updateCurrentPage((currentPage) => ({
+        ...currentPage,
+        flows,
       }));
       return flow.id;
     },

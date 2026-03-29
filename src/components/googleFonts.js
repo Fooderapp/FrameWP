@@ -34,6 +34,7 @@ const DEFAULT_FAMILIES = [
 
 let cachedFamilies = DEFAULT_FAMILIES;
 let catalogPromise = null;
+const loadedFamilies = new Set();
 const loadedRequests = new Set();
 const GOOGLE_FONTS_CATALOG_URL = 'https://cdn.jsdelivr.net/npm/google-fonts-complete@latest/google-fonts.json';
 
@@ -77,8 +78,19 @@ export function getCachedGoogleFontsCatalog() {
 export function ensureGoogleFontLoaded(family, options = {}) {
   const trimmedFamily = String(family || '').trim();
   if (!trimmedFamily) return;
+
+  if (!loadedFamilies.has(trimmedFamily)) {
+    loadedFamilies.add(trimmedFamily);
+    const baseLink = document.createElement('link');
+    baseLink.rel = 'stylesheet';
+    baseLink.href = `https://fonts.googleapis.com/css2?family=${familyToQuery(trimmedFamily)}&display=swap`;
+    baseLink.dataset.fbFontFamily = trimmedFamily;
+    document.head.appendChild(baseLink);
+  }
+
   const weight = Math.max(100, Math.min(900, Math.round(Number(options.weight) || 400)));
   const style = options.style === 'italic' ? 'italic' : 'normal';
+  if (weight === 400 && style === 'normal') return;
   const requestKey = `${trimmedFamily}::${style}::${weight}`;
   if (loadedRequests.has(requestKey)) return;
   loadedRequests.add(requestKey);

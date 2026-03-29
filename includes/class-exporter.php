@@ -24,6 +24,7 @@ class FrameBuilder_Exporter {
 	private array  $layout;
 	private array  $css      = [];
 	private string $build_id;
+	private int    $post_id  = 0;
 	/** @var array<string, array> id → element map */
 	private array  $el_index = [];
 
@@ -458,6 +459,12 @@ class FrameBuilder_Exporter {
 				$this->register_google_font_variant( $font_family, $font_weight, $font_style );
 				$this->collect_google_fonts_from_rich_text_html( (string) ( $resolved['richTextHtml'] ?? '' ), $font_family, (int) $font_weight, $font_style );
 			}
+			if ( $this->is_form_field_type( (string) ( $element['type'] ?? '' ) ) || $this->is_form_submit_button_type( (string) ( $element['type'] ?? '' ) ) ) {
+				$font_family = trim( (string) ( $styles['fontFamily'] ?? 'Inter' ) );
+				$font_weight = $styles['fontWeight'] ?? ( $this->is_form_submit_button_type( (string) ( $element['type'] ?? '' ) ) ? 600 : 500 );
+				$font_style = (string) ( $styles['fontStyle'] ?? 'normal' );
+				$this->register_google_font_variant( $font_family, $font_weight, $font_style );
+			}
 		}
 	}
 
@@ -481,11 +488,8 @@ class FrameBuilder_Exporter {
 	private function build_google_font_imports_css(): string {
 		if ( empty( $this->google_fonts ) ) return '';
 		$family_requests = [];
-		foreach ( $this->google_fonts as $family => $variants ) {
-			$encoded_family = str_replace( '%20', '+', rawurlencode( $family ) );
-			$variant_keys = array_keys( $variants );
-			sort( $variant_keys );
-			$family_requests[] = $encoded_family . ':ital,wght@' . implode( ';', $variant_keys );
+		foreach ( array_keys( $this->google_fonts ) as $family ) {
+			$family_requests[] = str_replace( '%20', '+', rawurlencode( $family ) );
 		}
 		if ( empty( $family_requests ) ) return '';
 
@@ -711,9 +715,10 @@ class FrameBuilder_Exporter {
 		return $this->plain_text_to_rich_text_html( (string) ( $resolved['text'] ?? 'Text' ) );
 	}
 
-	public function __construct( array $layout ) {
+	public function __construct( array $layout, int $post_id = 0 ) {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
+		$this->post_id = max( 0, $post_id );
 		$this->component_library = $this->load_component_library();
 		$this->page_variables = $this->normalize_variable_list( $layout['variables'] ?? [], 'page' );
 		$this->page_flows = $this->normalize_flow_list( $layout['flows'] ?? [] );
@@ -900,6 +905,33 @@ class FrameBuilder_Exporter {
 		$this->css[] = ".{$bid} .fb-text-content, .{$bid} .fb-text-content :is(span, strong, em, u, b, i, a, mark, small, sub, sup) { white-space: inherit; -webkit-text-stroke-width: var(--fb-text-stroke-width, 0px); -webkit-text-stroke-color: var(--fb-text-stroke-color, currentColor); -webkit-text-fill-color: currentColor; paint-order: stroke fill; }";
 		$this->css[] = ".{$bid} .fb-icon-content svg { width:100%; height:100%; }";
 		$this->css[] = ".{$bid} .fb-icon-content--stroked svg :is(path, circle, rect, line, polyline, polygon, ellipse) { stroke: var(--fb-icon-stroke-color); stroke-width: var(--fb-icon-stroke-width); paint-order: stroke fill; }";
+		$this->css[] = ".{$bid} input.fb-form-control:not([type=checkbox]):not([type=radio]), .{$bid} select.fb-form-control, .{$bid} textarea.fb-form-control { margin:0 !important; min-width:0 !important; max-width:none !important; width:100% !important; height:auto !important; text-transform:none !important; border:0 !important; outline:none !important; background:transparent !important; box-shadow:none !important; border-radius:0 !important; appearance:none; -webkit-appearance:none; display:block !important; vertical-align:middle; }";
+		$this->css[] = ".{$bid} input.fb-form-control[type=checkbox]:not(.fb-form-choice__input), .{$bid} input.fb-form-control[type=radio]:not(.fb-form-choice__input), .{$bid} input[type=checkbox]:not(.fb-form-choice__input), .{$bid} input[type=radio]:not(.fb-form-choice__input) { appearance:auto; -webkit-appearance:auto; width:auto !important; min-width:auto !important; max-width:none !important; height:auto !important; background:initial !important; border-radius:initial !important; display:inline-block !important; vertical-align:middle; }";
+		$this->css[] = ".{$bid} select.fb-form-control { background-image:none !important; }";
+		$this->css[] = ".{$bid} .fb-form-control::placeholder { opacity:1; }";
+		$this->css[] = ".{$bid} .fb-form-field, .{$bid} .fb-form-field * { box-sizing:border-box; }";
+		$this->css[] = ".{$bid} .fb-form-control--richtext { position:absolute !important; width:1px !important; min-width:1px !important; max-width:1px !important; height:1px !important; min-height:1px !important; margin:0 !important; padding:0 !important; border:0 !important; opacity:0 !important; overflow:hidden !important; pointer-events:none !important; clip:rect(0,0,0,0) !important; clip-path:inset(50%) !important; white-space:nowrap !important; display:block !important; }";
+		$this->css[] = ".{$bid} .fb-form-richtext { display:grid; grid-template-rows:auto minmax(0,1fr); }";
+		$this->css[] = ".{$bid} .fb-form-richtext__toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-height:36px; background:rgba(15,23,42,0.04); }";
+		$this->css[] = ".{$bid} .fb-form-richtext__toolbar-group { display:inline-flex; align-items:center; gap:6px; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__toolbar-btn { display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:28px; padding:0 8px; border:0; border-radius:8px; background:transparent; color:inherit; cursor:pointer; font:inherit; font-weight:600; line-height:1; opacity:.78; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__toolbar-btn:hover, .{$bid} .fb-form-richtext__toolbar-btn:focus-visible { background:rgba(15,23,42,0.08); outline:none; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__editor { width:100%; min-height:96px; outline:none; overflow:auto; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__editor.is-empty::before { content:attr(data-placeholder); color:inherit; opacity:.7; pointer-events:none; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__editor > :first-child { margin-top:0; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__editor > :last-child { margin-bottom:0; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__editor :is(p, ul, ol, blockquote) { margin:0 0 .8em; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__editor h1, .{$bid} .fb-form-richtext__editor h2, .{$bid} .fb-form-richtext__editor h3 { margin:0 0 .65em; line-height:1.2; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__editor ul, .{$bid} .fb-form-richtext__editor ol { padding-left:1.25em; }";
+		$this->css[] = ".{$bid} .fb-form-richtext__editor blockquote { padding-left:1em; border-left:2px solid currentColor; opacity:.82; }";
+		$this->css[] = ".{$bid} .fb-form-choice { position:relative; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; width:16px; height:16px; min-width:16px; min-height:16px; }";
+		$this->css[] = ".{$bid} .fb-form-choice__input { position:absolute !important; inset:0; opacity:0; margin:0 !important; width:100% !important; min-width:100% !important; max-width:100% !important; height:100% !important; cursor:pointer; z-index:2; appearance:none !important; -webkit-appearance:none !important; border:0 !important; background:transparent !important; border-radius:0 !important; }";
+		$this->css[] = ".{$bid} .fb-form-choice__control { position:relative; width:100%; height:100%; display:inline-flex; align-items:center; justify-content:center; pointer-events:none; }";
+		$this->css[] = ".{$bid} .fb-form-choice__label { min-width:0; }";
+		$this->css[] = ".{$bid} .fb-form-file-upload { position:relative; display:grid; place-items:center; gap:8px; text-align:center; cursor:pointer; transition:border-color 160ms ease,background-color 160ms ease,box-shadow 160ms ease; }";
+		$this->css[] = ".{$bid} .fb-form-file-upload.is-dragover { border-color:rgba(37,99,235,0.68) !important; background:rgba(37,99,235,0.08) !important; box-shadow:0 0 0 3px rgba(37,99,235,0.12) !important; }";
+		$this->css[] = ".{$bid} .fb-form-file-upload__meta { opacity:.82; }";
+		$this->css[] = ".{$bid} .fb-form-file-upload__input { position:absolute !important; inset:0; opacity:0; width:100% !important; height:100% !important; cursor:pointer; }";
 
 		$this->css[] = $this->responsive_visibility_css();
 
@@ -918,6 +950,7 @@ class FrameBuilder_Exporter {
 	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none', string $parent_align_items = 'stretch' ): string {
 		$resolved = $this->resolve_element_with_variables( $el, $bpId );
 		if ( ! empty( $resolved['hidden'] ) ) return '';
+		$element_type = isset( $el['type'] ) ? (string) $el['type'] : '';
 
 		$id     = preg_replace( '/[^a-zA-Z0-9_-]/', '', $el['id'] ?? '' );
 		$class  = 'fb-el fb-el-' . $id;
@@ -1145,6 +1178,9 @@ class FrameBuilder_Exporter {
 		$bindings_json = ! empty( $el['bindings'] ) ? esc_attr( wp_json_encode( $this->normalize_bindings( $el['bindings'] ) ) ) : '';
 		$flow_json = '';
 		$element_flow = $this->get_element_flow( $id );
+		if ( ! $element_flow && $this->is_form_container_type( $element_type ) ) {
+			$element_flow = $this->get_form_flow( $id );
+		}
 		if ( $element_flow ) {
 			$flow_json = esc_attr( wp_json_encode( $element_flow ) );
 		}
@@ -1182,15 +1218,96 @@ class FrameBuilder_Exporter {
 			$html .= '</div>';
 			return $html;
 		}
-		// Emit the div with all accumulated inline styles
-		$html = '<div class="' . esc_attr( $class ) . '" style="' . esc_attr( $inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '"' . $runtime_attrs . '>';
+		// Emit the root node with all accumulated inline styles
+		$is_submit_button = $this->is_form_submit_button_type( $element_type );
+		$root_tag = $this->is_form_container_type( $element_type ) ? 'form' : ( $is_submit_button ? 'button' : 'div' );
+		$root_class = $class;
+		$root_extra_attrs = '';
+		$form_config = null;
+		if ( 'form' === $root_tag ) {
+			$form_config = $this->normalize_form_config( $resolved['formConfig'] ?? [] );
+			$root_extra_attrs .= ' novalidate enctype="multipart/form-data" data-fb-form-id="' . esc_attr( $id ) . '"';
+			$root_extra_attrs .= ' data-fb-post-id="' . esc_attr( (string) $this->post_id ) . '"';
+			$root_extra_attrs .= ' data-fb-form-state="' . esc_attr( $form_config['state'] ) . '"';
+			$root_extra_attrs .= ' data-fb-form-config="' . esc_attr( wp_json_encode( $form_config ) ) . '"';
+		}
+		if ( $this->is_form_field_type( $element_type ) ) {
+			$inline .= 'background:transparent;background-image:none;border:none;border-radius:0;box-shadow:none;overflow:visible;padding:0;gap:0;display:block;';
+		}
+		$button_state_css = '';
+		if ( $is_submit_button ) {
+			$button_label = isset( $resolved['label'] ) && is_string( $resolved['label'] ) && trim( $resolved['label'] ) !== ''
+				? trim( $resolved['label'] )
+				: 'Submit';
+			$button_padding_top = isset( $styles['paddingTop'] ) && is_numeric( $styles['paddingTop'] ) ? max( 0, (float) $styles['paddingTop'] ) : 14;
+			$button_padding_right = isset( $styles['paddingRight'] ) && is_numeric( $styles['paddingRight'] ) ? max( 0, (float) $styles['paddingRight'] ) : 22;
+			$button_padding_bottom = isset( $styles['paddingBottom'] ) && is_numeric( $styles['paddingBottom'] ) ? max( 0, (float) $styles['paddingBottom'] ) : 14;
+			$button_padding_left = isset( $styles['paddingLeft'] ) && is_numeric( $styles['paddingLeft'] ) ? max( 0, (float) $styles['paddingLeft'] ) : 22;
+			$button_font_family = isset( $styles['fontFamily'] ) && is_string( $styles['fontFamily'] ) && trim( $styles['fontFamily'] ) !== ''
+				? $this->sanitize_css_value( "'" . trim( $styles['fontFamily'] ) . "', sans-serif" )
+				: 'inherit';
+			$button_font_size = isset( $styles['fontSize'] ) && is_numeric( $styles['fontSize'] ) ? max( 10, (float) $styles['fontSize'] ) : 14;
+			$button_font_weight = isset( $styles['fontWeight'] ) && is_numeric( $styles['fontWeight'] ) ? (int) $styles['fontWeight'] : 600;
+			$button_font_style = $this->sanitize_css_value( $styles['fontStyle'] ?? 'normal' );
+			$button_line_height = isset( $styles['lineHeight'] ) && is_numeric( $styles['lineHeight'] ) ? max( 0.8, (float) $styles['lineHeight'] ) : 1.2;
+			$button_letter_spacing = isset( $styles['letterSpacing'] ) && is_numeric( $styles['letterSpacing'] ) ? (float) $styles['letterSpacing'] : 0;
+			$button_text_align = $this->sanitize_css_value( $styles['textAlign'] ?? 'center' );
+			$button_text_decoration = $this->sanitize_css_value( $styles['textDecoration'] ?? 'none' );
+			$button_text_color = $this->sanitize_css_value( $this->get_gradient_fallback_color( $styles['color'] ?? '', '#ffffff' ) );
+			$button_background_color = $this->sanitize_css_value( $styles['backgroundColor'] ?? '#0f172a' );
+			$button_border_color = $this->sanitize_css_value( $styles['borderColor'] ?? 'rgba(15,23,42,0.14)' );
+			$button_box_shadow = $this->sanitize_css_value( $styles['boxShadow'] ?? '0 8px 18px rgba(15,23,42,0.16)' );
+			$button_hover_background = $this->sanitize_css_value( $styles['hoverBackgroundColor'] ?? '#1f2937' );
+			$button_hover_border = $this->sanitize_css_value( $styles['hoverBorderColor'] ?? 'rgba(15,23,42,0.22)' );
+			$button_hover_text = $this->sanitize_css_value( $styles['hoverTextColor'] ?? $button_text_color );
+			$button_pressed_background = $this->sanitize_css_value( $styles['pressedBackgroundColor'] ?? '#111827' );
+			$button_pressed_border = $this->sanitize_css_value( $styles['pressedBorderColor'] ?? 'rgba(15,23,42,0.22)' );
+			$button_pressed_text = $this->sanitize_css_value( $styles['pressedTextColor'] ?? $button_text_color );
+			$button_processing_background = $this->sanitize_css_value( $styles['processingBackgroundColor'] ?? 'rgba(15,23,42,0.72)' );
+			$button_processing_border = $this->sanitize_css_value( $styles['processingBorderColor'] ?? $button_border_color );
+			$button_processing_text = $this->sanitize_css_value( $styles['processingTextColor'] ?? $button_text_color );
+			$button_success_background = $this->sanitize_css_value( $styles['successBackgroundColor'] ?? '#047857' );
+			$button_success_border = $this->sanitize_css_value( $styles['successBorderColor'] ?? 'rgba(4,120,87,0.32)' );
+			$button_success_text = $this->sanitize_css_value( $styles['successTextColor'] ?? '#ffffff' );
+			$button_error_background = $this->sanitize_css_value( $styles['errorBackgroundColor'] ?? '#b91c1c' );
+			$button_error_border = $this->sanitize_css_value( $styles['errorBorderColor'] ?? 'rgba(185,28,28,0.32)' );
+			$button_error_text = $this->sanitize_css_value( $styles['errorTextColor'] ?? '#ffffff' );
+			$button_focus_ring_color = $this->sanitize_css_value( $styles['focusRingColor'] ?? 'rgba(37,99,235,0.2)' );
+			$button_focus_ring_width = isset( $styles['focusRingWidth'] ) && is_numeric( $styles['focusRingWidth'] ) ? max( 0, (float) $styles['focusRingWidth'] ) : 3;
+			$button_focus_box_shadow = 'none' !== $button_box_shadow ? $button_box_shadow : '';
+			if ( $button_focus_ring_width > 0 ) {
+				$button_focus_ring_shadow = '0 0 0 ' . round( $button_focus_ring_width, 3 ) . 'px ' . $button_focus_ring_color;
+				$button_focus_box_shadow = '' !== $button_focus_box_shadow ? $button_focus_box_shadow . ',' . $button_focus_ring_shadow : $button_focus_ring_shadow;
+			}
+			$inline .= 'appearance:none;-webkit-appearance:none;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:' . esc_attr( round( $button_padding_top, 3 ) . 'px ' . round( $button_padding_right, 3 ) . 'px ' . round( $button_padding_bottom, 3 ) . 'px ' . round( $button_padding_left, 3 ) . 'px' ) . ';';
+			$inline .= 'font-family:' . $button_font_family . ';font-size:' . esc_attr( $button_font_size ) . 'px;font-weight:' . esc_attr( (string) $button_font_weight ) . ';';
+			$inline .= 'font-style:' . $button_font_style . ';line-height:' . esc_attr( $button_line_height ) . ';letter-spacing:' . esc_attr( $button_letter_spacing ) . 'em;';
+			$inline .= 'text-align:' . $button_text_align . ';text-decoration:' . $button_text_decoration . ';white-space:nowrap;';
+			$inline .= 'color:' . $button_text_color . ';background:' . $button_background_color . ';border-color:' . $button_border_color . ';box-shadow:' . $button_box_shadow . ';';
+			$root_class .= ' fb-form-submit';
+			$root_extra_attrs .= ' type="submit" data-fb-form-submit-button="true" data-fb-submit-label="' . esc_attr( $button_label ) . '"';
+			$button_selector = '[data-fb-node-id="' . $id . '"]';
+			$button_state_css = '<style>'
+				. $button_selector . '{transition:border-color 160ms ease,background-color 160ms ease,box-shadow 160ms ease,color 160ms ease,transform 160ms ease;}'
+				. $button_selector . ':hover{background:' . $button_hover_background . ' !important;border-color:' . $button_hover_border . ' !important;color:' . $button_hover_text . ' !important;}'
+				. $button_selector . ':active{background:' . $button_pressed_background . ' !important;border-color:' . $button_pressed_border . ' !important;color:' . $button_pressed_text . ' !important;transform:scale(0.985) !important;}'
+				. $button_selector . ':focus-visible{box-shadow:' . $button_focus_box_shadow . ' !important;}'
+				. 'form[data-fb-form-state="submitting"] ' . $button_selector . '{background:' . $button_processing_background . ' !important;border-color:' . $button_processing_border . ' !important;color:' . $button_processing_text . ' !important;cursor:progress !important;transform:none !important;}'
+				. 'form[data-fb-form-state="success"] ' . $button_selector . '{background:' . $button_success_background . ' !important;border-color:' . $button_success_border . ' !important;color:' . $button_success_text . ' !important;transform:none !important;}'
+				. 'form[data-fb-form-state="error"] ' . $button_selector . '{background:' . $button_error_background . ' !important;border-color:' . $button_error_border . ' !important;color:' . $button_error_text . ' !important;transform:none !important;}'
+				. '</style>';
+		}
+		$html = '<' . $root_tag . ' class="' . esc_attr( $root_class ) . '" style="' . esc_attr( $inline ) . '" data-fb-node-id="' . esc_attr( $id ) . '" data-flip-id="' . esc_attr( $id ) . '"' . $runtime_attrs . $root_extra_attrs . '>';
+		if ( '' !== $button_state_css ) {
+			$html .= $button_state_css;
+		}
 		$frame_stroke_overlay_style = $this->build_gradient_frame_stroke_overlay_style( $styles );
 		if ( '' !== $frame_stroke_overlay_style ) {
 			$html .= '<div class="fb-frame-stroke-overlay" aria-hidden="true" style="' . esc_attr( $frame_stroke_overlay_style ) . '"></div>';
 		}
 
 		// Image element: render <img> tag filling the div (added after div opening)
-		if ( ( $el['type'] ?? '' ) === 'image' ) {
+		if ( 'image' === $element_type ) {
 			$src     = esc_url( $this->normalize_media_url( $resolved['src'] ?? '' ) );
 			$obj_fit = $this->sanitize_css_value( $styles['objectFit'] ?? 'cover' );
 			if ( $src ) {
@@ -1199,7 +1316,7 @@ class FrameBuilder_Exporter {
 			}
 		}
 
-		if ( ( $el['type'] ?? '' ) === 'video' ) {
+		if ( 'video' === $element_type ) {
 			$provider = $this->normalize_video_provider( $resolved['videoProvider'] ?? 'upload' );
 			$src = 'upload' === $provider
 				? $this->normalize_media_url( $resolved['src'] ?? '' )
@@ -1225,7 +1342,7 @@ class FrameBuilder_Exporter {
 			}
 		}
 
-		if ( ( $el['type'] ?? '' ) === 'scroll-sequence' && $scroll_sequence ) {
+		if ( 'scroll-sequence' === $element_type && $scroll_sequence ) {
 			$object_fit = $this->sanitize_css_value( $scroll_sequence['objectFit'] ?? 'cover' );
 			if ( 'video' === $scroll_sequence['type'] ) {
 				$video_url = esc_url( $scroll_sequence['src'] ?? '' );
@@ -1249,7 +1366,7 @@ class FrameBuilder_Exporter {
 			}
 		}
 
-		if ( ( $el['type'] ?? '' ) === 'embed' ) {
+		if ( 'embed' === $element_type ) {
 			$embed_mode = $this->normalize_embed_mode( $resolved['embedMode'] ?? 'html' );
 			$embed_code = isset( $resolved['embedCode'] ) && is_string( $resolved['embedCode'] ) ? $resolved['embedCode'] : '';
 			if ( 'html' === $embed_mode ) {
@@ -1271,7 +1388,7 @@ class FrameBuilder_Exporter {
 			}
 		}
 
-		if ( ( $el['type'] ?? '' ) === 'text' ) {
+		if ( 'text' === $element_type ) {
 			$font_family = trim( (string) ( $styles['fontFamily'] ?? 'Inter' ) );
 			$font_stack  = $font_family !== '' ? "'{$font_family}', sans-serif" : 'Inter, sans-serif';
 			$font_style  = $this->sanitize_css_value( $styles['fontStyle'] ?? 'normal' );
@@ -1312,7 +1429,7 @@ class FrameBuilder_Exporter {
 			$html .= '<div class="fb-text-content" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="' . esc_attr( $text_style ) . '">' . $text_value . '</div>';
 		}
 
-		if ( ( $el['type'] ?? '' ) === 'icon' ) {
+		if ( 'icon' === $element_type ) {
 			$icon_markup = $this->sanitize_svg_markup( $resolved['svgMarkup'] ?? '' );
 			$icon_color = $this->sanitize_css_value( $styles['color'] ?? '#111827' );
 			$icon_stroke_width = isset( $styles['strokeWidth'] ) ? max( 0, (float) $styles['strokeWidth'] ) : 0;
@@ -1325,6 +1442,14 @@ class FrameBuilder_Exporter {
 				}
 				$html .= '<div class="' . esc_attr( $icon_class ) . '" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="' . $icon_style . '">' . $icon_markup . '</div>';
 			}
+		}
+
+		if ( $this->is_form_field_type( $element_type ) ) {
+			$html .= $this->render_form_field_content( $el, $resolved, $styles, $id );
+		}
+
+		if ( $is_submit_button ) {
+			$html .= esc_html( isset( $resolved['label'] ) && is_string( $resolved['label'] ) && trim( $resolved['label'] ) !== '' ? trim( $resolved['label'] ) : 'Submit' );
 		}
 
 		// Compute flex direction this element provides to its own children
@@ -1342,7 +1467,16 @@ class FrameBuilder_Exporter {
 			}
 		}
 
-		$html .= '</div>';
+		if ( $this->is_form_container_type( $element_type ) ) {
+			$form_config = is_array( $form_config ) ? $form_config : $this->normalize_form_config( $resolved['formConfig'] ?? [] );
+			$submit_state = $form_config['state'];
+			$status_message = 'success' === $submit_state
+				? $form_config['successMessage']
+				: ( 'error' === $submit_state ? $form_config['errorMessage'] : '' );
+			$html .= '<div class="fb-form-status" data-fb-form-status style="display:' . ( '' !== $status_message ? 'block' : 'none' ) . ';margin-top:8px;font-size:12px;line-height:1.45;color:' . esc_attr( 'error' === $submit_state ? '#b91c1c' : ( 'success' === $submit_state ? '#047857' : 'rgba(15,23,42,0.68)' ) ) . ';">' . esc_html( $status_message ) . '</div>';
+		}
+
+		$html .= '</' . $root_tag . '>';
 		return $html;
 	}
 
@@ -1361,6 +1495,8 @@ class FrameBuilder_Exporter {
 		$id       = preg_replace( '/[^a-zA-Z0-9_-]/', '', $el['id'] ?? '' );
 		$selector = ".{$this->build_id} .fb-bp-{$bpId} .fb-bp-inner .fb-el-{$id}";
 		$styles   = $resolved['styles'] ?? [];
+		$element_type = isset( $el['type'] ) ? (string) $el['type'] : '';
+		$is_form_field = $this->is_form_field_type( $element_type );
 
 		$x = floatval( $resolved['x']      ?? 0 );
 		$y = floatval( $resolved['y']      ?? 0 );
@@ -1552,12 +1688,14 @@ class FrameBuilder_Exporter {
 		}
 		$rules[] = 'transform-origin: center center';
 
-		$allowed_props = [
-			'backgroundColor', 'borderRadius', 'borderWidth', 'borderColor', 'borderStyle',
-			'opacity', 'mixBlendMode', 'overflow', 'display', 'flexDirection', 'flexWrap', 'gap',
-			'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-			'alignItems', 'justifyContent', 'boxShadow', 'zIndex',
-		];
+		$allowed_props = $is_form_field
+			? [ 'opacity', 'mixBlendMode', 'zIndex' ]
+			: [
+				'backgroundColor', 'borderRadius', 'borderWidth', 'borderColor', 'borderStyle',
+				'opacity', 'mixBlendMode', 'overflow', 'display', 'flexDirection', 'flexWrap', 'gap',
+				'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+				'alignItems', 'justifyContent', 'boxShadow', 'zIndex',
+			];
 		$px_props = [
 			'border-radius', 'border-width', 'gap',
 			'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
@@ -1573,13 +1711,13 @@ class FrameBuilder_Exporter {
 			}
 			$rules[] = $css_key . ': ' . $this->sanitize_css_value( $val );
 		}
-		if ( ! empty( $styles['borderWidth'] ) && $this->is_gradient_css_value( $styles['borderColor'] ?? '' ) ) {
+		if ( ! $is_form_field && ! empty( $styles['borderWidth'] ) && $this->is_gradient_css_value( $styles['borderColor'] ?? '' ) ) {
 			$rules = array_filter( $rules, fn( $rule ) => strpos( $rule, 'border-color:' ) === false );
 			$rules[] = 'border-color: transparent';
 		}
 		// Background image fill
 		$bg_img = $this->normalize_media_url( $styles['backgroundImage'] ?? '' );
-		if ( $bg_img !== '' ) {
+		if ( ! $is_form_field && $bg_img !== '' ) {
 			$bg_size = $styles['backgroundSize'] ?? 'cover';
 			$bg_pos  = $styles['backgroundPosition'] ?? 'center center';
 			$rules[] = 'background-image: url(' . $this->sanitize_css_value( $bg_img ) . ')';
@@ -1593,7 +1731,7 @@ class FrameBuilder_Exporter {
 			$rules[] = 'background-position: ' . $this->sanitize_css_value( $bg_pos );
 		}
 		// Independent corner radius
-		if ( ( $styles['borderRadiusMode'] ?? '' ) === 'independent' ) {
+		if ( ! $is_form_field && ( $styles['borderRadiusMode'] ?? '' ) === 'independent' ) {
 			$br = (float) ( $styles['borderRadius'] ?? 0 );
 			$tl = (float) ( $styles['borderRadiusTL'] ?? $br );
 			$tr = (float) ( $styles['borderRadiusTR'] ?? $br );
@@ -1802,7 +1940,7 @@ class FrameBuilder_Exporter {
 		if ( ! is_array( $node ) ) return null;
 		$id = isset( $node['id'] ) ? sanitize_text_field( (string) $node['id'] ) : '';
 		$type = isset( $node['type'] ) ? sanitize_key( (string) $node['type'] ) : '';
-		if ( '' === $id || ! in_array( $type, [ 'trigger', 'condition', 'navigate', 'set-variable', 'delay', 'end' ], true ) ) {
+		if ( '' === $id || ! in_array( $type, [ 'trigger', 'submission-form', 'condition', 'navigate', 'set-variable', 'delay', 'end' ], true ) ) {
 			return null;
 		}
 		$position = is_array( $node['position'] ?? null ) ? $node['position'] : [];
@@ -1831,7 +1969,7 @@ class FrameBuilder_Exporter {
 			'id' => isset( $edge['id'] ) ? sanitize_text_field( (string) $edge['id'] ) : uniqid( 'flow-edge-', true ),
 			'source' => $source,
 			'target' => $target,
-			'sourcePort' => in_array( $source_port, [ 'next', 'true', 'false' ], true ) ? $source_port : 'next',
+			'sourcePort' => in_array( $source_port, [ 'next', 'true', 'false', 'submitted', 'error' ], true ) ? $source_port : 'next',
 			'targetPort' => '' !== $target_port ? $target_port : 'in',
 		];
 	}
@@ -1882,6 +2020,345 @@ class FrameBuilder_Exporter {
 			}
 		}
 		return null;
+	}
+
+	private function get_form_flow( string $form_id ): ?array {
+		if ( '' === $form_id ) return null;
+		foreach ( $this->page_flows as $flow ) {
+			$trigger = is_array( $flow['trigger'] ?? null ) ? $flow['trigger'] : [];
+			if ( ( $trigger['type'] ?? '' ) === 'form-submit' && ( $trigger['formId'] ?? '' ) === $form_id ) {
+				return $flow;
+			}
+		}
+		return null;
+	}
+
+	private function is_form_container_type( string $type ): bool {
+		return 'form' === $type;
+	}
+
+	private function is_form_field_type( string $type ): bool {
+		return in_array( $type, [ 'text-field', 'textarea-field', 'rich-text-editor', 'radio-group', 'dropdown', 'checkbox', 'file-upload', 'captcha' ], true );
+	}
+
+	private function is_form_submit_button_type( string $type ): bool {
+		return 'submit-button' === $type;
+	}
+
+	private function normalize_form_field_name( array $resolved, array $el, string $fallback_id ): string {
+		$field_name = isset( $resolved['fieldName'] ) && is_string( $resolved['fieldName'] ) ? trim( $resolved['fieldName'] ) : '';
+		if ( '' === $field_name ) {
+			$field_name = isset( $el['name'] ) && is_string( $el['name'] ) ? trim( $el['name'] ) : '';
+		}
+		$field_name = strtolower( preg_replace( '/[^a-zA-Z0-9_-]+/', '_', $field_name ) ?? '' );
+		$field_name = trim( $field_name, '_' );
+		if ( '' === $field_name ) {
+			$field_name = 'field_' . strtolower( $fallback_id );
+		}
+		return $field_name;
+	}
+
+	private function normalize_form_field_options( $value ): array {
+		if ( ! is_array( $value ) ) return [];
+		$options = [];
+		foreach ( $value as $index => $option ) {
+			if ( ! is_array( $option ) ) continue;
+			$label = isset( $option['label'] ) && is_string( $option['label'] ) && trim( $option['label'] ) !== ''
+				? trim( $option['label'] )
+				: 'Option ' . ( $index + 1 );
+			$option_value = isset( $option['value'] ) && is_string( $option['value'] ) && trim( $option['value'] ) !== ''
+				? trim( $option['value'] )
+				: sanitize_title( $label );
+			$options[] = [
+				'id' => isset( $option['id'] ) && is_string( $option['id'] ) ? sanitize_text_field( $option['id'] ) : 'option-' . ( $index + 1 ),
+				'label' => sanitize_text_field( $label ),
+				'value' => sanitize_text_field( $option_value ),
+				'enabled' => ! isset( $option['enabled'] ) || false !== $option['enabled'],
+			];
+		}
+		return $options;
+	}
+
+	private function normalize_form_config( $value ): array {
+		$config = is_array( $value ) ? $value : [];
+		$actions = is_array( $config['actions'] ?? null ) ? $config['actions'] : [];
+		$email = is_array( $actions['email'] ?? null ) ? $actions['email'] : [];
+		$webhook = is_array( $actions['webhook'] ?? null ) ? $actions['webhook'] : [];
+		$store = is_array( $actions['store'] ?? null ) ? $actions['store'] : [];
+
+		return [
+			'state' => isset( $config['state'] ) && is_string( $config['state'] ) ? sanitize_key( $config['state'] ) : 'idle',
+			'submitLabel' => isset( $config['submitLabel'] ) && is_string( $config['submitLabel'] ) && trim( $config['submitLabel'] ) !== ''
+				? sanitize_text_field( $config['submitLabel'] )
+				: 'Submit',
+			'successMessage' => isset( $config['successMessage'] ) && is_string( $config['successMessage'] ) && trim( $config['successMessage'] ) !== ''
+				? sanitize_text_field( $config['successMessage'] )
+				: 'Thanks. Your submission was received.',
+			'errorMessage' => isset( $config['errorMessage'] ) && is_string( $config['errorMessage'] ) && trim( $config['errorMessage'] ) !== ''
+				? sanitize_text_field( $config['errorMessage'] )
+				: 'Something went wrong. Please try again.',
+			'actions' => [
+				'store' => [
+					'enabled' => ! isset( $store['enabled'] ) || ! empty( $store['enabled'] ),
+				],
+				'email' => [
+					'enabled' => ! empty( $email['enabled'] ),
+					'to' => isset( $email['to'] ) && is_string( $email['to'] ) ? sanitize_text_field( $email['to'] ) : '',
+					'subject' => isset( $email['subject'] ) && is_string( $email['subject'] ) && trim( $email['subject'] ) !== ''
+						? sanitize_text_field( $email['subject'] )
+						: 'New form submission',
+				],
+				'webhook' => [
+					'enabled' => ! empty( $webhook['enabled'] ),
+					'url' => isset( $webhook['url'] ) && is_string( $webhook['url'] ) ? esc_url_raw( trim( $webhook['url'] ) ) : '',
+				],
+			],
+		];
+	}
+
+	private function render_form_field_content( array $el, array $resolved, array $styles, string $id ): string {
+		$type = isset( $el['type'] ) ? (string) $el['type'] : '';
+		if ( ! $this->is_form_field_type( $type ) ) return '';
+
+		$field_name = $this->normalize_form_field_name( $resolved, $el, $id );
+		$field_label = isset( $resolved['label'] ) && is_string( $resolved['label'] ) && trim( $resolved['label'] ) !== ''
+			? trim( $resolved['label'] )
+			: ( isset( $el['name'] ) && is_string( $el['name'] ) ? trim( $el['name'] ) : 'Field' );
+		$placeholder = isset( $resolved['placeholder'] ) && is_string( $resolved['placeholder'] ) ? trim( $resolved['placeholder'] ) : '';
+		$helper_text = isset( $resolved['helperText'] ) && is_string( $resolved['helperText'] ) ? trim( $resolved['helperText'] ) : '';
+		$required_attr = ! empty( $resolved['required'] ) ? ' required' : '';
+		$options = $this->normalize_form_field_options( $resolved['fieldOptions'] ?? [] );
+		$base_text_color = $this->sanitize_css_value( $this->get_gradient_fallback_color( $styles['color'] ?? '', '#0f172a' ) );
+		$helper_color = $this->sanitize_css_value( $styles['helperColor'] ?? 'rgba(15,23,42,0.58)' );
+		$placeholder_color = $this->sanitize_css_value( $styles['placeholderColor'] ?? 'rgba(15,23,42,0.58)' );
+		$icon_color = $this->sanitize_css_value( $styles['iconColor'] ?? $placeholder_color );
+		$select_icon = isset( $styles['selectIcon'] ) && is_string( $styles['selectIcon'] ) ? sanitize_key( $styles['selectIcon'] ) : 'caret';
+		$hover_border_color = $this->sanitize_css_value( $styles['hoverBorderColor'] ?? ( $styles['borderColor'] ?? 'rgba(37,99,235,0.32)' ) );
+		$hover_background_color = $this->sanitize_css_value( $styles['hoverBackgroundColor'] ?? ( $styles['backgroundColor'] ?? '#ffffff' ) );
+		$focus_border_color = $this->sanitize_css_value( $styles['focusBorderColor'] ?? '#2563eb' );
+		$focus_background_color = $this->sanitize_css_value( $styles['focusBackgroundColor'] ?? ( $styles['backgroundColor'] ?? '#ffffff' ) );
+		$focus_ring_color = $this->sanitize_css_value( $styles['focusRingColor'] ?? 'rgba(37,99,235,0.2)' );
+		$focus_ring_width = isset( $styles['focusRingWidth'] ) && is_numeric( $styles['focusRingWidth'] ) ? max( 0, (float) $styles['focusRingWidth'] ) : 3;
+		$font_family = isset( $styles['fontFamily'] ) && is_string( $styles['fontFamily'] ) && trim( $styles['fontFamily'] ) !== ''
+			? $this->sanitize_css_value( "'" . trim( $styles['fontFamily'] ) . "', sans-serif" )
+			: 'inherit';
+		$font_size = isset( $styles['fontSize'] ) && is_numeric( $styles['fontSize'] ) ? max( 10, (float) $styles['fontSize'] ) : 14;
+		$font_weight = isset( $styles['fontWeight'] ) && is_numeric( $styles['fontWeight'] ) ? (int) $styles['fontWeight'] : 500;
+		$font_style = $this->sanitize_css_value( $styles['fontStyle'] ?? 'normal' );
+		$line_height = isset( $styles['lineHeight'] ) && is_numeric( $styles['lineHeight'] ) ? max( 0.8, (float) $styles['lineHeight'] ) : 1.4;
+		$letter_spacing = isset( $styles['letterSpacing'] ) && is_numeric( $styles['letterSpacing'] ) ? (float) $styles['letterSpacing'] : 0;
+		$field_gap = isset( $styles['gap'] ) && is_numeric( $styles['gap'] ) ? max( 0, (float) $styles['gap'] ) : 8;
+		$padding_top = isset( $styles['paddingTop'] ) && is_numeric( $styles['paddingTop'] ) ? max( 0, (float) $styles['paddingTop'] ) : 14;
+		$padding_right = isset( $styles['paddingRight'] ) && is_numeric( $styles['paddingRight'] ) ? max( 0, (float) $styles['paddingRight'] ) : 18;
+		$padding_bottom = isset( $styles['paddingBottom'] ) && is_numeric( $styles['paddingBottom'] ) ? max( 0, (float) $styles['paddingBottom'] ) : 14;
+		$padding_left = isset( $styles['paddingLeft'] ) && is_numeric( $styles['paddingLeft'] ) ? max( 0, (float) $styles['paddingLeft'] ) : 18;
+		if ( ( $styles['borderRadiusMode'] ?? '' ) === 'independent' ) {
+			$base_border_radius = isset( $styles['borderRadius'] ) && is_numeric( $styles['borderRadius'] ) ? (float) $styles['borderRadius'] : 0;
+			$radius_tl = isset( $styles['borderRadiusTL'] ) && is_numeric( $styles['borderRadiusTL'] ) ? (float) $styles['borderRadiusTL'] : $base_border_radius;
+			$radius_tr = isset( $styles['borderRadiusTR'] ) && is_numeric( $styles['borderRadiusTR'] ) ? (float) $styles['borderRadiusTR'] : $base_border_radius;
+			$radius_br = isset( $styles['borderRadiusBR'] ) && is_numeric( $styles['borderRadiusBR'] ) ? (float) $styles['borderRadiusBR'] : $base_border_radius;
+			$radius_bl = isset( $styles['borderRadiusBL'] ) && is_numeric( $styles['borderRadiusBL'] ) ? (float) $styles['borderRadiusBL'] : $base_border_radius;
+			$control_border_radius = esc_attr( round( $radius_tl, 3 ) . 'px ' . round( $radius_tr, 3 ) . 'px ' . round( $radius_br, 3 ) . 'px ' . round( $radius_bl, 3 ) . 'px' );
+		} else {
+			$control_border_radius = isset( $styles['borderRadius'] ) && is_numeric( $styles['borderRadius'] )
+				? esc_attr( round( (float) $styles['borderRadius'], 3 ) . 'px' )
+				: esc_attr( $this->sanitize_css_value( $styles['borderRadius'] ?? '0px' ) );
+		}
+		$border_width = isset( $styles['borderWidth'] ) && is_numeric( $styles['borderWidth'] ) ? max( 0, (float) $styles['borderWidth'] ) : 1;
+		$border_style = $this->sanitize_css_value( $styles['borderStyle'] ?? 'solid' );
+		$border_color = $this->sanitize_css_value( $styles['borderColor'] ?? 'rgba(15,23,42,0.12)' );
+		$background_color = $this->sanitize_css_value( $styles['backgroundColor'] ?? '#ffffff' );
+		$box_shadow = $this->sanitize_css_value( $styles['boxShadow'] ?? '0 1px 2px rgba(15,23,42,0.06)' );
+		$focus_state_shadow = $this->sanitize_css_value( $styles['focusBoxShadow'] ?? '' );
+		$focus_box_shadow = 'none' !== $box_shadow ? $box_shadow : '';
+		if ( '' !== $focus_state_shadow && 'none' !== $focus_state_shadow ) {
+			$focus_box_shadow = '' !== $focus_box_shadow ? $focus_box_shadow . ',' . $focus_state_shadow : $focus_state_shadow;
+		}
+		if ( $focus_ring_width > 0 ) {
+			$focus_ring_shadow = '0 0 0 ' . round( $focus_ring_width, 3 ) . 'px ' . $focus_ring_color;
+			$focus_box_shadow = '' !== $focus_box_shadow ? $focus_box_shadow . ',' . $focus_ring_shadow : $focus_ring_shadow;
+		}
+		$checked_border_color = $this->sanitize_css_value( $styles['checkedBorderColor'] ?? $focus_border_color );
+		$checked_background_color = $this->sanitize_css_value( $styles['checkedBackgroundColor'] ?? '#eff6ff' );
+		$checked_state_shadow = $this->sanitize_css_value( $styles['checkedBoxShadow'] ?? '' );
+		$checked_box_shadow = 'none' !== $box_shadow ? $box_shadow : '';
+		if ( '' !== $checked_state_shadow && 'none' !== $checked_state_shadow ) {
+			$checked_box_shadow = '' !== $checked_box_shadow ? $checked_box_shadow . ',' . $checked_state_shadow : $checked_state_shadow;
+		}
+		$state_transition_duration = isset( $styles['stateTransitionDuration'] ) && is_numeric( $styles['stateTransitionDuration'] ) ? max( 0, (float) $styles['stateTransitionDuration'] ) : 0.16;
+		$state_transition_easing = $this->sanitize_css_value( $styles['stateTransitionEasing'] ?? 'ease' );
+		if ( ! in_array( $state_transition_easing, [ 'ease', 'linear', 'ease-in-out' ], true ) ) {
+			$state_transition_easing = 'ease';
+		}
+		$state_transition = round( $state_transition_duration, 3 ) . 's ' . $state_transition_easing;
+		$text_align = $this->sanitize_css_value( $styles['textAlign'] ?? 'left' );
+		$text_decoration = $this->sanitize_css_value( $styles['textDecoration'] ?? 'none' );
+		$field_text_style = 'font-family:' . $font_family . ';font-size:' . esc_attr( $font_size ) . 'px;font-weight:' . esc_attr( (string) $font_weight ) . ';font-style:' . $font_style . ';line-height:' . esc_attr( $line_height ) . ';letter-spacing:' . esc_attr( $letter_spacing ) . 'em;text-align:' . $text_align . ';text-decoration:' . $text_decoration . ';';
+		$label_text_style = 'font-family:' . $font_family . ';font-size:' . esc_attr( (string) max( 10, round( $font_size * 0.86 ) ) ) . 'px;font-weight:' . esc_attr( (string) max( 600, $font_weight ) ) . ';line-height:' . esc_attr( $line_height ) . ';letter-spacing:' . esc_attr( $letter_spacing ) . 'em;text-align:' . $text_align . ';';
+		$field_stack_style = 'display:grid;height:100%;align-content:start;gap:' . esc_attr( (string) round( $field_gap, 3 ) ) . 'px;';
+		$label_markup = ( 'checkbox' !== $type && '' !== $field_label )
+			? '<label class="fb-form-field__label" for="' . esc_attr( $id . '__input' ) . '" style="display:block;color:' . esc_attr( $base_text_color ) . ';' . $label_text_style . '">' . esc_html( $field_label ) . '</label>'
+			: '';
+		$helper_markup = '' !== $helper_text
+			? '<div class="fb-form-field__helper" style="color:' . esc_attr( $helper_color ) . ';' . $field_text_style . 'font-size:' . esc_attr( (string) max( 11, $font_size - 1 ) ) . 'px;">' . esc_html( $helper_text ) . '</div>'
+			: '';
+		$control_min_height = max( 36, round( $font_size * $line_height + $padding_top + $padding_bottom, 3 ) );
+		$control_shell_id = $id . '__control';
+		$control_input_id = $id . '__input';
+		$control_state_css = '<style>#' . esc_attr( $control_shell_id ) . '{transition:border-color ' . esc_attr( $state_transition ) . ',background-color ' . esc_attr( $state_transition ) . ',box-shadow ' . esc_attr( $state_transition ) . ';}#' . esc_attr( $control_input_id ) . '::placeholder{color:' . esc_attr( $placeholder_color ) . ';opacity:1;}#' . esc_attr( $control_shell_id ) . ':hover{border-color:' . esc_attr( $hover_border_color ) . ' !important;background:' . esc_attr( $hover_background_color ) . ' !important;}#' . esc_attr( $control_shell_id ) . ':focus-within{border-color:' . esc_attr( $focus_border_color ) . ' !important;background:' . esc_attr( $focus_background_color ) . ' !important;box-shadow:' . esc_attr( $focus_box_shadow ) . ' !important;}#' . esc_attr( $control_shell_id ) . ' .fb-form-field__indicator{transition:color ' . esc_attr( $state_transition ) . ';}</style>';
+		$control_shell_style = 'position:relative;width:100%;min-height:' . esc_attr( (string) $control_min_height ) . 'px;display:flex;align-items:center;box-sizing:border-box;border:' . esc_attr( round( $border_width, 3 ) ) . 'px ' . $border_style . ' ' . $border_color . ';border-radius:' . $control_border_radius . ';background:' . $background_color . ';box-shadow:' . $box_shadow . ';overflow:hidden;';
+		$control_style = 'width:100%;min-height:' . esc_attr( (string) $control_min_height ) . 'px;display:block;box-sizing:border-box;border:0;outline:none;background:transparent;color:' . esc_attr( $base_text_color ) . ';box-shadow:none;' . $field_text_style;
+		$control_padding_style = 'padding:' . esc_attr( round( $padding_top, 3 ) . 'px ' . round( $padding_right, 3 ) . 'px ' . round( $padding_bottom, 3 ) . 'px ' . round( $padding_left, 3 ) . 'px' ) . ';';
+		$select_padding_style = 'padding:' . esc_attr( round( $padding_top, 3 ) . 'px ' . round( max( 40, $padding_right + 26 ), 3 ) . 'px ' . round( $padding_bottom, 3 ) . 'px ' . round( $padding_left, 3 ) . 'px' ) . ';';
+		$checkbox_accent_color = $this->sanitize_css_value( $styles['checkboxAccentColor'] ?? '#2563eb' );
+
+		if ( 'textarea-field' === $type ) {
+			$textarea_value = isset( $resolved['defaultValue'] ) && is_string( $resolved['defaultValue'] )
+				? $resolved['defaultValue']
+				: '';
+			return '<div class="fb-form-field" style="' . esc_attr( $field_stack_style ) . '">'
+				. $label_markup
+				. $control_state_css
+				. '<div id="' . esc_attr( $control_shell_id ) . '" data-fb-form-surface="true" style="' . esc_attr( $control_shell_style . 'min-height:' . max( 96, $control_min_height ) . 'px;align-items:stretch;' ) . '"><textarea id="' . esc_attr( $control_input_id ) . '" class="fb-form-control fb-form-control--textarea" name="' . esc_attr( $field_name ) . '" placeholder="' . esc_attr( $placeholder ) . '" rows="4" style="' . esc_attr( $control_style . $control_padding_style . 'min-height:' . max( 96, $control_min_height ) . 'px;resize:vertical;' ) . '"' . $required_attr . '>' . esc_textarea( $textarea_value ) . '</textarea></div>'
+				. $helper_markup
+				. '</div>';
+		}
+
+		if ( 'text-field' === $type ) {
+			$input_type = 'text';
+			if ( false !== stripos( $field_name, 'email' ) ) {
+				$input_type = 'email';
+			} elseif ( false !== stripos( $field_name, 'phone' ) || false !== stripos( $field_name, 'tel' ) ) {
+				$input_type = 'tel';
+			} elseif ( false !== stripos( $field_name, 'password' ) ) {
+				$input_type = 'password';
+			}
+			return '<div class="fb-form-field" style="' . esc_attr( $field_stack_style ) . '">'
+				. $label_markup
+				. $control_state_css
+				. '<div id="' . esc_attr( $control_shell_id ) . '" data-fb-form-surface="true" style="' . esc_attr( $control_shell_style ) . '"><input id="' . esc_attr( $control_input_id ) . '" class="fb-form-control fb-form-control--text" type="' . esc_attr( $input_type ) . '" name="' . esc_attr( $field_name ) . '" placeholder="' . esc_attr( $placeholder ) . '" style="' . esc_attr( $control_style . $control_padding_style ) . '"' . $required_attr . '></div>'
+				. $helper_markup
+				. '</div>';
+		}
+
+		if ( 'dropdown' === $type ) {
+			$markup = '<div class="fb-form-field" style="' . esc_attr( $field_stack_style ) . '">' . $label_markup . $control_state_css;
+			$markup .= '<div id="' . esc_attr( $control_shell_id ) . '" data-fb-form-surface="true" style="' . esc_attr( $control_shell_style ) . '">';
+			$markup .= '<select id="' . esc_attr( $control_input_id ) . '" class="fb-form-control fb-form-control--select" name="' . esc_attr( $field_name ) . '" style="' . esc_attr( $control_style . 'appearance:none;-webkit-appearance:none;' . $select_padding_style ) . '"' . $required_attr . '>';
+			$markup .= '<option value="">' . esc_html( $placeholder !== '' ? $placeholder : 'Select an option' ) . '</option>';
+			foreach ( $options as $option ) {
+				if ( isset( $option['enabled'] ) && false === $option['enabled'] ) {
+					continue;
+				}
+				$markup .= '<option value="' . esc_attr( $option['value'] ) . '"' . ( isset( $resolved['defaultValue'] ) && $resolved['defaultValue'] === $option['value'] ? ' selected' : '' ) . '>' . esc_html( $option['label'] ) . '</option>';
+			}
+			$markup .= '</select>';
+			if ( 'none' !== $select_icon ) {
+				$markup .= '<span class="fb-form-field__indicator" aria-hidden="true" style="position:absolute;right:' . esc_attr( round( max( 12, $padding_right ), 3 ) ) . 'px;top:50%;transform:translateY(-50%);font-size:12px;color:' . esc_attr( $icon_color ) . ';pointer-events:none;">' . esc_html( 'chevron' === $select_icon ? '⌄' : '▼' ) . '</span>';
+			}
+			$markup .= '</div>' . $helper_markup . '</div>';
+			return $markup;
+		}
+
+		if ( 'rich-text-editor' === $type ) {
+			$editor_initial_value = isset( $resolved['defaultValue'] ) && is_string( $resolved['defaultValue'] )
+				? wp_kses_post( $resolved['defaultValue'] )
+				: '';
+			$editor_is_empty = '' === trim( wp_strip_all_tags( $editor_initial_value ) );
+			$richtext_toolbar_style = $field_text_style . 'font-size:' . esc_attr( (string) max( 11, round( $font_size * 0.92 ) ) ) . 'px;color:' . esc_attr( $base_text_color ) . ';padding:8px ' . esc_attr( round( $padding_right, 3 ) ) . 'px 8px ' . esc_attr( round( $padding_left, 3 ) ) . 'px;border-bottom:' . esc_attr( round( $border_width, 3 ) ) . 'px ' . $border_style . ' ' . $border_color . ';';
+			$markup = '<div class="fb-form-field" style="' . esc_attr( $field_stack_style ) . '">' . $label_markup . $control_state_css;
+			$markup .= '<div id="' . esc_attr( $control_shell_id ) . '" class="fb-form-richtext" data-fb-form-surface="true" data-fb-richtext-field="true" style="' . esc_attr( $control_shell_style . 'display:grid;grid-template-rows:auto minmax(0,1fr);align-items:stretch;min-height:' . max( 120, $control_min_height ) . 'px;' ) . '">';
+			$markup .= '<div class="fb-form-richtext__toolbar" style="' . esc_attr( $richtext_toolbar_style ) . '">';
+			$markup .= '<span class="fb-form-richtext__toolbar-group">';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="formatBlock" data-fb-richtext-value="p" aria-label="Paragraph">P</button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="formatBlock" data-fb-richtext-value="h2" aria-label="Heading">H2</button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="formatBlock" data-fb-richtext-value="blockquote" aria-label="Quote">Q</button>';
+			$markup .= '</span>';
+			$markup .= '<span class="fb-form-richtext__toolbar-group">';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="bold" aria-label="Bold"><strong>B</strong></button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="italic" aria-label="Italic"><em>I</em></button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="underline" aria-label="Underline"><span style="text-decoration:underline;">U</span></button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="removeFormat" aria-label="Clear formatting">Tx</button>';
+			$markup .= '</span>';
+			$markup .= '<span class="fb-form-richtext__toolbar-group">';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="insertUnorderedList" aria-label="Bullet list">•</button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="insertOrderedList" aria-label="Numbered list">1.</button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="createLink" aria-label="Insert link">Link</button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="undo" aria-label="Undo">↺</button>';
+			$markup .= '<button type="button" class="fb-form-richtext__toolbar-btn" data-fb-richtext-command="redo" aria-label="Redo">↻</button>';
+			$markup .= '</span>';
+			$markup .= '</div>';
+			$markup .= '<div class="fb-form-richtext__editor' . ( $editor_is_empty ? ' is-empty' : '' ) . '" id="' . esc_attr( $id . '__editor' ) . '" data-fb-richtext-editor="true" data-placeholder="' . esc_attr( $placeholder !== '' ? $placeholder : 'Write formatted content...' ) . '" contenteditable="true" role="textbox" aria-multiline="true" style="' . esc_attr( $field_text_style . $control_padding_style . 'min-height:96px;color:' . $base_text_color . ';' ) . '">' . $editor_initial_value . '</div>';
+			$markup .= '<textarea id="' . esc_attr( $control_input_id ) . '" class="fb-form-control fb-form-control--richtext" name="' . esc_attr( $field_name ) . '" style="display:none;" data-fb-richtext-input="true">' . esc_textarea( $editor_initial_value ) . '</textarea>';
+			$markup .= '</div>' . $helper_markup . '</div>';
+			return $markup;
+		}
+
+		if ( 'checkbox' === $type ) {
+			$choice_control_style = 'position:relative;width:16px;height:16px;min-width:16px;min-height:16px;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;border:' . esc_attr( round( $border_width, 3 ) ) . 'px ' . $border_style . ' ' . $border_color . ';border-radius:' . $control_border_radius . ';background:' . esc_attr( $background_color ) . ';box-shadow:' . esc_attr( $box_shadow ) . ';color:' . esc_attr( $checkbox_accent_color ) . ';transition:border-color ' . esc_attr( $state_transition ) . ',background-color ' . esc_attr( $state_transition ) . ',box-shadow ' . esc_attr( $state_transition ) . ',color ' . esc_attr( $state_transition ) . ';flex:0 0 auto;';
+			$choice_state_css = '<style>#' . esc_attr( $control_input_id ) . ':focus + .fb-form-choice__control,#' . esc_attr( $control_input_id ) . ':focus-visible + .fb-form-choice__control{border-color:' . esc_attr( $focus_border_color ) . ' !important;background:' . esc_attr( $focus_background_color ) . ' !important;box-shadow:' . esc_attr( $focus_box_shadow ) . ' !important;}#' . esc_attr( $control_input_id ) . ':checked + .fb-form-choice__control{border-color:' . esc_attr( $checked_border_color ) . ' !important;background:' . esc_attr( $checked_background_color ) . ' !important;box-shadow:' . esc_attr( $checked_box_shadow ) . ' !important;}#' . esc_attr( $control_input_id ) . ':checked + .fb-form-choice__control .fb-form-choice__mark{opacity:1 !important;}</style>';
+			return '<div class="fb-form-field" style="display:grid;height:100%;align-content:center;gap:' . esc_attr( round( $field_gap, 3 ) ) . 'px;">'
+				. $choice_state_css
+				. '<label class="fb-form-field fb-form-field--checkbox" style="position:relative;display:flex;align-items:center;gap:' . esc_attr( round( $field_gap, 3 ) ) . 'px;width:100%;height:100%;color:' . esc_attr( $base_text_color ) . ';' . $field_text_style . '">'
+				. '<span class="fb-form-choice">'
+				. '<input id="' . esc_attr( $id . '__input' ) . '" class="fb-form-control fb-form-control--checkbox fb-form-choice__input" type="checkbox" name="' . esc_attr( $field_name ) . '" value="1"' . ( ! empty( $resolved['defaultValue'] ) ? ' checked' : '' ) . $required_attr . '>'
+				. '<span class="fb-form-choice__control" style="' . esc_attr( $choice_control_style ) . '"><span class="fb-form-choice__mark" style="width:8px;height:5px;border-left:1.8px solid ' . esc_attr( $checkbox_accent_color ) . ';border-bottom:1.8px solid ' . esc_attr( $checkbox_accent_color ) . ';transform:rotate(-45deg) translateY(-1px);opacity:0;transition:opacity ' . esc_attr( $state_transition ) . ';"></span></span>'
+				. '</span>'
+				. '<span class="fb-form-choice__label" style="color:' . esc_attr( $base_text_color ) . ';' . $field_text_style . '">' . esc_html( $field_label ) . '</span>'
+				. '</label>'
+				. $helper_markup
+				. '</div>';
+		}
+
+		if ( 'radio-group' === $type ) {
+			$choice_control_style = 'position:relative;width:16px;height:16px;min-width:16px;min-height:16px;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;border:' . esc_attr( round( $border_width, 3 ) ) . 'px ' . $border_style . ' ' . $border_color . ';border-radius:999px;background:' . esc_attr( $background_color ) . ';box-shadow:' . esc_attr( $box_shadow ) . ';color:' . esc_attr( $checkbox_accent_color ) . ';transition:border-color ' . esc_attr( $state_transition ) . ',background-color ' . esc_attr( $state_transition ) . ',box-shadow ' . esc_attr( $state_transition ) . ',color ' . esc_attr( $state_transition ) . ';flex:0 0 auto;';
+			$markup = '<div class="fb-form-field" style="' . esc_attr( $field_stack_style ) . '">';
+			$markup .= '<fieldset class="fb-form-field fb-form-field--radio" style="margin:0;padding:0;border:0;min-inline-size:0;display:grid;gap:' . esc_attr( round( $field_gap, 3 ) ) . 'px;font-family:' . $font_family . ';font-size:' . esc_attr( $font_size ) . 'px;font-weight:' . esc_attr( (string) $font_weight ) . ';font-style:' . $font_style . ';line-height:' . esc_attr( $line_height ) . ';letter-spacing:' . esc_attr( $letter_spacing ) . 'em;">';
+			if ( '' !== $field_label ) {
+				$markup .= '<legend style="padding:0;margin:0;color:' . esc_attr( $base_text_color ) . ';' . $label_text_style . '">' . esc_html( $field_label ) . '</legend>';
+			}
+			foreach ( $options as $index => $option ) {
+				if ( isset( $option['enabled'] ) && false === $option['enabled'] ) {
+					continue;
+				}
+				$option_input_id = $id . '__input_' . $index;
+				$is_checked = ( ! empty( $resolved['defaultValue'] ) && $resolved['defaultValue'] === $option['value'] ) || ( 0 === $index && ! empty( $resolved['defaultValue'] ) && true === $resolved['defaultValue'] );
+				$markup .= '<style>#' . esc_attr( $option_input_id ) . ':focus + .fb-form-choice__control,#' . esc_attr( $option_input_id ) . ':focus-visible + .fb-form-choice__control{border-color:' . esc_attr( $focus_border_color ) . ' !important;background:' . esc_attr( $focus_background_color ) . ' !important;box-shadow:' . esc_attr( $focus_box_shadow ) . ' !important;}#' . esc_attr( $option_input_id ) . ':checked + .fb-form-choice__control{border-color:' . esc_attr( $checked_border_color ) . ' !important;background:' . esc_attr( $checked_background_color ) . ' !important;box-shadow:' . esc_attr( $checked_box_shadow ) . ' !important;}#' . esc_attr( $option_input_id ) . ':checked + .fb-form-choice__control .fb-form-choice__mark{opacity:1 !important;}</style>';
+				$markup .= '<label style="position:relative;display:flex;align-items:center;gap:' . esc_attr( round( $field_gap, 3 ) ) . 'px;color:' . esc_attr( $base_text_color ) . ';' . $field_text_style . '">';
+				$markup .= '<span class="fb-form-choice">';
+				$markup .= '<input id="' . esc_attr( $option_input_id ) . '" class="fb-form-control fb-form-choice__input" type="radio" name="' . esc_attr( $field_name ) . '" value="' . esc_attr( $option['value'] ) . '"' . ( $is_checked ? ' checked' : '' ) . $required_attr . '>';
+				$markup .= '<span class="fb-form-choice__control" style="' . esc_attr( $choice_control_style ) . '"><span class="fb-form-choice__mark" style="width:6px;height:6px;border-radius:999px;background:' . esc_attr( $checkbox_accent_color ) . ';opacity:0;transition:opacity ' . esc_attr( $state_transition ) . ';"></span></span>';
+				$markup .= '</span>';
+				$markup .= '<span class="fb-form-choice__label" style="color:' . esc_attr( $base_text_color ) . ';' . $field_text_style . '">' . esc_html( $option['label'] ) . '</span>';
+				$markup .= '</label>';
+			}
+			$markup .= '</fieldset>' . $helper_markup . '</div>';
+			return $markup;
+		}
+
+		if ( 'file-upload' === $type ) {
+			$allows_multiple_files = ! empty( $resolved['allowMultipleFiles'] );
+			$file_input_name = $allows_multiple_files ? $field_name . '[]' : $field_name;
+			$markup = '<div class="fb-form-field" style="' . esc_attr( $field_stack_style ) . '">' . $label_markup;
+			$markup .= $control_state_css;
+			$markup .= '<label id="' . esc_attr( $control_shell_id ) . '" class="fb-form-file-upload" data-fb-form-surface="true" data-fb-file-upload="true" data-fb-file-upload-multiple="' . ( $allows_multiple_files ? 'true' : 'false' ) . '" data-fb-file-upload-placeholder="' . esc_attr( $placeholder !== '' ? $placeholder : 'Drop files here or browse' ) . '" for="' . esc_attr( $control_input_id ) . '" style="height:100%;padding:' . esc_attr( round( $padding_top, 3 ) . 'px ' . round( $padding_right, 3 ) . 'px ' . round( $padding_bottom, 3 ) . 'px ' . round( $padding_left, 3 ) . 'px' ) . ';border:1.5px dashed ' . esc_attr( $border_color ) . ';border-radius:' . $control_border_radius . ';background:' . esc_attr( $background_color ) . ';box-shadow:' . esc_attr( $box_shadow ) . ';">';
+			$markup .= '<span style="color:' . esc_attr( $base_text_color ) . ';' . $label_text_style . 'text-align:center;">' . esc_html( $allows_multiple_files ? 'Multi-file dropzone' : 'File dropzone' ) . '</span>';
+			$markup .= '<span data-fb-file-upload-label="true" style="color:' . esc_attr( $placeholder_color ) . ';' . $field_text_style . 'font-size:' . esc_attr( max( 11, round( $font_size - 1, 2 ) ) ) . 'px;text-align:center;">' . esc_html( $placeholder !== '' ? $placeholder : 'Drop files here or browse' ) . '</span>';
+			$markup .= '<span class="fb-form-file-upload__meta" data-fb-file-upload-meta="true" style="color:' . esc_attr( $placeholder_color ) . ';' . $field_text_style . 'font-size:' . esc_attr( max( 10, round( $font_size - 2, 2 ) ) ) . 'px;text-align:center;">' . esc_html( $allows_multiple_files ? 'Accepts multiple files' : 'Accepts one file' ) . '</span>';
+			$markup .= '<input id="' . esc_attr( $control_input_id ) . '" class="fb-form-control fb-form-control--file fb-form-file-upload__input" type="file" name="' . esc_attr( $file_input_name ) . '"' . ( $allows_multiple_files ? ' multiple' : '' ) . $required_attr . '>';
+			$markup .= '</label>' . $helper_markup . '</div>';
+			return $markup;
+		}
+
+		if ( 'captcha' === $type ) {
+			return '<div class="fb-form-field fb-form-field--captcha" style="display:grid;place-items:center;gap:' . esc_attr( round( $field_gap, 3 ) ) . 'px;height:100%;padding:' . esc_attr( round( $padding_top, 3 ) . 'px ' . round( $padding_right, 3 ) . 'px ' . round( $padding_bottom, 3 ) . 'px ' . round( $padding_left, 3 ) . 'px' ) . ';text-align:center;">'
+				. '<span style="color:#065f46;' . $label_text_style . 'text-align:center;">Captcha</span>'
+				. '<span style="color:rgba(6,95,70,0.72);' . $field_text_style . 'font-size:' . esc_attr( max( 10, round( $font_size - 2, 2 ) ) ) . 'px;text-align:center;">' . esc_html( $placeholder !== '' ? $placeholder : 'Provider-backed verification' ) . '</span>'
+				. '<input type="hidden" name="' . esc_attr( $field_name ) . '" value="captcha-placeholder">'
+				. '</div>';
+		}
+
+		return '';
 	}
 
 	private function normalize_bindings( $bindings ): array {
@@ -2389,6 +2866,65 @@ class FrameBuilder_Exporter {
 		if (width <= 768) return 'tablet';
 		return 'desktop';
 	};
+	var normalizeRuntimeFontFamily = function(value) {
+		var raw = value == null ? '' : String(value);
+		if (!raw) return '';
+		var primary = raw.split(',')[0] || '';
+		primary = primary.trim().replace(/^['"]+|['"]+$/g, '');
+		if (!primary) return '';
+		var normalized = primary.toLowerCase();
+		if (['inherit', 'initial', 'unset', 'serif', 'sans-serif', 'monospace', 'system-ui', 'ui-sans-serif', 'ui-serif', 'ui-monospace', 'arial'].indexOf(normalized) !== -1) {
+			return '';
+		}
+		return primary;
+	};
+	var normalizeRuntimeFontWeight = function(value) {
+		if (typeof value === 'number' && isFinite(value)) return Math.max(100, Math.min(900, Math.round(value)));
+		var text = value == null ? '' : String(value).trim().toLowerCase();
+		if (text === 'bold') return 700;
+		if (text === 'normal') return 400;
+		var parsed = parseInt(text, 10);
+		return isFinite(parsed) ? Math.max(100, Math.min(900, parsed)) : 400;
+	};
+	var runtimeLoadedBaseFamilies = new Set();
+	var runtimeLoadedFonts = new Set();
+	var ensureRuntimeGoogleFontLoaded = function(family, options) {
+		var normalizedFamily = normalizeRuntimeFontFamily(family);
+		if (!normalizedFamily) return;
+		if (!runtimeLoadedBaseFamilies.has(normalizedFamily)) {
+			runtimeLoadedBaseFamilies.add(normalizedFamily);
+			var baseLink = document.createElement('link');
+			baseLink.rel = 'stylesheet';
+			baseLink.href = 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(normalizedFamily).replace(/%20/g, '+') + '&display=swap';
+			baseLink.dataset.fbRuntimeFontFamily = normalizedFamily;
+			document.head.appendChild(baseLink);
+		}
+		var weight = normalizeRuntimeFontWeight(options && options.weight);
+		var style = options && options.style === 'italic' ? 'italic' : 'normal';
+		if (weight === 400 && style === 'normal') return;
+		var requestKey = normalizedFamily + '::' + style + '::' + weight;
+		if (runtimeLoadedFonts.has(requestKey)) return;
+		runtimeLoadedFonts.add(requestKey);
+		var encodedFamily = encodeURIComponent(normalizedFamily).replace(/%20/g, '+');
+		var familyRequest = style === 'italic'
+			? encodedFamily + ':ital,wght@1,' + weight
+			: encodedFamily + ':wght@' + weight;
+		var link = document.createElement('link');
+		link.rel = 'stylesheet';
+		link.href = 'https://fonts.googleapis.com/css2?family=' + familyRequest + '&display=swap';
+		link.dataset.fbRuntimeFont = requestKey;
+		document.head.appendChild(link);
+	};
+	var loadRuntimeFontsInScope = function() {
+		var nodes = scope.querySelectorAll('[style*="font-family"], .fb-text-content, .fb-form-field__label, .fb-form-choice__label, .fb-form-field--radio, .fb-form-field--checkbox, [data-fb-form-submit-button="true"]');
+		nodes.forEach(function(node) {
+			var style = window.getComputedStyle(node);
+			ensureRuntimeGoogleFontLoaded(style.fontFamily, {
+				weight: style.fontWeight,
+				style: style.fontStyle,
+			});
+		});
+	};
 	var normalizeVariableValue = function(type, value) {
 			if (type === 'boolean') {
 				if (typeof value === 'boolean') return value;
@@ -2503,6 +3039,67 @@ class FrameBuilder_Exporter {
 			.replace(/'/g, '&#39;')
 			.replace(/\n/g, '<br>');
 	};
+	var inferRuntimeValueType = function(value) {
+		if (typeof value === 'boolean') return 'boolean';
+		if (typeof value === 'number') return 'number';
+		if (value && typeof value === 'object') return 'image';
+		return 'string';
+	};
+	var getFlowRuntimeValue = function(runtimeOptions, path) {
+		var sourcePath = path == null ? '' : String(path).trim();
+		var response = runtimeOptions && typeof runtimeOptions.response === 'object' ? runtimeOptions.response : null;
+		if (!response || !sourcePath) return null;
+		if (sourcePath.indexOf('.') === -1) {
+			if (response.submission && response.submission.values && Object.prototype.hasOwnProperty.call(response.submission.values, sourcePath)) {
+				return response.submission.values[sourcePath];
+			}
+			if (response.values && Object.prototype.hasOwnProperty.call(response.values, sourcePath)) {
+				return response.values[sourcePath];
+			}
+		}
+		var root = {
+			response: response,
+			submission: response && response.submission ? response.submission : null,
+			formNode: runtimeOptions && runtimeOptions.formNode ? runtimeOptions.formNode : null,
+			error: runtimeOptions && runtimeOptions.error ? runtimeOptions.error : null
+		};
+		return sourcePath.split('.').reduce(function(current, key) {
+			if (current == null) return null;
+			return Object.prototype.hasOwnProperty.call(Object(current), key) ? current[key] : null;
+		}, root);
+	};
+	var resolveConfiguredFlowValue = function(config, runtimeOptions) {
+		var valueSource = config && typeof config.valueSource === 'string' ? config.valueSource : 'manual';
+		if (valueSource === 'submitted-field') {
+			return cloneValue(getFlowRuntimeValue(runtimeOptions, config.submissionField || config.responsePath || ''));
+		}
+		if (valueSource === 'response-path') {
+			return cloneValue(getFlowRuntimeValue(runtimeOptions, config.responsePath || ''));
+		}
+		return cloneValue(config ? config.value : null);
+	};
+	var resolveConditionSubject = function(config, runtimeOptions) {
+		var subjectSource = config && typeof config.subjectSource === 'string' ? config.subjectSource : 'variable';
+		if (subjectSource === 'submitted-field') {
+			var submittedValue = getFlowRuntimeValue(runtimeOptions, config.submissionField || config.responsePath || '');
+			return {
+				value: submittedValue,
+				type: inferRuntimeValueType(submittedValue)
+			};
+		}
+		if (subjectSource === 'response-path') {
+			var responseValue = getFlowRuntimeValue(runtimeOptions, config.responsePath || '');
+			return {
+				value: responseValue,
+				type: inferRuntimeValueType(responseValue)
+			};
+		}
+		var variable = getVariable(config.variableScope || 'page', config.variableId || '');
+		return {
+			value: variable ? variable.value : null,
+			type: variable ? variable.type : 'string'
+		};
+	};
 	var resolveBindingForBreakpoint = function(bindings, bpId, propertyKey) {
 		if (!bindings || typeof bindings !== 'object') return null;
 		var desktop = bindings.desktop || {};
@@ -2512,10 +3109,15 @@ class FrameBuilder_Exporter {
 		if (bpId === 'tablet') return tablet[propertyKey] || desktop[propertyKey] || null;
 		return desktop[propertyKey] || null;
 	};
+	var getVisualTarget = function(node) {
+		if (!node || !node.querySelector) return node;
+		return node.querySelector('[data-fb-form-surface="true"]') || node;
+	};
 	var applyBindingToNode = function(node, propertyKey, variable) {
 		if (!node || !variable) return;
 		var value = variable.value;
 		var textNode = node.querySelector('.fb-text-content');
+		var visualTarget = getVisualTarget(node);
 		if (propertyKey === 'text') {
 			if (textNode) textNode.innerHTML = bindingTextToHtml(value);
 			return;
@@ -2529,7 +3131,7 @@ class FrameBuilder_Exporter {
 			if (value && typeof value === 'object' && typeof value.url === 'string') backgroundUrl = value.url;
 			else if (typeof value === 'string') backgroundUrl = value;
 			backgroundUrl = backgroundUrl.trim();
-			node.style.backgroundImage = backgroundUrl ? 'url(' + backgroundUrl.replace(/\)/g, '\\)') + ')' : '';
+			visualTarget.style.backgroundImage = backgroundUrl ? 'url(' + backgroundUrl.replace(/\)/g, '\\)') + ')' : '';
 			return;
 		}
 		if (propertyKey === 'src') {
@@ -2545,7 +3147,7 @@ class FrameBuilder_Exporter {
 			return;
 		}
 		if (propertyKey === 'styles.backgroundColor') {
-			node.style.backgroundColor = typeof value === 'string' ? value : '#000000';
+			visualTarget.style.backgroundColor = typeof value === 'string' ? value : '#000000';
 			return;
 		}
 		if (propertyKey === 'styles.color') {
@@ -2558,6 +3160,10 @@ class FrameBuilder_Exporter {
 		}
 		if (propertyKey === 'styles.fontFamily') {
 			(textNode || node).style.fontFamily = bindingToText(value);
+			ensureRuntimeGoogleFontLoaded(bindingToText(value), {
+				weight: window.getComputedStyle(textNode || node).fontWeight,
+				style: window.getComputedStyle(textNode || node).fontStyle,
+			});
 		}
 	};
 	var applyNodeBindings = function(node) {
@@ -2577,7 +3183,7 @@ class FrameBuilder_Exporter {
 	var applyAllBindings = function() {
 		scope.querySelectorAll('[data-fb-bindings]').forEach(applyNodeBindings);
 	};
-	var executeInteraction = function(interaction) {
+	var executeInteraction = function(interaction, runtimeOptions) {
 		if (!interaction || typeof interaction !== 'object') return;
 		if (interaction.type === 'navigate') {
 			if (interaction.pageUrl) window.location.href = interaction.pageUrl;
@@ -2591,15 +3197,17 @@ class FrameBuilder_Exporter {
 		if (operation === 'default') {
 			nextValue = cloneValue(variable.defaultValue);
 		} else if (variable.type === 'boolean') {
-			nextValue = operation === 'toggle' ? !variable.value : !!interaction.value;
+			var resolvedBooleanValue = resolveConfiguredFlowValue(interaction, runtimeOptions);
+			nextValue = operation === 'toggle' ? !variable.value : !!resolvedBooleanValue;
 		} else if (variable.type === 'number') {
-			var step = typeof interaction.value === 'number' ? interaction.value : parseFloat(interaction.value);
+			var resolvedStepValue = operation === 'set' ? resolveConfiguredFlowValue(interaction, runtimeOptions) : interaction.value;
+			var step = typeof resolvedStepValue === 'number' ? resolvedStepValue : parseFloat(resolvedStepValue);
 			step = Number.isFinite(step) ? step : 0;
 			if (operation === 'increment') nextValue = (Number(variable.value) || 0) + step;
 			else if (operation === 'decrement') nextValue = (Number(variable.value) || 0) - step;
 			else nextValue = step;
 		} else {
-			nextValue = cloneValue(interaction.value);
+			nextValue = resolveConfiguredFlowValue(interaction, runtimeOptions);
 		}
 		setVariableValue(variable.scope || interaction.variableScope || 'page', variable.id, nextValue);
 		applyAllBindings();
@@ -2630,12 +3238,12 @@ class FrameBuilder_Exporter {
 		if (value && typeof value === 'object') return bindingToText(value);
 		return value == null ? '' : String(value);
 	};
-	var evaluateConditionNode = function(node) {
+	var evaluateConditionNode = function(node, runtimeOptions) {
 		var config = node && typeof node.config === 'object' ? node.config : {};
-		var variable = getVariable(config.variableScope || 'page', config.variableId || '');
 		var operator = config.operator || 'equals';
-		var left = variable ? variable.value : null;
-		var type = variable ? variable.type : 'string';
+		var subject = resolveConditionSubject(config, runtimeOptions);
+		var left = subject.value;
+		var type = subject.type || 'string';
 		var right = normalizeConditionCompareValue(type, config.compareValue);
 		if (type === 'number') {
 			var leftNumber = typeof left === 'number' ? left : parseFloat(left);
@@ -2651,7 +3259,192 @@ class FrameBuilder_Exporter {
 		if (operator === 'less-than') return Number(left) < Number(right);
 		return left === right;
 	};
-	var executeFlow = function(flow) {
+	var getFormConfig = function(formNode) {
+		return parseJsonAttr(formNode && formNode.dataset ? formNode.dataset.fbFormConfig : null, {}) || {};
+	};
+	var getFormStatusNode = function(formNode) {
+		return formNode ? formNode.querySelector('[data-fb-form-status]') : null;
+	};
+	var getFormButtonNode = function(formNode) {
+		return formNode ? formNode.querySelector('.fb-form-submit') : null;
+	};
+	var setFormRuntimeState = function(formNode, nextState, message) {
+		if (!formNode) return;
+		var config = getFormConfig(formNode);
+		var buttonNode = getFormButtonNode(formNode);
+		var statusNode = getFormStatusNode(formNode);
+		var submitLabel = buttonNode && buttonNode.dataset && typeof buttonNode.dataset.fbSubmitLabel === 'string' && buttonNode.dataset.fbSubmitLabel
+			? buttonNode.dataset.fbSubmitLabel
+			: (typeof config.submitLabel === 'string' && config.submitLabel ? config.submitLabel : 'Submit');
+		var nextLabel = nextState === 'submitting' ? 'Submitting...' : submitLabel;
+		formNode.dataset.fbFormState = nextState || 'idle';
+		if (buttonNode) {
+			buttonNode.textContent = nextLabel;
+			buttonNode.disabled = nextState === 'submitting';
+			buttonNode.setAttribute('aria-disabled', nextState === 'submitting' ? 'true' : 'false');
+		}
+		if (statusNode) {
+			statusNode.textContent = message || '';
+			statusNode.style.display = message ? 'block' : 'none';
+			statusNode.style.color = nextState === 'error'
+				? '#b91c1c'
+				: (nextState === 'success' ? '#047857' : 'rgba(15,23,42,0.68)');
+		}
+	};
+	var buildFormSubmissionPayload = function(formNode) {
+		syncRichTextFields(formNode);
+		var payload = new window.FormData(formNode);
+		payload.append('post_id', formNode.dataset.fbPostId || ((window.fbRuntimeData && window.fbRuntimeData.postId) ? String(window.fbRuntimeData.postId) : ''));
+		payload.append('form_id', formNode.dataset.fbFormId || '');
+		return payload;
+	};
+	var normalizeRichTextHtml = function(html) {
+		var wrapper = document.createElement('div');
+		wrapper.innerHTML = html || '';
+		var text = (wrapper.textContent || '').replace(/\u00a0/g, ' ').trim();
+		var hasContentNode = !!wrapper.querySelector('img,video,iframe,embed,object,table,blockquote,pre,code');
+		return (!text && !hasContentNode) ? '' : wrapper.innerHTML;
+	};
+	var syncRichTextField = function(fieldNode) {
+		if (!fieldNode) return;
+		var editorNode = fieldNode.querySelector('[data-fb-richtext-editor="true"]');
+		var inputNode = fieldNode.querySelector('[data-fb-richtext-input="true"]');
+		if (!editorNode || !inputNode) return;
+		var normalizedHtml = normalizeRichTextHtml(editorNode.innerHTML);
+		inputNode.value = normalizedHtml;
+		if (normalizedHtml) editorNode.classList.remove('is-empty');
+		else editorNode.classList.add('is-empty');
+	};
+	var syncRichTextFields = function(scopeNode) {
+		(scopeNode || scope).querySelectorAll('[data-fb-richtext-field="true"]').forEach(syncRichTextField);
+	};
+	var bindRichTextField = function(fieldNode) {
+		if (!fieldNode || fieldNode.dataset.fbRichtextBound === '1') return;
+		var editorNode = fieldNode.querySelector('[data-fb-richtext-editor="true"]');
+		var inputNode = fieldNode.querySelector('[data-fb-richtext-input="true"]');
+		if (!editorNode || !inputNode) return;
+		fieldNode.dataset.fbRichtextBound = '1';
+		syncRichTextField(fieldNode);
+		['input', 'blur', 'keyup', 'paste'].forEach(function(eventName) {
+			editorNode.addEventListener(eventName, function() {
+				syncRichTextField(fieldNode);
+			});
+		});
+		fieldNode.querySelectorAll('[data-fb-richtext-command]').forEach(function(buttonNode) {
+			buttonNode.addEventListener('click', function() {
+				var command = buttonNode.getAttribute('data-fb-richtext-command') || '';
+				var commandValue = buttonNode.getAttribute('data-fb-richtext-value') || null;
+				if (!command) return;
+				editorNode.focus();
+				if (command === 'createLink') {
+					var url = window.prompt('Link URL', 'https://');
+					if (!url) return;
+					document.execCommand('createLink', false, url);
+				} else if (command === 'formatBlock') {
+					document.execCommand('formatBlock', false, '<' + (commandValue || 'p') + '>');
+				} else {
+					document.execCommand(command, false, commandValue);
+				}
+				syncRichTextField(fieldNode);
+			});
+		});
+	};
+	var getFileUploadNames = function(inputNode) {
+		if (!inputNode || !inputNode.files || !inputNode.files.length) return [];
+		return Array.prototype.map.call(inputNode.files, function(file) {
+			return file && file.name ? file.name : 'File';
+		});
+	};
+	var updateFileUploadField = function(fieldNode) {
+		if (!fieldNode) return;
+		var inputNode = fieldNode.querySelector('input[type="file"]');
+		var labelNode = fieldNode.querySelector('[data-fb-file-upload-label="true"]');
+		var metaNode = fieldNode.querySelector('[data-fb-file-upload-meta="true"]');
+		if (!inputNode || !labelNode || !metaNode) return;
+		var names = getFileUploadNames(inputNode);
+		var allowsMultiple = fieldNode.getAttribute('data-fb-file-upload-multiple') === 'true';
+		var placeholder = fieldNode.getAttribute('data-fb-file-upload-placeholder') || 'Drop files here or browse';
+		if (!names.length) {
+			labelNode.textContent = placeholder;
+			metaNode.textContent = allowsMultiple ? 'Accepts multiple files' : 'Accepts one file';
+			return;
+		}
+		labelNode.textContent = names.length === 1 ? names[0] : names.length + ' files selected';
+		metaNode.textContent = names.slice(0, 3).join(', ');
+	};
+	var bindFileUploadField = function(fieldNode) {
+		if (!fieldNode || fieldNode.dataset.fbFileUploadBound === '1') return;
+		var inputNode = fieldNode.querySelector('input[type="file"]');
+		if (!inputNode) return;
+		fieldNode.dataset.fbFileUploadBound = '1';
+		updateFileUploadField(fieldNode);
+		inputNode.addEventListener('change', function() {
+			updateFileUploadField(fieldNode);
+		});
+		['dragenter', 'dragover'].forEach(function(eventName) {
+			fieldNode.addEventListener(eventName, function(event) {
+				event.preventDefault();
+				fieldNode.classList.add('is-dragover');
+			});
+		});
+		['dragleave', 'dragend', 'drop'].forEach(function(eventName) {
+			fieldNode.addEventListener(eventName, function(event) {
+				event.preventDefault();
+				fieldNode.classList.remove('is-dragover');
+			});
+		});
+		fieldNode.addEventListener('drop', function(event) {
+			var droppedFiles = event.dataTransfer && event.dataTransfer.files ? event.dataTransfer.files : null;
+			if (!droppedFiles || !droppedFiles.length) return;
+			try {
+				if (inputNode.multiple) {
+					inputNode.files = droppedFiles;
+				} else {
+					var transfer = new window.DataTransfer();
+					transfer.items.add(droppedFiles[0]);
+					inputNode.files = transfer.files;
+				}
+				updateFileUploadField(fieldNode);
+			} catch (error) {
+				// Fall back to the native file picker when assignment is not permitted.
+			}
+		});
+	};
+	var getFormSubmitEndpoint = function() {
+		var restRoot = window.fbRuntimeData && typeof window.fbRuntimeData.restUrl === 'string' ? window.fbRuntimeData.restUrl : '';
+		if (restRoot) return restRoot.replace(/\/?$/, '/') + 'forms/submit';
+		try {
+			return new URL('/wp-json/framebuilder/v1/forms/submit', window.location.origin).toString();
+		} catch (error) {
+			return '/wp-json/framebuilder/v1/forms/submit';
+		}
+	};
+	var requestFormSubmission = function(formNode) {
+		return window.fetch(getFormSubmitEndpoint(), {
+			method: 'POST',
+			credentials: 'same-origin',
+			body: buildFormSubmissionPayload(formNode)
+		}).then(function(response) {
+			return response.text().then(function(text) {
+				var data = {};
+				if (text) {
+					try {
+						data = JSON.parse(text);
+					} catch (error) {
+						data = { success: false, message: 'Unexpected response from form submit endpoint.' };
+					}
+				}
+				if (!response.ok || data.success === false) {
+					var requestError = new Error((data && data.message) || 'Form submission failed.');
+					requestError.data = data;
+					throw requestError;
+				}
+				return data;
+			});
+		});
+	};
+	var executeFlow = function(flow, options) {
+		options = options || {};
 		if (!flow || typeof flow !== 'object') return;
 		var nodeMap = getFlowNodeMap(flow);
 		if (!nodeMap.size) return;
@@ -2666,14 +3459,15 @@ class FrameBuilder_Exporter {
 			return outgoing.get(port || 'next') || null;
 		};
 		var steps = 0;
-		var runNode = function(nodeId) {
+		var runNode = function(nodeId, continuationTargetId) {
 			if (!nodeId || steps > 128) return;
 			steps += 1;
 			var node = nodeMap.get(String(nodeId));
 			if (!node) return;
 			if (node.type === 'trigger') {
-				var triggerEdge = getNextEdge(node.id, 'next');
-				if (triggerEdge) runNode(triggerEdge.target);
+				var triggerPort = options.startPort || 'next';
+				var triggerEdge = getNextEdge(node.id, triggerPort) || getNextEdge(node.id, 'next');
+				if (triggerEdge) runNode(triggerEdge.target, null);
 				return;
 			}
 			if (node.type === 'navigate') {
@@ -2681,34 +3475,96 @@ class FrameBuilder_Exporter {
 				return;
 			}
 			if (node.type === 'set-variable') {
-				executeInteraction(Object.assign({ type: 'set-variable' }, node.config || {}));
+				executeInteraction(Object.assign({ type: 'set-variable' }, node.config || {}), options);
 				var setVariableEdge = getNextEdge(node.id, 'next');
-				if (setVariableEdge) runNode(setVariableEdge.target);
+				if (setVariableEdge) runNode(setVariableEdge.target, continuationTargetId);
+				else if (continuationTargetId) runNode(continuationTargetId, null);
 				return;
 			}
 			if (node.type === 'delay') {
 				var duration = Math.max(0, parseInt(node.config && node.config.durationMs, 10) || 0);
 				var delayEdge = getNextEdge(node.id, 'next');
-				if (delayEdge) window.setTimeout(function() { runNode(delayEdge.target); }, duration);
+				if (delayEdge) window.setTimeout(function() { runNode(delayEdge.target, continuationTargetId); }, duration);
+				else if (continuationTargetId) window.setTimeout(function() { runNode(continuationTargetId, null); }, duration);
 				return;
 			}
 			if (node.type === 'condition') {
-				var branchPort = evaluateConditionNode(node) ? 'true' : 'false';
-				var conditionEdge = getNextEdge(node.id, branchPort) || getNextEdge(node.id, 'next');
-				if (conditionEdge) runNode(conditionEdge.target);
+				var branchPort = evaluateConditionNode(node, options) ? 'true' : 'false';
+				var conditionContinuationEdge = getNextEdge(node.id, 'next');
+				var conditionEdge = getNextEdge(node.id, branchPort) || conditionContinuationEdge;
+				if (conditionEdge) runNode(conditionEdge.target, conditionContinuationEdge ? conditionContinuationEdge.target : continuationTargetId);
+				else if (continuationTargetId) runNode(continuationTargetId, null);
 				return;
 			}
 			if (node.type === 'end') return;
 			var fallbackEdge = getNextEdge(node.id, 'next');
-			if (fallbackEdge) runNode(fallbackEdge.target);
+			if (fallbackEdge) runNode(fallbackEdge.target, continuationTargetId);
+			else if (continuationTargetId) runNode(continuationTargetId, null);
 		};
-		if (triggerNode) runNode(triggerNode.id);
+		if (triggerNode) runNode(triggerNode.id, null);
+	};
+	var submitRuntimeForm = function(formNode, flow) {
+		if (!formNode || formNode.dataset.fbFormSubmitting === '1') return;
+		var config = getFormConfig(formNode);
+		formNode.dataset.fbFormSubmitting = '1';
+		setFormRuntimeState(formNode, 'submitting', '');
+		requestFormSubmission(formNode).then(function(data) {
+			formNode.dataset.fbFormSubmitting = '0';
+			setFormRuntimeState(formNode, 'success', (data && data.message) || config.successMessage || 'Thanks. Your submission was received.');
+			if (flow) executeFlow(flow, { startPort: 'submitted', response: data, formNode: formNode });
+		}).catch(function(error) {
+			formNode.dataset.fbFormSubmitting = '0';
+			var fallbackMessage = (error && error.data && error.data.message) || config.errorMessage || 'Something went wrong. Please try again.';
+			setFormRuntimeState(formNode, 'error', fallbackMessage);
+			if (flow) executeFlow(flow, { startPort: 'error', error: error, formNode: formNode });
+		});
 	};
 	var bindFlow = function(node) {
 		if (!node || node.dataset.fbFlowBound === '1') return;
 		var flow = parseJsonAttr(node.dataset.fbFlow, null);
 		if (!flow || !Array.isArray(flow.nodes) || !flow.nodes.length) return;
+		var trigger = flow && typeof flow.trigger === 'object' ? flow.trigger : {};
+		var triggerType = trigger.type || 'custom';
+		var hasSubmissionFormNode = Array.isArray(flow.nodes) && flow.nodes.some(function(flowNode) {
+			return flowNode && flowNode.type === 'submission-form';
+		});
 		node.dataset.fbFlowBound = '1';
+		if (triggerType === 'form-submit') {
+			var formNode = node.tagName === 'FORM' ? node : node.closest('form');
+			if (!formNode) return;
+			formNode.addEventListener('submit', function(event) {
+				event.preventDefault();
+				event.stopPropagation();
+				submitRuntimeForm(formNode, flow);
+			});
+			return;
+		}
+		if (triggerType === 'element-click' && hasSubmissionFormNode) {
+			var submissionFormNode = node.tagName === 'FORM' ? node : node.closest('form');
+			if (submissionFormNode) {
+				if (node.tagName === 'FORM') {
+					submissionFormNode.addEventListener('submit', function(event) {
+						event.preventDefault();
+						event.stopPropagation();
+						submitRuntimeForm(submissionFormNode, flow);
+					});
+					return;
+				}
+				node.style.cursor = 'pointer';
+				node.addEventListener('click', function(event) {
+					event.preventDefault();
+					event.stopPropagation();
+					submitRuntimeForm(submissionFormNode, flow);
+				});
+				return;
+			}
+		}
+		if (triggerType === 'page-load') {
+			window.requestAnimationFrame(function() {
+				executeFlow(flow);
+			});
+			return;
+		}
 		node.style.cursor = 'pointer';
 		node.addEventListener('click', function(event) {
 			event.stopPropagation();
@@ -2725,15 +3581,30 @@ class FrameBuilder_Exporter {
 		node.addEventListener('click', function(event) {
 			event.stopPropagation();
 			interactions.forEach(function(interaction) {
-				executeInteraction(interaction);
+				executeInteraction(interaction, {});
 			});
 		});
 	};
 	restorePersistentVariables('page');
 	restorePersistentVariables('global');
+	loadRuntimeFontsInScope();
 	applyAllBindings();
+	loadRuntimeFontsInScope();
+	scope.querySelectorAll('[data-fb-richtext-field]').forEach(bindRichTextField);
+	scope.querySelectorAll('[data-fb-file-upload="true"]').forEach(bindFileUploadField);
 	scope.querySelectorAll('[data-fb-flow]').forEach(bindFlow);
 	scope.querySelectorAll('[data-fb-interactions]').forEach(bindInteractions);
+	scope.querySelectorAll('form[data-fb-form-id]').forEach(function(formNode) {
+		if (!formNode || formNode.dataset.fbFormShellBound === '1') return;
+		formNode.dataset.fbFormShellBound = '1';
+		setFormRuntimeState(formNode, formNode.dataset.fbFormState || 'idle', '');
+		formNode.addEventListener('submit', function(event) {
+			if (formNode.dataset.fbFlowBound === '1') return;
+			event.preventDefault();
+			event.stopPropagation();
+			submitRuntimeForm(formNode, null);
+		});
+	});
 	var bindingResizeFrame = null;
 	window.addEventListener('resize', function() {
 		if (bindingResizeFrame) window.cancelAnimationFrame(bindingResizeFrame);
@@ -3295,10 +4166,34 @@ class FrameBuilder_Exporter {
 		window.addEventListener('load', handleResize);
 		requestUpdate();
 	};
+	var parseBaseTranslatePercent = function(transformCss, axis) {
+		if (typeof transformCss !== 'string' || !transformCss) return 0;
+		var normalized = transformCss.replace(/\s+/g, ' ').trim();
+		if (!normalized) return 0;
+		if (axis === 'x') {
+			var translate3dMatchX = normalized.match(/translate3d\(\s*(-?[\d.]+)%\s*,/i);
+			if (translate3dMatchX) return parseNumber(translate3dMatchX[1], 0);
+			var translateMatchX = normalized.match(/translate\(\s*(-?[\d.]+)%\s*,/i);
+			if (translateMatchX) return parseNumber(translateMatchX[1], 0);
+			var translateXMatch = normalized.match(/translateX\(\s*(-?[\d.]+)%\s*\)/i);
+			if (translateXMatch) return parseNumber(translateXMatch[1], 0);
+			return 0;
+		}
+		var translate3dMatchY = normalized.match(/translate3d\(\s*-?[\d.]+%\s*,\s*(-?[\d.]+)%/i);
+		if (translate3dMatchY) return parseNumber(translate3dMatchY[1], 0);
+		var translateMatchY = normalized.match(/translate\(\s*-?[\d.]+%\s*,\s*(-?[\d.]+)%/i);
+		if (translateMatchY) return parseNumber(translateMatchY[1], 0);
+		var translateYMatch = normalized.match(/translateY\(\s*(-?[\d.]+)%\s*\)/i);
+		if (translateYMatch) return parseNumber(translateYMatch[1], 0);
+		return 0;
+	};
 	var getAnimationBaseState = function(node) {
 		if (node.__fbAnimationBaseState) return node.__fbAnimationBaseState;
 		var computed = window.getComputedStyle(node);
+		var visualTarget = getVisualTarget(node);
+		var visualComputed = visualTarget && visualTarget !== node ? window.getComputedStyle(visualTarget) : computed;
 		var rect = node.getBoundingClientRect();
+		var inlineTransform = node.style.transform || '';
 		var textNode = node.querySelector('.fb-text-content');
 		var iconNode = node.querySelector('.fb-icon-content');
 		var textComputed = textNode ? window.getComputedStyle(textNode) : null;
@@ -3311,7 +4206,10 @@ class FrameBuilder_Exporter {
 			baseLayoutY: parseNumber(node.getAttribute('data-fb-base-y'), 0),
 			leftCss: node.style.left || '',
 			topCss: node.style.top || '',
+			transformCss: inlineTransform,
 			position: computed.position,
+			xPercent: parseBaseTranslatePercent(inlineTransform, 'x'),
+			yPercent: parseBaseTranslatePercent(inlineTransform, 'y'),
 			width: parseNumber(node.style.width, parseNumber(computed.width, rect.width || node.offsetWidth || 0)),
 			height: parseNumber(node.style.height, parseNumber(computed.height, rect.height || node.offsetHeight || 0)),
 			widthCss: node.style.width || '',
@@ -3320,10 +4218,11 @@ class FrameBuilder_Exporter {
 			rotationX: parseNumber(node.getAttribute('data-fb-base-rotation-x'), 0),
 			rotationY: parseNumber(node.getAttribute('data-fb-base-rotation-y'), 0),
 			opacity: parseNumber(computed.opacity, 1),
-			backgroundColor: computed.backgroundColor,
+			backgroundColor: visualComputed.backgroundColor,
 			color: contentComputed.color,
-			borderColor: computed.borderColor,
-			borderRadius: computed.borderRadius,
+			borderColor: visualComputed.borderColor,
+			borderRadius: visualComputed.borderRadius,
+			boxShadow: visualComputed.boxShadow,
 			blur: filterSettings.blur,
 			brightness: filterSettings.brightness,
 			contrast: filterSettings.contrast,
@@ -3331,6 +4230,7 @@ class FrameBuilder_Exporter {
 			filter: computed.filter || 'none',
 			backdropBlur: parseBlurRadius(computed.backdropFilter || computed.webkitBackdropFilter),
 			backdropFilter: computed.backdropFilter || computed.webkitBackdropFilter || 'none',
+			visualTarget: visualTarget,
 			textNode: textNode,
 			iconNode: iconNode
 		};
@@ -3339,6 +4239,11 @@ class FrameBuilder_Exporter {
 	var buildBaseRotationTransform = function(baseState) {
 		if (!baseState) return 'none';
 		var transforms = [];
+		if ((baseState.xPercent || 0) !== 0 || (baseState.yPercent || 0) !== 0) {
+			if ((baseState.xPercent || 0) !== 0 && (baseState.yPercent || 0) !== 0) transforms.push('translate(' + (baseState.xPercent || 0) + '%, ' + (baseState.yPercent || 0) + '%)');
+			else if ((baseState.xPercent || 0) !== 0) transforms.push('translateX(' + (baseState.xPercent || 0) + '%)');
+			else transforms.push('translateY(' + (baseState.yPercent || 0) + '%)');
+		}
 		if ((baseState.rotationX || 0) !== 0 || (baseState.rotationY || 0) !== 0) transforms.push('perspective(1000px)');
 		if ((baseState.rotationX || 0) !== 0) transforms.push('rotateX(' + (baseState.rotationX || 0) + 'deg)');
 		if ((baseState.rotationY || 0) !== 0) transforms.push('rotateY(' + (baseState.rotationY || 0) + 'deg)');
@@ -3348,10 +4253,13 @@ class FrameBuilder_Exporter {
 	var restoreAnimationBaseState = function(node) {
 		if (!node) return;
 		var baseState = getAnimationBaseState(node);
+		var visualTarget = baseState.visualTarget || node;
 		if (gsap) {
 			gsap.killTweensOf(node);
 			gsap.set(node, {
 				opacity: baseState.opacity,
+				xPercent: baseState.xPercent || 0,
+				yPercent: baseState.yPercent || 0,
 				x: 0,
 				y: 0,
 				scaleX: 1,
@@ -3370,9 +4278,10 @@ class FrameBuilder_Exporter {
 		node.style.top = baseState.topCss;
 		node.style.width = baseState.widthCss;
 		node.style.height = baseState.heightCss;
-		node.style.backgroundColor = baseState.backgroundColor;
-		node.style.borderColor = baseState.borderColor;
-		node.style.borderRadius = baseState.borderRadius;
+		visualTarget.style.backgroundColor = baseState.backgroundColor;
+		visualTarget.style.borderColor = baseState.borderColor;
+		visualTarget.style.borderRadius = baseState.borderRadius;
+		visualTarget.style.boxShadow = baseState.boxShadow;
 		node.style.filter = baseState.filter;
 		setNodeBackdropFilter(node, baseState.backdropFilter);
 		node.style.transform = buildBaseRotationTransform(baseState);
@@ -3414,6 +4323,13 @@ class FrameBuilder_Exporter {
 		var baseRotation = baseState && baseState.rotation ? baseState.rotation : 0;
 		var baseRotationX = baseState && baseState.rotationX ? baseState.rotationX : 0;
 		var baseRotationY = baseState && baseState.rotationY ? baseState.rotationY : 0;
+		var baseXPercent = baseState && baseState.xPercent ? baseState.xPercent : 0;
+		var baseYPercent = baseState && baseState.yPercent ? baseState.yPercent : 0;
+		if (baseXPercent !== 0 || baseYPercent !== 0) {
+			if (baseXPercent !== 0 && baseYPercent !== 0) transforms.push('translate(' + baseXPercent + '%, ' + baseYPercent + '%)');
+			else if (baseXPercent !== 0) transforms.push('translateX(' + baseXPercent + '%)');
+			else transforms.push('translateY(' + baseYPercent + '%)');
+		}
 		if (baseRotationX !== 0 || baseRotationY !== 0 || (effect && effect.rotateMode === '3d')) transforms.push('perspective(1000px)');
 		if (baseRotationX !== 0) transforms.push('rotateX(' + baseRotationX + 'deg)');
 		if (baseRotationY !== 0) transforms.push('rotateY(' + baseRotationY + 'deg)');
@@ -3482,6 +4398,8 @@ class FrameBuilder_Exporter {
 			gsap.killTweensOf(node);
 			gsap.to(node, {
 				opacity: targetOpacity,
+				xPercent: baseState.xPercent || 0,
+				yPercent: baseState.yPercent || 0,
 				x: targetX,
 				y: targetY,
 				scaleX: targetScale,
@@ -3570,7 +4488,10 @@ class FrameBuilder_Exporter {
 		var startStyles = startState.styles && typeof startState.styles === 'object' ? startState.styles : {};
 		var baseState = getAnimationBaseState(node);
 		startLayout = normalizeCenteredAnimationPatchLayout(startLayout, baseState);
+		var visualTarget = baseState.visualTarget || node;
 		var contentTarget = baseState.textNode || baseState.iconNode || null;
+		var visualFromVars = {};
+		var visualToVars = {};
 		var transition = normalizeAnimationTransition(animation && animation.transition, { duration: 0.7, easePreset: 'easeInOut' });
 		var enterDuration = getTransitionDurationMs(transition) / 1000;
 		var enterEase = transition.type === 'realistic'
@@ -3621,9 +4542,27 @@ class FrameBuilder_Exporter {
 		if (Object.prototype.hasOwnProperty.call(startLayout, 'rotation')) fromVars.rotation = parseNumber(startLayout.rotation, parseNumber(effect.rotate, 0));
 		if (Object.prototype.hasOwnProperty.call(startLayout, 'rotationX')) fromVars.rotationX = parseNumber(startLayout.rotationX, baseState.rotationX || 0);
 		if (Object.prototype.hasOwnProperty.call(startLayout, 'rotationY')) fromVars.rotationY = parseNumber(startLayout.rotationY, baseState.rotationY || 0);
-		if (Object.prototype.hasOwnProperty.call(startStyles, 'backgroundColor')) fromVars.backgroundColor = startStyles.backgroundColor;
-		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderColor')) fromVars.borderColor = startStyles.borderColor;
-		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderRadius')) fromVars.borderRadius = startStyles.borderRadius;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'backgroundColor')) {
+			if (visualTarget === node) fromVars.backgroundColor = startStyles.backgroundColor;
+			else {
+				visualFromVars.backgroundColor = startStyles.backgroundColor;
+				visualToVars.backgroundColor = baseState.backgroundColor;
+			}
+		}
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderColor')) {
+			if (visualTarget === node) fromVars.borderColor = startStyles.borderColor;
+			else {
+				visualFromVars.borderColor = startStyles.borderColor;
+				visualToVars.borderColor = baseState.borderColor;
+			}
+		}
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderRadius')) {
+			if (visualTarget === node) fromVars.borderRadius = startStyles.borderRadius;
+			else {
+				visualFromVars.borderRadius = startStyles.borderRadius;
+				visualToVars.borderRadius = baseState.borderRadius;
+			}
+		}
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'blur') || Object.prototype.hasOwnProperty.call(startStyles, 'brightness') || Object.prototype.hasOwnProperty.call(startStyles, 'contrast') || Object.prototype.hasOwnProperty.call(startStyles, 'saturation')) {
 			fromVars.filter = buildFilterValue({
 				blur: Object.prototype.hasOwnProperty.call(startStyles, 'blur') ? parseNumber(startStyles.blur, baseState.blur) : baseState.blur,
@@ -3655,12 +4594,21 @@ class FrameBuilder_Exporter {
 			if (Object.prototype.hasOwnProperty.call(startLayout, 'width')) toVars.width = baseState.width;
 			if (Object.prototype.hasOwnProperty.call(startLayout, 'height')) toVars.height = baseState.height;
 		}
-		if (Object.prototype.hasOwnProperty.call(startStyles, 'backgroundColor')) toVars.backgroundColor = baseState.backgroundColor;
-		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderColor')) toVars.borderColor = baseState.borderColor;
-		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderRadius')) toVars.borderRadius = baseState.borderRadius;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'backgroundColor') && visualTarget === node) toVars.backgroundColor = baseState.backgroundColor;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderColor') && visualTarget === node) toVars.borderColor = baseState.borderColor;
+		if (Object.prototype.hasOwnProperty.call(startStyles, 'borderRadius') && visualTarget === node) toVars.borderRadius = baseState.borderRadius;
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'blur') || Object.prototype.hasOwnProperty.call(startStyles, 'brightness') || Object.prototype.hasOwnProperty.call(startStyles, 'contrast') || Object.prototype.hasOwnProperty.call(startStyles, 'saturation')) toVars.filter = baseState.filter;
 		if (Object.prototype.hasOwnProperty.call(startStyles, 'backdropBlur')) toVars.backdropFilter = baseState.backdropFilter;
 		gsap.fromTo(node, fromVars, toVars);
+		if (visualTarget !== node && Object.keys(visualFromVars).length) {
+			visualFromVars.duration = enterDuration;
+			visualFromVars.ease = enterEase;
+			visualFromVars.overwrite = true;
+			visualToVars.duration = enterDuration;
+			visualToVars.ease = enterEase;
+			visualToVars.overwrite = true;
+			gsap.fromTo(visualTarget, visualFromVars, visualToVars);
+		}
 		if (contentTarget && Object.prototype.hasOwnProperty.call(startStyles, 'color')) {
 			gsap.fromTo(contentTarget, { color: startStyles.color }, {
 				color: baseState.color,
@@ -3680,7 +4628,10 @@ class FrameBuilder_Exporter {
 		var patchStyles = patchState.styles && typeof patchState.styles === 'object' ? patchState.styles : {};
 		var baseState = getAnimationBaseState(node);
 		patchLayout = normalizeCenteredAnimationPatchLayout(patchLayout, baseState);
+		var visualTarget = baseState.visualTarget || node;
 		var contentTarget = baseState.textNode || baseState.iconNode || node;
+		var visualFromVars = {};
+		var visualToVars = {};
 		var rawProgress = typeof forcedProgress === 'number' ? forcedProgress : getScrollAnimationProgress(node, animation.start, animation.end, animation.startOffset, animation.endOffset, animation.startOffsetPx, animation.endOffsetPx);
 		var progress = mapScrollAnimationProgress(animation, rawProgress);
 		var startOpacity = useStartState && Object.prototype.hasOwnProperty.call(patchStyles, 'opacity') ? parseNumber(patchStyles.opacity, baseState.opacity) : baseState.opacity;
@@ -3754,16 +4705,16 @@ class FrameBuilder_Exporter {
 			node.style.transform = 'rotate(' + currentRotate + 'deg)';
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'backgroundColor')) {
-			node.style.backgroundColor = interpolateValue(useStartState ? patchStyles.backgroundColor : baseState.backgroundColor, useStartState ? baseState.backgroundColor : patchStyles.backgroundColor, progress);
+			visualTarget.style.backgroundColor = interpolateValue(useStartState ? patchStyles.backgroundColor : baseState.backgroundColor, useStartState ? baseState.backgroundColor : patchStyles.backgroundColor, progress);
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'color')) {
 			contentTarget.style.color = interpolateValue(useStartState ? patchStyles.color : baseState.color, useStartState ? baseState.color : patchStyles.color, progress);
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'borderColor')) {
-			node.style.borderColor = interpolateValue(useStartState ? patchStyles.borderColor : baseState.borderColor, useStartState ? baseState.borderColor : patchStyles.borderColor, progress);
+			visualTarget.style.borderColor = interpolateValue(useStartState ? patchStyles.borderColor : baseState.borderColor, useStartState ? baseState.borderColor : patchStyles.borderColor, progress);
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'borderRadius')) {
-			node.style.borderRadius = interpolateValue(useStartState ? patchStyles.borderRadius : baseState.borderRadius, useStartState ? baseState.borderRadius : patchStyles.borderRadius, progress);
+			visualTarget.style.borderRadius = interpolateValue(useStartState ? patchStyles.borderRadius : baseState.borderRadius, useStartState ? baseState.borderRadius : patchStyles.borderRadius, progress);
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'blur') || Object.prototype.hasOwnProperty.call(patchStyles, 'brightness') || Object.prototype.hasOwnProperty.call(patchStyles, 'contrast') || Object.prototype.hasOwnProperty.call(patchStyles, 'saturation')) {
 			node.style.filter = buildFilterValue({
@@ -3787,6 +4738,7 @@ class FrameBuilder_Exporter {
 		var patchStyles = patchState.styles && typeof patchState.styles === 'object' ? patchState.styles : {};
 		var baseState = getAnimationBaseState(node);
 		patchLayout = normalizeCenteredAnimationPatchLayout(patchLayout, baseState);
+		var visualTarget = baseState.visualTarget || node;
 		var contentTarget = baseState.textNode || baseState.iconNode || node;
 		var fromVars = {
 			opacity: useStartState && Object.prototype.hasOwnProperty.call(patchStyles, 'opacity') ? parseNumber(patchStyles.opacity, baseState.opacity) : baseState.opacity,
@@ -3867,16 +4819,31 @@ class FrameBuilder_Exporter {
 		}
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'backgroundColor')) {
-			fromVars.backgroundColor = useStartState ? patchStyles.backgroundColor : baseState.backgroundColor;
-			toVars.backgroundColor = useStartState ? baseState.backgroundColor : patchStyles.backgroundColor;
+			if (visualTarget === node) {
+				fromVars.backgroundColor = useStartState ? patchStyles.backgroundColor : baseState.backgroundColor;
+				toVars.backgroundColor = useStartState ? baseState.backgroundColor : patchStyles.backgroundColor;
+			} else {
+				visualFromVars.backgroundColor = useStartState ? patchStyles.backgroundColor : baseState.backgroundColor;
+				visualToVars.backgroundColor = useStartState ? baseState.backgroundColor : patchStyles.backgroundColor;
+			}
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'borderColor')) {
-			fromVars.borderColor = useStartState ? patchStyles.borderColor : baseState.borderColor;
-			toVars.borderColor = useStartState ? baseState.borderColor : patchStyles.borderColor;
+			if (visualTarget === node) {
+				fromVars.borderColor = useStartState ? patchStyles.borderColor : baseState.borderColor;
+				toVars.borderColor = useStartState ? baseState.borderColor : patchStyles.borderColor;
+			} else {
+				visualFromVars.borderColor = useStartState ? patchStyles.borderColor : baseState.borderColor;
+				visualToVars.borderColor = useStartState ? baseState.borderColor : patchStyles.borderColor;
+			}
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'borderRadius')) {
-			fromVars.borderRadius = useStartState ? patchStyles.borderRadius : baseState.borderRadius;
-			toVars.borderRadius = useStartState ? baseState.borderRadius : patchStyles.borderRadius;
+			if (visualTarget === node) {
+				fromVars.borderRadius = useStartState ? patchStyles.borderRadius : baseState.borderRadius;
+				toVars.borderRadius = useStartState ? baseState.borderRadius : patchStyles.borderRadius;
+			} else {
+				visualFromVars.borderRadius = useStartState ? patchStyles.borderRadius : baseState.borderRadius;
+				visualToVars.borderRadius = useStartState ? baseState.borderRadius : patchStyles.borderRadius;
+			}
 		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'blur') || Object.prototype.hasOwnProperty.call(patchStyles, 'brightness') || Object.prototype.hasOwnProperty.call(patchStyles, 'contrast') || Object.prototype.hasOwnProperty.call(patchStyles, 'saturation')) {
 			fromVars.filter = buildFilterValue({
@@ -3898,6 +4865,17 @@ class FrameBuilder_Exporter {
 		}
 		var timeline = gsap.timeline({ paused: true, defaults: { overwrite: true } });
 		timeline.fromTo(node, fromVars, toVars, 0);
+		if (visualTarget !== node && Object.keys(visualFromVars).length) {
+			visualFromVars.duration = 1;
+			visualFromVars.ease = 'none';
+			visualFromVars.overwrite = true;
+			visualFromVars.immediateRender = false;
+			visualToVars.duration = 1;
+			visualToVars.ease = 'none';
+			visualToVars.overwrite = true;
+			visualToVars.immediateRender = false;
+			timeline.fromTo(visualTarget, visualFromVars, visualToVars, 0);
+		}
 		if (Object.prototype.hasOwnProperty.call(patchStyles, 'color') && contentTarget) {
 			timeline.fromTo(contentTarget, {
 				color: useStartState ? patchStyles.color : baseState.color,

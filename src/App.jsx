@@ -10,7 +10,8 @@ import FlowEditorModal from './components/FlowEditorModal';
 import VariablesModal from './components/VariablesModal';
 import BottomToolbar from './components/BottomToolbar';
 import { ICON_PACK_MANIFEST, warmIconPackPreviewCache } from './components/iconCatalog';
-import { useEditorStore } from './store/editorStore';
+import { useEditorStore, resolveElement } from './store/editorStore';
+import { ensureGoogleFontLoaded } from './components/googleFonts';
 
 export default function App() {
   const loadLayout = useEditorStore(s => s.loadLayout);
@@ -32,6 +33,7 @@ export default function App() {
   const currentPageId = useEditorStore(s => s.currentPageId);
   const breakpointDefs = useEditorStore(s => s.breakpointDefs);
   const activeSurface = useEditorStore(s => s.activeSurface);
+  const getAllElements = useEditorStore(s => s.getAllElements);
   const components = useEditorStore(s => s.components);
   const componentEditorComponentId = useEditorStore(s => s.componentEditor.componentId);
   const componentEditorActiveVariantId = useEditorStore(s => s.componentEditor.activeVariantId);
@@ -43,7 +45,6 @@ export default function App() {
   const iconLibraryModal = useEditorStore(s => s.iconLibraryModal);
   const closeIconLibraryModal = useEditorStore(s => s.closeIconLibraryModal);
   const applyIconLibrarySelection = useEditorStore(s => s.applyIconLibrarySelection);
-  const getAllElements = useEditorStore(s => s.getAllElements);
   const activeCanvasTool = useEditorStore(s => s.activeCanvasTool);
   const activeCommentId = useEditorStore(s => s.activeCommentId);
   const [leftWidth, setLeftWidth] = useState(300);
@@ -125,6 +126,40 @@ export default function App() {
     const timer = window.setTimeout(warmPacks, 300);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    const fontRequests = new Map();
+    const currentElements = getAllElements();
+    const breakpointIds = Array.isArray(breakpointDefs) && breakpointDefs.length
+      ? breakpointDefs.map((entry) => entry.id).filter(Boolean)
+      : ['desktop'];
+
+    const registerFont = (family, weight, style) => {
+      const trimmedFamily = `${family ?? ''}`.trim();
+      if (!trimmedFamily) return;
+      const requestKey = `${trimmedFamily}::${style || 'normal'}::${weight || 400}`;
+      if (fontRequests.has(requestKey)) return;
+      fontRequests.set(requestKey, {
+        family: trimmedFamily,
+        weight: weight || 400,
+        style: style || 'normal',
+      });
+    };
+
+    currentElements.forEach((element) => {
+      breakpointIds.forEach((bpId) => {
+        const resolved = resolveElement(element, bpId);
+        const styles = resolved?.styles ?? {};
+        const family = `${styles?.fontFamily ?? ''}`.trim();
+        if (!family) return;
+        registerFont(family, styles?.fontWeight ?? 400, styles?.fontStyle ?? 'normal');
+      });
+    });
+
+    fontRequests.forEach(({ family, weight, style }) => {
+      ensureGoogleFontLoaded(family, { weight, style });
+    });
+  }, [pages, currentPageId, activeSurface, breakpointDefs, components, getAllElements]);
 
   useEffect(() => {
     if (!autoSaveReadyRef.current) return;

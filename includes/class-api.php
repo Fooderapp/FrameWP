@@ -23,6 +23,8 @@ class FrameBuilder_API {
 		add_action( 'wp_ajax_framebuilder_get_variable_sources', [ __CLASS__, 'ajax_get_variable_sources' ] );
 		add_action( 'wp_ajax_framebuilder_publish_layout', [ __CLASS__, 'ajax_publish_layout' ] );
 		add_action( 'wp_ajax_framebuilder_import_media_asset', [ __CLASS__, 'ajax_import_media_asset' ] );
+		add_action( 'wp_ajax_framebuilder_submit_form', [ __CLASS__, 'ajax_submit_form' ] );
+		add_action( 'wp_ajax_nopriv_framebuilder_submit_form', [ __CLASS__, 'ajax_submit_form' ] );
 	}
 
 	public static function register_routes() {
@@ -138,6 +140,12 @@ class FrameBuilder_API {
 			'methods'             => 'GET',
 			'callback'            => [ __CLASS__, 'get_variable_sources' ],
 			'permission_callback' => [ __CLASS__, 'can_edit' ],
+		] );
+
+		register_rest_route( $ns, '/forms/submit', [
+			'methods'             => 'POST',
+			'callback'            => [ __CLASS__, 'submit_form' ],
+			'permission_callback' => '__return_true',
 		] );
 	}
 
@@ -369,7 +377,8 @@ class FrameBuilder_API {
 			return $lock_check;
 		}
 		update_post_meta( $post_id, '_fb_layout', wp_slash( wp_json_encode( $layout ) ) );
-		$exporter = new FrameBuilder_Exporter( $layout );
+		update_post_meta( $post_id, '_fb_published_layout', wp_slash( wp_json_encode( $layout ) ) );
+		$exporter = new FrameBuilder_Exporter( $layout, $post_id );
 		$html     = $exporter->generate_html();
 		$css      = $exporter->generate_css();
 		update_post_meta( $post_id, '_fb_published_html', wp_slash( $html ) );
@@ -498,6 +507,1307 @@ class FrameBuilder_API {
 			}
 		}
 		return [];
+	}
+
+	private static function is_form_container_type( string $type ): bool {
+		return 'form' === $type;
+	}
+
+	private static function is_form_field_type( string $type ): bool {
+		return in_array( $type, [ 'text-field', 'textarea-field', 'rich-text-editor', 'radio-group', 'dropdown', 'checkbox', 'file-upload', 'captcha' ], true );
+	}
+
+	private static function normalize_form_field_name( array $element ): string {
+		$base = is_array( $element['base'] ?? null ) ? $element['base'] : [];
+		$field_name = isset( $base['fieldName'] ) && is_string( $base['fieldName'] ) ? trim( $base['fieldName'] ) : '';
+		if ( '' === $field_name && isset( $element['name'] ) && is_string( $element['name'] ) ) {
+			$field_name = trim( $element['name'] );
+		}
+		$field_name = strtolower( preg_replace( '/[^a-zA-Z0-9_-]+/', '_', $field_name ) ?? '' );
+		$field_name = trim( $field_name, '_' );
+		if ( '' === $field_name ) {
+			$field_name = 'field_' . strtolower( sanitize_key( (string) ( $element['id'] ?? 'form_field' ) ) );
+		}
+		return $field_name;
+	}
+
+	private static function normalize_form_config( $value ): array {
+		$config = is_array( $value ) ? $value : [];
+		$actions = is_array( $config['actions'] ?? null ) ? $config['actions'] : [];
+		$email = is_array( $actions['email'] ?? null ) ? $actions['email'] : [];
+		$webhook = is_array( $actions['webhook'] ?? null ) ? $actions['webhook'] : [];
+		$store = is_array( $actions['store'] ?? null ) ? $actions['store'] : [];
+		return [
+			'submitLabel' => isset( $config['submitLabel'] ) && is_string( $config['submitLabel'] ) && trim( $config['submitLabel'] ) !== ''
+				? sanitize_text_field( $config['submitLabel'] )
+				: 'Submit',
+			'successMessage' => isset( $config['successMessage'] ) && is_string( $config['successMessage'] ) && trim( $config['successMessage'] ) !== ''
+				? sanitize_text_field( $config['successMessage'] )
+				: 'Thanks. Your submission was received.',
+			'errorMessage' => isset( $config['errorMessage'] ) && is_string( $config['errorMessage'] ) && trim( $config['errorMessage'] ) !== ''
+				? sanitize_text_field( $config['errorMessage'] )
+				: 'Something went wrong. Please try again.',
+			'actions' => [
+				'store' => [ 'enabled' => ! isset( $store['enabled'] ) || ! empty( $store['enabled'] ) ],
+				'email' => [
+					'enabled' => ! empty( $email['enabled'] ),
+					'to' => isset( $email['to'] ) && is_string( $email['to'] ) ? sanitize_email( $email['to'] ) : '',
+					'subject' => isset( $email['subject'] ) && is_string( $email['subject'] ) && trim( $email['subject'] ) !== ''
+						? sanitize_text_field( $email['subject'] )
+						: 'New form submission',
+				],
+				'webhook' => [
+					'enabled' => ! empty( $webhook['enabled'] ),
+					'url' => isset( $webhook['url'] ) && is_string( $webhook['url'] ) ? esc_url_raw( trim( $webhook['url'] ) ) : '',
+				],
+			],
+		];
+	}
+
+	private static function get_submission_status_options(): array {
+		return [
+			[ 'value' => 'draft', 'label' => 'Draft' ],
+			[ 'value' => 'publish', 'label' => 'Publish' ],
+			[ 'value' => 'pending', 'label' => 'Pending Review' ],
+			[ 'value' => 'private', 'label' => 'Private' ],
+		];
+	}
+
+	private static function get_form_target_field_definitions(): array {
+		return [
+			'post' => [
+				[ 'key' => 'post_title', 'label' => 'Title' ],
+				[ 'key' => 'post_name', 'label' => 'Slug' ],
+				[ 'key' => 'post_content', 'label' => 'Content' ],
+				[ 'key' => 'post_excerpt', 'label' => 'Excerpt' ],
+				[ 'key' => 'featured_image', 'label' => 'Featured Image' ],
+			],
+			'category' => [
+				[ 'key' => 'name', 'label' => 'Name' ],
+				[ 'key' => 'slug', 'label' => 'Slug' ],
+				[ 'key' => 'description', 'label' => 'Description' ],
+				[ 'key' => 'parent', 'label' => 'Parent Term ID' ],
+				[ 'key' => 'image', 'label' => 'Category Image' ],
+			],
+			'productCategory' => [
+				[ 'key' => 'name', 'label' => 'Name' ],
+				[ 'key' => 'slug', 'label' => 'Slug' ],
+				[ 'key' => 'description', 'label' => 'Description' ],
+				[ 'key' => 'parent', 'label' => 'Parent Term ID' ],
+				[ 'key' => 'image', 'label' => 'Category Image' ],
+			],
+			'product' => [
+				[ 'key' => 'post_title', 'label' => 'Title' ],
+				[ 'key' => 'post_name', 'label' => 'Slug' ],
+				[ 'key' => 'post_content', 'label' => 'Description' ],
+				[ 'key' => 'post_excerpt', 'label' => 'Short Description' ],
+				[ 'key' => 'featured_image', 'label' => 'Product Image' ],
+				[ 'key' => 'gallery_images', 'label' => 'Product Gallery' ],
+				[ 'key' => 'regular_price', 'label' => 'Regular Price' ],
+				[ 'key' => 'sale_price', 'label' => 'Sale Price' ],
+				[ 'key' => 'sku', 'label' => 'SKU' ],
+				[ 'key' => 'stock_quantity', 'label' => 'Stock Quantity' ],
+			],
+		];
+	}
+
+	private static function flatten_acf_fields( array $fields, array &$flattened ): void {
+		foreach ( $fields as $field ) {
+			if ( ! is_array( $field ) ) {
+				continue;
+			}
+			$key = isset( $field['key'] ) && is_string( $field['key'] ) ? $field['key'] : '';
+			$name = isset( $field['name'] ) && is_string( $field['name'] ) ? $field['name'] : '';
+			if ( '' !== $key && '' !== $name ) {
+				$flattened[] = [
+					'key' => sanitize_text_field( $key ),
+					'name' => sanitize_key( $name ),
+					'label' => isset( $field['label'] ) && is_string( $field['label'] ) ? sanitize_text_field( $field['label'] ) : sanitize_text_field( $name ),
+					'type' => isset( $field['type'] ) && is_string( $field['type'] ) ? sanitize_key( $field['type'] ) : 'text',
+				];
+			}
+			if ( ! empty( $field['sub_fields'] ) && is_array( $field['sub_fields'] ) ) {
+				self::flatten_acf_fields( $field['sub_fields'], $flattened );
+			}
+		}
+	}
+
+	private static function get_acf_fields_for_filter( array $filter ): array {
+		if ( ! function_exists( 'acf_get_field_groups' ) || ! function_exists( 'acf_get_fields' ) ) {
+			return [];
+		}
+
+		$field_groups = acf_get_field_groups( $filter );
+		if ( ! is_array( $field_groups ) ) {
+			return [];
+		}
+
+		$flattened = [];
+		foreach ( $field_groups as $group ) {
+			$fields = acf_get_fields( $group );
+			if ( is_array( $fields ) ) {
+				self::flatten_acf_fields( $fields, $flattened );
+			}
+		}
+
+		$unique = [];
+		foreach ( $flattened as $field ) {
+			if ( empty( $field['key'] ) ) {
+				continue;
+			}
+			$unique[ $field['key'] ] = $field;
+		}
+
+		return array_values( $unique );
+	}
+
+	private static function get_form_action_targets(): array {
+		$target_fields = self::get_form_target_field_definitions();
+		$product_enabled = post_type_exists( 'product' );
+		$product_category_enabled = taxonomy_exists( 'product_cat' );
+
+		return [
+			'post' => [
+				'enabled' => true,
+				'fields' => $target_fields['post'],
+				'statuses' => self::get_submission_status_options(),
+				'acfFields' => self::get_acf_fields_for_filter( [ 'post_type' => 'post' ] ),
+			],
+			'category' => [
+				'enabled' => taxonomy_exists( 'category' ),
+				'fields' => $target_fields['category'],
+				'acfFields' => self::get_acf_fields_for_filter( [ 'taxonomy' => 'category' ] ),
+			],
+			'productCategory' => [
+				'enabled' => $product_category_enabled,
+				'fields' => $target_fields['productCategory'],
+				'acfFields' => $product_category_enabled ? self::get_acf_fields_for_filter( [ 'taxonomy' => 'product_cat' ] ) : [],
+			],
+			'product' => [
+				'enabled' => $product_enabled,
+				'fields' => $target_fields['product'],
+				'statuses' => self::get_submission_status_options(),
+				'acfFields' => $product_enabled ? self::get_acf_fields_for_filter( [ 'post_type' => 'product' ] ) : [],
+			],
+		];
+	}
+
+	private static function normalize_submission_mapping_entries( $value, string $key_name ): array {
+		if ( ! is_array( $value ) ) {
+			return [];
+		}
+
+		$normalized = [];
+		foreach ( $value as $entry ) {
+			if ( ! is_array( $entry ) ) {
+				continue;
+			}
+			$key = sanitize_key( (string) ( $entry[ $key_name ] ?? '' ) );
+			$field_name = sanitize_key( (string) ( $entry['fieldName'] ?? '' ) );
+			if ( '' === $key || '' === $field_name ) {
+				continue;
+			}
+			$normalized[] = [
+				'id' => isset( $entry['id'] ) && is_string( $entry['id'] ) ? sanitize_text_field( $entry['id'] ) : uniqid( 'fbmap_', true ),
+				$key_name => $key,
+				'fieldName' => $field_name,
+			];
+		}
+
+		return $normalized;
+	}
+
+	private static function normalize_submission_action_config( $value, array $legacy_actions = [] ): array {
+		$actions = is_array( $value ) ? $value : [];
+		$legacy = is_array( $legacy_actions ) ? $legacy_actions : [];
+		$has_store_enabled = isset( $actions['store'] ) && is_array( $actions['store'] ) && array_key_exists( 'enabled', $actions['store'] );
+
+		return [
+			'store' => [
+				'enabled' => $has_store_enabled ? ! empty( $actions['store']['enabled'] ) : ! empty( $legacy['store']['enabled'] ),
+			],
+			'email' => [
+				'enabled' => isset( $actions['email']['enabled'] ) ? ! empty( $actions['email']['enabled'] ) : ! empty( $legacy['email']['enabled'] ),
+				'to' => isset( $actions['email']['to'] ) && is_string( $actions['email']['to'] ) ? sanitize_email( $actions['email']['to'] ) : sanitize_email( (string) ( $legacy['email']['to'] ?? '' ) ),
+				'subject' => isset( $actions['email']['subject'] ) && is_string( $actions['email']['subject'] ) && trim( $actions['email']['subject'] ) !== ''
+					? sanitize_text_field( $actions['email']['subject'] )
+					: sanitize_text_field( (string) ( $legacy['email']['subject'] ?? 'New form submission' ) ),
+			],
+			'webhook' => [
+				'enabled' => isset( $actions['webhook']['enabled'] ) ? ! empty( $actions['webhook']['enabled'] ) : ! empty( $legacy['webhook']['enabled'] ),
+				'url' => isset( $actions['webhook']['url'] ) && is_string( $actions['webhook']['url'] ) ? esc_url_raw( trim( $actions['webhook']['url'] ) ) : esc_url_raw( (string) ( $legacy['webhook']['url'] ?? '' ) ),
+			],
+			'createPost' => [
+				'enabled' => ! empty( $actions['createPost']['enabled'] ),
+				'status' => isset( $actions['createPost']['status'] ) && is_string( $actions['createPost']['status'] ) ? sanitize_key( $actions['createPost']['status'] ) : 'draft',
+				'fieldMappings' => self::normalize_submission_mapping_entries( $actions['createPost']['fieldMappings'] ?? [], 'targetKey' ),
+				'acfMappings' => self::normalize_submission_mapping_entries( $actions['createPost']['acfMappings'] ?? [], 'fieldKey' ),
+			],
+			'createCategory' => [
+				'enabled' => ! empty( $actions['createCategory']['enabled'] ),
+				'fieldMappings' => self::normalize_submission_mapping_entries( $actions['createCategory']['fieldMappings'] ?? [], 'targetKey' ),
+				'acfMappings' => self::normalize_submission_mapping_entries( $actions['createCategory']['acfMappings'] ?? [], 'fieldKey' ),
+			],
+			'createProductCategory' => [
+				'enabled' => ! empty( $actions['createProductCategory']['enabled'] ),
+				'fieldMappings' => self::normalize_submission_mapping_entries( $actions['createProductCategory']['fieldMappings'] ?? [], 'targetKey' ),
+				'acfMappings' => self::normalize_submission_mapping_entries( $actions['createProductCategory']['acfMappings'] ?? [], 'fieldKey' ),
+			],
+			'createProduct' => [
+				'enabled' => ! empty( $actions['createProduct']['enabled'] ),
+				'status' => isset( $actions['createProduct']['status'] ) && is_string( $actions['createProduct']['status'] ) ? sanitize_key( $actions['createProduct']['status'] ) : 'draft',
+				'fieldMappings' => self::normalize_submission_mapping_entries( $actions['createProduct']['fieldMappings'] ?? [], 'targetKey' ),
+				'acfMappings' => self::normalize_submission_mapping_entries( $actions['createProduct']['acfMappings'] ?? [], 'fieldKey' ),
+			],
+		];
+	}
+
+	private static function get_form_submission_node( array $layout, string $form_id ): ?array {
+		$flows = is_array( $layout['flows'] ?? null ) ? $layout['flows'] : [];
+		$related_ids = self::get_form_related_element_ids( $layout, $form_id );
+		foreach ( self::get_matching_form_submission_flows( $flows, $form_id, $related_ids ) as $flow ) {
+			if ( ! is_array( $flow ) ) {
+				continue;
+			}
+			$nodes = is_array( $flow['nodes'] ?? null ) ? $flow['nodes'] : [];
+			foreach ( $nodes as $node ) {
+				if ( is_array( $node ) && 'submission-form' === (string) ( $node['type'] ?? '' ) ) {
+					return $node;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	private static function get_submission_value_by_field_name( array $submission_values, string $field_name ) {
+		return array_key_exists( $field_name, $submission_values ) ? $submission_values[ $field_name ] : null;
+	}
+
+	private static function scalarize_submission_value( $value ): string {
+		if ( is_array( $value ) ) {
+			if ( isset( $value['url'] ) && is_string( $value['url'] ) ) {
+				return $value['url'];
+			}
+			return wp_json_encode( $value ) ?: '';
+		}
+		if ( is_bool( $value ) ) {
+			return $value ? '1' : '0';
+		}
+		if ( null === $value ) {
+			return '';
+		}
+		return (string) $value;
+	}
+
+	private static function resolve_attachment_id_from_submission_value( $value ): int {
+		if ( is_array( $value ) ) {
+			if ( isset( $value['attachmentId'] ) ) {
+				$attachment_id = absint( $value['attachmentId'] );
+				if ( $attachment_id > 0 ) {
+					return $attachment_id;
+				}
+			}
+			if ( isset( $value['url'] ) && is_string( $value['url'] ) && function_exists( 'attachment_url_to_postid' ) ) {
+				$attachment_id = absint( attachment_url_to_postid( $value['url'] ) );
+				if ( $attachment_id > 0 ) {
+					return $attachment_id;
+				}
+			}
+			foreach ( $value as $entry ) {
+				$attachment_id = self::resolve_attachment_id_from_submission_value( $entry );
+				if ( $attachment_id > 0 ) {
+					return $attachment_id;
+				}
+			}
+			return 0;
+		}
+
+		if ( is_numeric( $value ) ) {
+			return absint( $value );
+		}
+
+		if ( is_string( $value ) ) {
+			$trimmed = trim( $value );
+			if ( '' === $trimmed ) {
+				return 0;
+			}
+			if ( is_numeric( $trimmed ) ) {
+				return absint( $trimmed );
+			}
+			if ( function_exists( 'attachment_url_to_postid' ) ) {
+				return absint( attachment_url_to_postid( $trimmed ) );
+			}
+		}
+
+		return 0;
+	}
+
+	private static function resolve_attachment_ids_from_submission_value( $value ): array {
+		if ( ! is_array( $value ) ) {
+			$attachment_id = self::resolve_attachment_id_from_submission_value( $value );
+			return $attachment_id > 0 ? [ $attachment_id ] : [];
+		}
+
+		if ( isset( $value['attachmentId'] ) || isset( $value['url'] ) ) {
+			$attachment_id = self::resolve_attachment_id_from_submission_value( $value );
+			return $attachment_id > 0 ? [ $attachment_id ] : [];
+		}
+
+		$attachment_ids = [];
+		foreach ( $value as $entry ) {
+			$attachment_ids = array_merge( $attachment_ids, self::resolve_attachment_ids_from_submission_value( $entry ) );
+		}
+
+		$attachment_ids = array_values( array_filter( array_map( 'absint', array_unique( $attachment_ids ) ) ) );
+		return $attachment_ids;
+	}
+
+	private static function maybe_apply_post_featured_image( int $post_id, $value ): int {
+		if ( $post_id <= 0 || ! function_exists( 'set_post_thumbnail' ) ) {
+			return 0;
+		}
+		$attachment_id = self::resolve_attachment_id_from_submission_value( $value );
+		if ( $attachment_id <= 0 ) {
+			return 0;
+		}
+		set_post_thumbnail( $post_id, $attachment_id );
+		return $attachment_id;
+	}
+
+	private static function maybe_apply_term_image( int $term_id, $value ): int {
+		if ( $term_id <= 0 ) {
+			return 0;
+		}
+		$attachment_id = self::resolve_attachment_id_from_submission_value( $value );
+		if ( $attachment_id <= 0 ) {
+			return 0;
+		}
+		update_term_meta( $term_id, 'thumbnail_id', $attachment_id );
+		return $attachment_id;
+	}
+
+	private static function maybe_apply_product_gallery_images( int $product_id, $value, int $featured_image_id = 0 ): array {
+		if ( $product_id <= 0 ) {
+			return [];
+		}
+		$attachment_ids = self::resolve_attachment_ids_from_submission_value( $value );
+		if ( $featured_image_id > 0 ) {
+			$attachment_ids = array_values( array_filter( $attachment_ids, static fn( $attachment_id ) => $attachment_id !== $featured_image_id ) );
+		}
+		update_post_meta( $product_id, '_product_image_gallery', implode( ',', $attachment_ids ) );
+		return $attachment_ids;
+	}
+
+	private static function normalize_product_price_value( $value ): string {
+		$scalar = self::scalarize_submission_value( $value );
+		if ( '' === $scalar ) {
+			return '';
+		}
+		if ( function_exists( 'wc_format_decimal' ) ) {
+			return (string) wc_format_decimal( $scalar );
+		}
+		$normalized = preg_replace( '/[^0-9,.-]/', '', $scalar );
+		if ( ! is_string( $normalized ) || '' === $normalized ) {
+			return '';
+		}
+		$normalized = str_replace( ',', '.', $normalized );
+		return $normalized;
+	}
+
+	private static function map_submission_pairs( array $mappings, array $submission_values ): array {
+		$mapped = [];
+		foreach ( $mappings as $mapping ) {
+			if ( ! is_array( $mapping ) ) {
+				continue;
+			}
+			$key = sanitize_key( (string) ( $mapping['targetKey'] ?? $mapping['fieldKey'] ?? '' ) );
+			$field_name = sanitize_key( (string) ( $mapping['fieldName'] ?? '' ) );
+			if ( '' === $key || '' === $field_name ) {
+				continue;
+			}
+			$mapped[ $key ] = self::get_submission_value_by_field_name( $submission_values, $field_name );
+		}
+		return $mapped;
+	}
+
+	private static function apply_post_acf_mappings( int $post_id, array $mappings, array $submission_values ): void {
+		if ( $post_id <= 0 || ! function_exists( 'update_field' ) ) {
+			return;
+		}
+		foreach ( $mappings as $mapping ) {
+			$field_key = sanitize_text_field( (string) ( $mapping['fieldKey'] ?? '' ) );
+			$field_name = sanitize_key( (string) ( $mapping['fieldName'] ?? '' ) );
+			if ( '' === $field_key || '' === $field_name ) {
+				continue;
+			}
+			update_field( $field_key, self::get_submission_value_by_field_name( $submission_values, $field_name ), $post_id );
+		}
+	}
+
+	private static function apply_term_acf_mappings( string $taxonomy, int $term_id, array $mappings, array $submission_values ): void {
+		if ( '' === $taxonomy || $term_id <= 0 || ! function_exists( 'update_field' ) ) {
+			return;
+		}
+		$object_id = $taxonomy . '_' . $term_id;
+		foreach ( $mappings as $mapping ) {
+			$field_key = sanitize_text_field( (string) ( $mapping['fieldKey'] ?? '' ) );
+			$field_name = sanitize_key( (string) ( $mapping['fieldName'] ?? '' ) );
+			if ( '' === $field_key || '' === $field_name ) {
+				continue;
+			}
+			update_field( $field_key, self::get_submission_value_by_field_name( $submission_values, $field_name ), $object_id );
+		}
+	}
+
+	private static function create_post_from_submission( array $action_config, array $submission_payload ) {
+		$mapped = self::map_submission_pairs( $action_config['fieldMappings'] ?? [], $submission_payload['values'] ?? [] );
+		$postarr = [
+			'post_type' => 'post',
+			'post_status' => sanitize_key( (string) ( $action_config['status'] ?? 'draft' ) ) ?: 'draft',
+			'post_title' => sanitize_text_field( self::scalarize_submission_value( $mapped['post_title'] ?? ( 'Form Submission ' . ( $submission_payload['id'] ?? '' ) ) ) ),
+		];
+		if ( array_key_exists( 'post_name', $mapped ) ) {
+			$postarr['post_name'] = sanitize_title( self::scalarize_submission_value( $mapped['post_name'] ) );
+		}
+		if ( array_key_exists( 'post_content', $mapped ) ) {
+			$postarr['post_content'] = wp_kses_post( self::scalarize_submission_value( $mapped['post_content'] ) );
+		}
+		if ( array_key_exists( 'post_excerpt', $mapped ) ) {
+			$postarr['post_excerpt'] = sanitize_textarea_field( self::scalarize_submission_value( $mapped['post_excerpt'] ) );
+		}
+
+		$post_id = wp_insert_post( wp_slash( $postarr ), true );
+		if ( is_wp_error( $post_id ) ) {
+			return $post_id;
+		}
+
+		$featured_image_id = array_key_exists( 'featured_image', $mapped )
+			? self::maybe_apply_post_featured_image( (int) $post_id, $mapped['featured_image'] )
+			: 0;
+
+		self::apply_post_acf_mappings( (int) $post_id, $action_config['acfMappings'] ?? [], $submission_payload['values'] ?? [] );
+		return [
+			'id' => (int) $post_id,
+			'title' => get_the_title( $post_id ),
+			'url' => get_permalink( $post_id ),
+			'status' => get_post_status( $post_id ),
+			'featuredImageId' => $featured_image_id,
+		];
+	}
+
+	private static function create_term_from_submission( string $taxonomy, array $action_config, array $submission_payload ) {
+		if ( ! taxonomy_exists( $taxonomy ) ) {
+			return new WP_Error( 'missing_taxonomy', 'Target taxonomy is not available.' );
+		}
+
+		$mapped = self::map_submission_pairs( $action_config['fieldMappings'] ?? [], $submission_payload['values'] ?? [] );
+		$name = sanitize_text_field( self::scalarize_submission_value( $mapped['name'] ?? '' ) );
+		if ( '' === $name ) {
+			return new WP_Error( 'missing_term_name', 'A term name mapping is required.' );
+		}
+
+		$args = [];
+		if ( array_key_exists( 'slug', $mapped ) ) {
+			$args['slug'] = sanitize_title( self::scalarize_submission_value( $mapped['slug'] ) );
+		}
+		if ( array_key_exists( 'description', $mapped ) ) {
+			$args['description'] = sanitize_textarea_field( self::scalarize_submission_value( $mapped['description'] ) );
+		}
+		if ( array_key_exists( 'parent', $mapped ) ) {
+			$args['parent'] = absint( self::scalarize_submission_value( $mapped['parent'] ) );
+		}
+
+		$result = wp_insert_term( $name, $taxonomy, $args );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$term_id = absint( $result['term_id'] ?? 0 );
+		$image_id = array_key_exists( 'image', $mapped )
+			? self::maybe_apply_term_image( $term_id, $mapped['image'] )
+			: 0;
+		self::apply_term_acf_mappings( $taxonomy, $term_id, $action_config['acfMappings'] ?? [], $submission_payload['values'] ?? [] );
+		$link = get_term_link( $term_id, $taxonomy );
+		return [
+			'id' => $term_id,
+			'name' => $name,
+			'url' => is_wp_error( $link ) ? '' : $link,
+			'taxonomy' => $taxonomy,
+			'imageId' => $image_id,
+		];
+	}
+
+	private static function create_product_from_submission( array $action_config, array $submission_payload ) {
+		if ( ! post_type_exists( 'product' ) ) {
+			return new WP_Error( 'missing_product_type', 'WooCommerce products are not available.' );
+		}
+
+		$mapped = self::map_submission_pairs( $action_config['fieldMappings'] ?? [], $submission_payload['values'] ?? [] );
+		$postarr = [
+			'post_type' => 'product',
+			'post_status' => sanitize_key( (string) ( $action_config['status'] ?? 'draft' ) ) ?: 'draft',
+			'post_title' => sanitize_text_field( self::scalarize_submission_value( $mapped['post_title'] ?? ( 'Product ' . ( $submission_payload['id'] ?? '' ) ) ) ),
+		];
+		if ( array_key_exists( 'post_name', $mapped ) ) {
+			$postarr['post_name'] = sanitize_title( self::scalarize_submission_value( $mapped['post_name'] ) );
+		}
+		if ( array_key_exists( 'post_content', $mapped ) ) {
+			$postarr['post_content'] = wp_kses_post( self::scalarize_submission_value( $mapped['post_content'] ) );
+		}
+		if ( array_key_exists( 'post_excerpt', $mapped ) ) {
+			$postarr['post_excerpt'] = sanitize_textarea_field( self::scalarize_submission_value( $mapped['post_excerpt'] ) );
+		}
+
+		$product_id = wp_insert_post( wp_slash( $postarr ), true );
+		if ( is_wp_error( $product_id ) ) {
+			return $product_id;
+		}
+
+		$regular_price = array_key_exists( 'regular_price', $mapped ) ? self::scalarize_submission_value( $mapped['regular_price'] ) : '';
+		$sale_price = array_key_exists( 'sale_price', $mapped ) ? self::scalarize_submission_value( $mapped['sale_price'] ) : '';
+		$sku = array_key_exists( 'sku', $mapped ) ? sanitize_text_field( self::scalarize_submission_value( $mapped['sku'] ) ) : '';
+		$stock_quantity = array_key_exists( 'stock_quantity', $mapped ) ? self::scalarize_submission_value( $mapped['stock_quantity'] ) : '';
+
+		if ( '' !== $regular_price ) {
+			update_post_meta( $product_id, '_regular_price', self::normalize_product_price_value( $regular_price ) );
+		}
+		if ( '' !== $sale_price ) {
+			update_post_meta( $product_id, '_sale_price', self::normalize_product_price_value( $sale_price ) );
+		}
+		if ( '' !== $regular_price || '' !== $sale_price ) {
+			$price = '' !== $sale_price ? $sale_price : $regular_price;
+			update_post_meta( $product_id, '_price', self::normalize_product_price_value( $price ) );
+		}
+		if ( '' !== $sku ) {
+			update_post_meta( $product_id, '_sku', $sku );
+		}
+		if ( '' !== $stock_quantity ) {
+			$stock_value = intval( $stock_quantity );
+			update_post_meta( $product_id, '_manage_stock', 'yes' );
+			update_post_meta( $product_id, '_stock', $stock_value );
+			update_post_meta( $product_id, '_stock_status', $stock_value > 0 ? 'instock' : 'outofstock' );
+		}
+
+		$featured_image_id = array_key_exists( 'featured_image', $mapped )
+			? self::maybe_apply_post_featured_image( (int) $product_id, $mapped['featured_image'] )
+			: 0;
+		$gallery_image_ids = array_key_exists( 'gallery_images', $mapped )
+			? self::maybe_apply_product_gallery_images( (int) $product_id, $mapped['gallery_images'], $featured_image_id )
+			: [];
+
+		self::apply_post_acf_mappings( (int) $product_id, $action_config['acfMappings'] ?? [], $submission_payload['values'] ?? [] );
+		return [
+			'id' => (int) $product_id,
+			'title' => get_the_title( $product_id ),
+			'url' => get_permalink( $product_id ),
+			'status' => get_post_status( $product_id ),
+			'featuredImageId' => $featured_image_id,
+			'galleryImageIds' => $gallery_image_ids,
+		];
+	}
+
+	private static function get_form_submission_meta_prefix(): string {
+		return '_fb_form_submission_';
+	}
+
+	private static function decode_layout_meta_value( $layout_raw ): ?array {
+		if ( ! is_string( $layout_raw ) || '' === trim( $layout_raw ) ) {
+			return null;
+		}
+
+		$layout = json_decode( $layout_raw, true );
+		if ( is_array( $layout ) ) {
+			return $layout;
+		}
+
+		$layout = json_decode( wp_unslash( $layout_raw ), true );
+		return is_array( $layout ) ? $layout : null;
+	}
+
+	private static function get_submission_layout( int $post_id ): ?array {
+		$layout_keys = [ '_fb_layout', '_fb_published_layout' ];
+		foreach ( $layout_keys as $meta_key ) {
+			$layout_raw = get_post_meta( $post_id, $meta_key, true );
+			$layout = self::decode_layout_meta_value( $layout_raw );
+			if ( is_array( $layout ) ) {
+				return $layout;
+			}
+		}
+		return null;
+	}
+
+	private static function get_form_related_element_ids( array $layout, string $form_id ): array {
+		$elements = is_array( $layout['elements'] ?? null ) ? $layout['elements'] : [];
+		$child_ids_by_parent = [];
+		$form_exists = false;
+
+		foreach ( $elements as $element ) {
+			if ( ! is_array( $element ) || empty( $element['id'] ) ) {
+				continue;
+			}
+
+			$element_id = (string) $element['id'];
+			if ( $element_id === $form_id && self::is_form_container_type( (string) ( $element['type'] ?? '' ) ) ) {
+				$form_exists = true;
+			}
+
+			$parent_id = (string) ( $element['parentId'] ?? '' );
+			if ( '' === $parent_id ) {
+				continue;
+			}
+
+			if ( ! isset( $child_ids_by_parent[ $parent_id ] ) ) {
+				$child_ids_by_parent[ $parent_id ] = [];
+			}
+
+			$child_ids_by_parent[ $parent_id ][] = $element_id;
+		}
+
+		if ( ! $form_exists ) {
+			return [ $form_id ];
+		}
+
+		$related_ids = [ $form_id ];
+		$queue = [ $form_id ];
+
+		while ( ! empty( $queue ) ) {
+			$current_id = array_shift( $queue );
+			foreach ( $child_ids_by_parent[ $current_id ] ?? [] as $child_id ) {
+				if ( in_array( $child_id, $related_ids, true ) ) {
+					continue;
+				}
+
+				$related_ids[] = $child_id;
+				$queue[] = $child_id;
+			}
+		}
+
+		return $related_ids;
+	}
+
+	private static function get_form_submission_trigger_priority( array $trigger, string $form_id, array $related_ids ): int {
+		$trigger_type = (string) ( $trigger['type'] ?? '' );
+		if ( 'form-submit' === $trigger_type && $form_id === (string) ( $trigger['formId'] ?? '' ) ) {
+			return 2;
+		}
+
+		if ( 'element-click' === $trigger_type ) {
+			$trigger_element_id = (string) ( $trigger['elementId'] ?? '' );
+			if ( '' !== $trigger_element_id && in_array( $trigger_element_id, $related_ids, true ) ) {
+				return 1;
+			}
+		}
+
+		return 0;
+	}
+
+	private static function get_matching_form_submission_flows( array $flows, string $form_id, array $related_ids ): array {
+		$exact_matches = [];
+		$legacy_matches = [];
+
+		foreach ( $flows as $flow ) {
+			if ( ! is_array( $flow ) ) {
+				continue;
+			}
+
+			$trigger = is_array( $flow['trigger'] ?? null ) ? $flow['trigger'] : [];
+			$priority = self::get_form_submission_trigger_priority( $trigger, $form_id, $related_ids );
+			if ( 2 === $priority ) {
+				$exact_matches[] = $flow;
+			} elseif ( 1 === $priority ) {
+				$legacy_matches[] = $flow;
+			}
+		}
+
+		return array_merge( $exact_matches, $legacy_matches );
+	}
+
+	private static function flow_matches_form_submission_trigger( array $trigger, string $form_id, array $related_ids ): bool {
+		return self::get_form_submission_trigger_priority( $trigger, $form_id, $related_ids ) > 0;
+	}
+
+	private static function find_form_elements( array $layout, string $form_id ): array {
+		$elements = is_array( $layout['elements'] ?? null ) ? $layout['elements'] : [];
+		$form = null;
+		$element_map = [];
+		foreach ( $elements as $element ) {
+			if ( ! is_array( $element ) || empty( $element['id'] ) ) continue;
+			$element_map[ (string) $element['id'] ] = $element;
+			if ( (string) $element['id'] === $form_id && self::is_form_container_type( (string) ( $element['type'] ?? '' ) ) ) {
+				$form = $element;
+			}
+		}
+		if ( ! $form ) {
+			return [ null, [] ];
+		}
+		$field_ids = is_array( $form['children'] ?? null ) ? $form['children'] : [];
+		$fields = [];
+		foreach ( $field_ids as $field_id ) {
+			$field = $element_map[ (string) $field_id ] ?? null;
+			if ( $field && self::is_form_field_type( (string) ( $field['type'] ?? '' ) ) ) {
+				$fields[] = $field;
+			}
+		}
+		if ( empty( $fields ) ) {
+			foreach ( $elements as $element ) {
+				if ( ! is_array( $element ) ) continue;
+				if ( (string) ( $element['parentId'] ?? '' ) !== $form_id ) continue;
+				if ( ! self::is_form_field_type( (string) ( $element['type'] ?? '' ) ) ) continue;
+				$fields[] = $element;
+			}
+		}
+		return [ $form, $fields ];
+	}
+
+	private static function get_ordered_submission_fields( array $layout, string $form_id, array $fields ): array {
+		$flows = is_array( $layout['flows'] ?? null ) ? $layout['flows'] : [];
+		$related_ids = self::get_form_related_element_ids( $layout, $form_id );
+		$field_map = [];
+		foreach ( $fields as $field ) {
+			if ( ! is_array( $field ) ) continue;
+			$field_map[ self::normalize_form_field_name( $field ) ] = $field;
+		}
+
+		$field_order = [];
+		foreach ( self::get_matching_form_submission_flows( $flows, $form_id, $related_ids ) as $flow ) {
+			if ( ! is_array( $flow ) ) continue;
+			$nodes = is_array( $flow['nodes'] ?? null ) ? $flow['nodes'] : [];
+			foreach ( $nodes as $node ) {
+				if ( ! is_array( $node ) || 'submission-form' !== (string) ( $node['type'] ?? '' ) ) continue;
+				$config_fields = is_array( $node['config']['fields'] ?? null ) ? $node['config']['fields'] : [];
+				foreach ( $config_fields as $entry ) {
+					$field_name = '';
+					if ( is_string( $entry ) ) {
+						$field_name = $entry;
+					} elseif ( is_array( $entry ) ) {
+						$field_name = is_string( $entry['fieldName'] ?? null ) ? $entry['fieldName'] : ( is_string( $entry['name'] ?? null ) ? $entry['name'] : '' );
+					}
+					$field_name = strtolower( preg_replace( '/[^a-zA-Z0-9_-]+/', '_', (string) $field_name ) ?? '' );
+					$field_name = trim( $field_name, '_' );
+					if ( '' !== $field_name && ! in_array( $field_name, $field_order, true ) ) {
+						$field_order[] = $field_name;
+					}
+				}
+				break 2;
+			}
+		}
+
+		if ( empty( $field_order ) ) {
+			return $fields;
+		}
+
+		$ordered_fields = [];
+		foreach ( $field_order as $field_name ) {
+			if ( isset( $field_map[ $field_name ] ) ) {
+				$ordered_fields[] = $field_map[ $field_name ];
+			}
+		}
+
+		return ! empty( $ordered_fields ) ? $ordered_fields : $fields;
+	}
+
+	private static function decode_form_submission_record( array $row ): ?array {
+		$payload = json_decode( wp_unslash( (string) ( $row['meta_value'] ?? '' ) ), true );
+		if ( ! is_array( $payload ) ) {
+			return null;
+		}
+
+		$prefix = self::get_form_submission_meta_prefix();
+		$meta_key = (string) ( $row['meta_key'] ?? '' );
+		$form_id = isset( $payload['formId'] ) && is_string( $payload['formId'] ) && '' !== $payload['formId']
+			? $payload['formId']
+			: ( 0 === strpos( $meta_key, $prefix ) ? substr( $meta_key, strlen( $prefix ) ) : '' );
+
+		return [
+			'metaId' => absint( $row['meta_id'] ?? 0 ),
+			'postId' => absint( $row['post_id'] ?? 0 ),
+			'postTitle' => sanitize_text_field( (string) ( $row['post_title'] ?? '' ) ),
+			'postType' => sanitize_key( (string) ( $row['post_type'] ?? '' ) ),
+			'postStatus' => sanitize_key( (string) ( $row['post_status'] ?? '' ) ),
+			'formId' => sanitize_text_field( $form_id ),
+			'submittedAt' => sanitize_text_field( (string) ( $payload['submittedAt'] ?? '' ) ),
+			'submission' => $payload,
+		];
+	}
+
+	public static function get_form_submissions_for_admin( array $args = [] ): array {
+		global $wpdb;
+
+		$page = max( 1, absint( $args['page'] ?? 1 ) );
+		$per_page = max( 1, min( 200, absint( $args['perPage'] ?? 25 ) ) );
+		$post_id = absint( $args['postId'] ?? 0 );
+		$form_id = sanitize_key( (string) ( $args['formId'] ?? '' ) );
+		$search = sanitize_text_field( (string) ( $args['search'] ?? '' ) );
+		$offset = ( $page - 1 ) * $per_page;
+
+		$prefix = self::get_form_submission_meta_prefix();
+		$where = [ 'pm.meta_key LIKE %s' ];
+		$params = [ $wpdb->esc_like( $prefix ) . '%' ];
+
+		if ( $post_id > 0 ) {
+			$where[] = 'pm.post_id = %d';
+			$params[] = $post_id;
+		}
+
+		if ( '' !== $form_id ) {
+			$where[] = 'pm.meta_key = %s';
+			$params[] = $prefix . $form_id;
+		}
+
+		if ( '' !== $search ) {
+			$like = '%' . $wpdb->esc_like( $search ) . '%';
+			$where[] = '(pm.meta_value LIKE %s OR p.post_title LIKE %s OR pm.meta_key LIKE %s)';
+			$params[] = $like;
+			$params[] = $like;
+			$params[] = $like;
+		}
+
+		$where_sql = 'WHERE ' . implode( ' AND ', $where );
+		$from_sql = "FROM {$wpdb->postmeta} pm INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id {$where_sql}";
+
+		$count_sql = "SELECT COUNT(*) {$from_sql}";
+		$total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $params ) );
+
+		$query_params = $params;
+		$query_params[] = $per_page;
+		$query_params[] = $offset;
+		$rows_sql = "SELECT pm.meta_id, pm.post_id, pm.meta_key, pm.meta_value, p.post_title, p.post_type, p.post_status {$from_sql} ORDER BY pm.meta_id DESC LIMIT %d OFFSET %d";
+		$rows = $wpdb->get_results( $wpdb->prepare( $rows_sql, $query_params ), ARRAY_A );
+
+		$items = [];
+		foreach ( is_array( $rows ) ? $rows : [] as $row ) {
+			$record = self::decode_form_submission_record( $row );
+			if ( null !== $record ) {
+				$items[] = $record;
+			}
+		}
+
+		return [
+			'items' => $items,
+			'pagination' => [
+				'page' => $page,
+				'perPage' => $per_page,
+				'total' => $total,
+				'totalPages' => max( 1, (int) ceil( $total / $per_page ) ),
+			],
+			'filters' => [
+				'postId' => $post_id,
+				'formId' => $form_id,
+				'search' => $search,
+			],
+		];
+	}
+
+	public static function get_form_submission_record_for_admin( int $meta_id ): ?array {
+		global $wpdb;
+
+		if ( $meta_id <= 0 ) {
+			return null;
+		}
+
+		$sql = "SELECT pm.meta_id, pm.post_id, pm.meta_key, pm.meta_value, p.post_title, p.post_type, p.post_status FROM {$wpdb->postmeta} pm INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE pm.meta_id = %d LIMIT 1";
+		$row = $wpdb->get_row( $wpdb->prepare( $sql, $meta_id ), ARRAY_A );
+		if ( ! is_array( $row ) ) {
+			return null;
+		}
+
+		$prefix = self::get_form_submission_meta_prefix();
+		$meta_key = (string) ( $row['meta_key'] ?? '' );
+		if ( 0 !== strpos( $meta_key, $prefix ) ) {
+			return null;
+		}
+
+		return self::decode_form_submission_record( $row );
+	}
+
+	public static function delete_form_submission_record_for_admin( int $meta_id ): bool {
+		if ( $meta_id <= 0 ) {
+			return false;
+		}
+
+		$record = self::get_form_submission_record_for_admin( $meta_id );
+		if ( null === $record ) {
+			return false;
+		}
+
+		return (bool) delete_metadata_by_mid( 'post', $meta_id );
+	}
+
+	private static function upload_form_file( array $file ) {
+		if ( empty( $file['tmp_name'] ) || ! empty( $file['error'] ) ) {
+			return new WP_Error( 'invalid_upload', 'File upload failed.', [ 'status' => 400 ] );
+		}
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/media.php';
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+		$uploaded = wp_handle_upload( $file, [ 'test_form' => false ] );
+		if ( ! is_array( $uploaded ) || ! empty( $uploaded['error'] ) ) {
+			return new WP_Error( 'upload_failed', is_array( $uploaded ) ? ( $uploaded['error'] ?? 'Upload failed.' ) : 'Upload failed.', [ 'status' => 400 ] );
+		}
+
+		$attachment_id = 0;
+		$uploaded_file_path = isset( $uploaded['file'] ) ? (string) $uploaded['file'] : '';
+		if ( '' !== $uploaded_file_path ) {
+			$attachment = [
+				'post_mime_type' => sanitize_mime_type( (string) ( $uploaded['type'] ?? '' ) ),
+				'post_title' => self::sanitize_import_asset_stem( (string) ( $file['name'] ?? '' ), 'form-upload' ),
+				'post_content' => '',
+				'post_status' => 'inherit',
+			];
+			$inserted_attachment_id = wp_insert_attachment( $attachment, $uploaded_file_path, 0, true );
+			if ( ! is_wp_error( $inserted_attachment_id ) && $inserted_attachment_id ) {
+				$attachment_id = absint( $inserted_attachment_id );
+				$metadata = wp_generate_attachment_metadata( $attachment_id, $uploaded_file_path );
+				if ( is_array( $metadata ) ) {
+					wp_update_attachment_metadata( $attachment_id, $metadata );
+				}
+			}
+		}
+
+		return [
+			'url' => esc_url_raw( $uploaded['url'] ?? '' ),
+			'file' => sanitize_text_field( basename( (string) ( $uploaded['file'] ?? '' ) ) ),
+			'type' => sanitize_mime_type( (string) ( $uploaded['type'] ?? '' ) ),
+			'name' => sanitize_text_field( (string) ( $file['name'] ?? '' ) ),
+			'size' => isset( $file['size'] ) ? absint( $file['size'] ) : 0,
+			'attachmentId' => $attachment_id,
+		];
+	}
+
+	private static function normalize_uploaded_files( $file_value ): array {
+		if ( ! is_array( $file_value ) || empty( $file_value ) ) {
+			return [];
+		}
+
+		if ( isset( $file_value['tmp_name'] ) && ! is_array( $file_value['tmp_name'] ) ) {
+			return [ $file_value ];
+		}
+
+		$names = isset( $file_value['name'] ) && is_array( $file_value['name'] ) ? $file_value['name'] : [];
+		$tmp_names = isset( $file_value['tmp_name'] ) && is_array( $file_value['tmp_name'] ) ? $file_value['tmp_name'] : [];
+		$types = isset( $file_value['type'] ) && is_array( $file_value['type'] ) ? $file_value['type'] : [];
+		$errors = isset( $file_value['error'] ) && is_array( $file_value['error'] ) ? $file_value['error'] : [];
+		$sizes = isset( $file_value['size'] ) && is_array( $file_value['size'] ) ? $file_value['size'] : [];
+		$normalized = [];
+
+		foreach ( $tmp_names as $index => $tmp_name ) {
+			$normalized[] = [
+				'name' => $names[ $index ] ?? '',
+				'tmp_name' => $tmp_name,
+				'type' => $types[ $index ] ?? '',
+				'error' => $errors[ $index ] ?? 0,
+				'size' => $sizes[ $index ] ?? 0,
+			];
+		}
+
+		return $normalized;
+	}
+
+	private static function collect_form_submission_fields( array $fields, array $params, array $files ) {
+		$values = [];
+		$flat_values = [];
+		foreach ( $fields as $field ) {
+			$type = (string) ( $field['type'] ?? '' );
+			$base = is_array( $field['base'] ?? null ) ? $field['base'] : [];
+			$field_name = self::normalize_form_field_name( $field );
+			$allows_multiple_files = ! empty( $base['allowMultipleFiles'] );
+			$label = isset( $base['label'] ) && is_string( $base['label'] ) && trim( $base['label'] ) !== ''
+				? sanitize_text_field( $base['label'] )
+				: sanitize_text_field( (string) ( $field['name'] ?? 'Field' ) );
+			$required = ! empty( $base['required'] );
+			$value = null;
+
+			if ( 'file-upload' === $type ) {
+				$file_value = $files[ $field_name ] ?? null;
+				$normalized_files = self::normalize_uploaded_files( $file_value );
+				if ( ! empty( $normalized_files ) ) {
+					$uploaded_files = [];
+					foreach ( $normalized_files as $normalized_file ) {
+						$uploaded = self::upload_form_file( $normalized_file );
+						if ( is_wp_error( $uploaded ) ) {
+							return $uploaded;
+						}
+						$uploaded_files[] = $uploaded;
+					}
+					$value = $allows_multiple_files ? $uploaded_files : ( $uploaded_files[0] ?? null );
+				}
+			} elseif ( 'checkbox' === $type ) {
+				$value = ! empty( $params[ $field_name ] );
+			} elseif ( 'rich-text-editor' === $type ) {
+				$value = isset( $params[ $field_name ] ) ? wp_kses_post( wp_unslash( (string) $params[ $field_name ] ) ) : '';
+			} elseif ( 'captcha' === $type ) {
+				$value = isset( $params[ $field_name ] ) ? sanitize_text_field( (string) $params[ $field_name ] ) : 'captcha-placeholder';
+			} else {
+				$value = isset( $params[ $field_name ] ) ? sanitize_textarea_field( wp_unslash( (string) $params[ $field_name ] ) ) : '';
+			}
+
+			if ( 'checkbox' === $type ) {
+				$has_value = ( true === $value );
+			} elseif ( 'file-upload' === $type ) {
+				$has_value = is_array( $value )
+					? ( isset( $value['url'] ) ? ! empty( $value['url'] ) : ! empty( $value ) )
+					: false;
+			} elseif ( 'rich-text-editor' === $type ) {
+				$has_value = '' !== trim( wp_strip_all_tags( (string) $value ) );
+			} else {
+				$has_value = '' !== trim( (string) ( is_array( $value ) ? wp_json_encode( $value ) : $value ) );
+			}
+			if ( $required && ! $has_value ) {
+				return new WP_Error( 'missing_required_field', sprintf( '%s is required.', $label ), [ 'status' => 422 ] );
+			}
+
+			$values[] = [
+				'id' => sanitize_text_field( (string) ( $field['id'] ?? '' ) ),
+				'name' => $field_name,
+				'label' => $label,
+				'type' => $type,
+				'value' => $value,
+			];
+			$flat_values[ $field_name ] = $value;
+		}
+
+		return [
+			'fields' => $values,
+			'values' => $flat_values,
+		];
+	}
+
+	private static function collect_fallback_submission_fields( array $params, array $files ): array {
+		$ignored_param_keys = [ 'post_id', 'form_id', '_wpnonce', '_wp_http_referer', 'action' ];
+		$values = [];
+		$flat_values = [];
+
+		foreach ( $params as $key => $raw_value ) {
+			$field_name = sanitize_key( (string) $key );
+			if ( '' === $field_name || in_array( $field_name, $ignored_param_keys, true ) ) {
+				continue;
+			}
+			if ( isset( $files[ $field_name ] ) ) {
+				continue;
+			}
+
+			$value = is_array( $raw_value )
+				? array_map(
+					static fn( $entry ) => sanitize_textarea_field( wp_unslash( (string) $entry ) ),
+					$raw_value
+				)
+				: sanitize_textarea_field( wp_unslash( (string) $raw_value ) );
+
+			$values[] = [
+				'id' => $field_name,
+				'name' => $field_name,
+				'label' => sanitize_text_field( ucwords( str_replace( [ '-', '_' ], ' ', $field_name ) ) ),
+				'type' => is_array( $value ) ? 'group' : 'text-field',
+				'value' => $value,
+			];
+			$flat_values[ $field_name ] = $value;
+		}
+
+		foreach ( $files as $key => $file_value ) {
+			$field_name = sanitize_key( (string) $key );
+			if ( '' === $field_name ) {
+				continue;
+			}
+			$normalized_files = self::normalize_uploaded_files( $file_value );
+			if ( empty( $normalized_files ) ) {
+				continue;
+			}
+			$uploaded_files = [];
+			foreach ( $normalized_files as $normalized_file ) {
+				$uploaded = self::upload_form_file( $normalized_file );
+				if ( is_wp_error( $uploaded ) ) {
+					continue 2;
+				}
+				$uploaded_files[] = $uploaded;
+			}
+			$values[] = [
+				'id' => $field_name,
+				'name' => $field_name,
+				'label' => sanitize_text_field( ucwords( str_replace( [ '-', '_' ], ' ', $field_name ) ) ),
+				'type' => 'file-upload',
+				'value' => 1 === count( $uploaded_files ) ? $uploaded_files[0] : $uploaded_files,
+			];
+			$flat_values[ $field_name ] = 1 === count( $uploaded_files ) ? $uploaded_files[0] : $uploaded_files;
+		}
+
+		return [
+			'fields' => $values,
+			'values' => $flat_values,
+		];
+	}
+
+	private static function store_form_submission( int $post_id, string $form_id, array $submission ): bool {
+		return false !== add_post_meta( $post_id, self::get_form_submission_meta_prefix() . sanitize_key( $form_id ), wp_slash( wp_json_encode( $submission ) ) );
+	}
+
+	private static function send_form_submission_email( int $post_id, string $form_id, array $config, array $submission ): bool {
+		$to = sanitize_email( (string) ( $config['actions']['email']['to'] ?? '' ) );
+		if ( '' === $to || ! is_email( $to ) ) return false;
+		$subject = sanitize_text_field( (string) ( $config['actions']['email']['subject'] ?? 'New form submission' ) );
+		$post_title = get_the_title( $post_id );
+		$lines = [
+			sprintf( 'Post: %s (#%d)', $post_title ?: 'Untitled', $post_id ),
+			sprintf( 'Form: %s', $form_id ),
+			'',
+		];
+		foreach ( $submission['fields'] as $field ) {
+			$value = $field['value'];
+			if ( is_array( $value ) ) {
+				$value = wp_json_encode( $value );
+			} elseif ( is_bool( $value ) ) {
+				$value = $value ? 'true' : 'false';
+			}
+			$lines[] = sprintf( '%s: %s', $field['label'], (string) $value );
+		}
+		return wp_mail( $to, $subject, implode( "\n", $lines ) );
+	}
+
+	private static function send_form_submission_webhook( array $config, array $payload ) {
+		$url = esc_url_raw( (string) ( $config['actions']['webhook']['url'] ?? '' ) );
+		if ( '' === $url ) return false;
+		$response = wp_remote_post( $url, [
+			'timeout' => 12,
+			'headers' => [ 'Content-Type' => 'application/json' ],
+			'body' => wp_json_encode( $payload ),
+		] );
+		if ( is_wp_error( $response ) ) return $response;
+		$status = wp_remote_retrieve_response_code( $response );
+		return $status >= 200 && $status < 300;
+	}
+
+	public static function submit_form( WP_REST_Request $request ) {
+		$post_id = absint( $request->get_param( 'post_id' ) );
+		$form_id = sanitize_text_field( (string) $request->get_param( 'form_id' ) );
+		$result = self::perform_submit_form( $post_id, $form_id, $request->get_params(), $request->get_file_params() );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return rest_ensure_response( $result );
+	}
+
+	public static function ajax_submit_form() {
+		$result = self::perform_submit_form(
+			absint( $_REQUEST['post_id'] ?? 0 ),
+			sanitize_text_field( (string) ( $_REQUEST['form_id'] ?? '' ) ),
+			wp_unslash( $_POST ),
+			$_FILES
+		);
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
+		}
+		wp_send_json( $result );
+	}
+
+	private static function perform_submit_form( int $post_id, string $form_id, array $params, array $files ) {
+		if ( ! $post_id ) {
+			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
+		}
+		if ( '' === $form_id ) {
+			return new WP_Error( 'invalid_form_id', 'A valid form ID is required.', [ 'status' => 400 ] );
+		}
+		$post = get_post( $post_id );
+		if ( ! $post ) {
+			return new WP_Error( 'not_found', 'Post not found.', [ 'status' => 404 ] );
+		}
+		$layout = self::get_submission_layout( $post_id );
+		$form = null;
+		$fields = [];
+		if ( is_array( $layout ) ) {
+			[ $form, $fields ] = self::find_form_elements( $layout, $form_id );
+			if ( $form ) {
+				$fields = self::get_ordered_submission_fields( $layout, $form_id, $fields );
+			}
+		}
+
+		$config = self::normalize_form_config( is_array( $form['base']['formConfig'] ?? null ) ? $form['base']['formConfig'] : [] );
+		$submission_node = is_array( $layout ) ? self::get_form_submission_node( $layout, $form_id ) : null;
+		$action_config = self::normalize_submission_action_config(
+			is_array( $submission_node['config']['actions'] ?? null ) ? $submission_node['config']['actions'] : [],
+			$submission_node ? [] : ( $config['actions'] ?? [] )
+		);
+		$submission = $form
+			? self::collect_form_submission_fields( $fields, $params, $files )
+			: self::collect_fallback_submission_fields( $params, $files );
+		if ( is_wp_error( $submission ) ) {
+			return $submission;
+		}
+
+		$submission_payload = [
+			'id' => uniqid( 'fbsub_', true ),
+			'postId' => $post_id,
+			'formId' => $form_id,
+			'submittedAt' => current_time( 'mysql', true ),
+			'fields' => $submission['fields'],
+			'values' => $submission['values'],
+			'source' => [
+				'url' => esc_url_raw( wp_get_referer() ?: get_permalink( $post_id ) ?: '' ),
+				'userAgent' => isset( $_SERVER['HTTP_USER_AGENT'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ) : '',
+			],
+		];
+
+		$errors = [];
+		$created = [];
+		if ( ! empty( $action_config['store']['enabled'] ) ) {
+			if ( ! self::store_form_submission( $post_id, $form_id, $submission_payload ) ) {
+				$errors[] = 'store';
+			}
+		}
+		if ( ! empty( $action_config['email']['enabled'] ) ) {
+			if ( ! self::send_form_submission_email( $post_id, $form_id, [ 'actions' => [ 'email' => $action_config['email'] ] ], $submission_payload ) ) {
+				$errors[] = 'email';
+			}
+		}
+		if ( ! empty( $action_config['webhook']['enabled'] ) ) {
+			$webhook_result = self::send_form_submission_webhook( [ 'actions' => [ 'webhook' => $action_config['webhook'] ] ], $submission_payload );
+			if ( is_wp_error( $webhook_result ) || true !== $webhook_result ) {
+				$errors[] = 'webhook';
+			}
+		}
+		if ( ! empty( $action_config['createPost']['enabled'] ) ) {
+			$post_result = self::create_post_from_submission( $action_config['createPost'], $submission_payload );
+			if ( is_wp_error( $post_result ) ) {
+				$errors[] = 'createPost';
+			} else {
+				$created['post'] = $post_result;
+			}
+		}
+		if ( ! empty( $action_config['createCategory']['enabled'] ) ) {
+			$category_result = self::create_term_from_submission( 'category', $action_config['createCategory'], $submission_payload );
+			if ( is_wp_error( $category_result ) ) {
+				$errors[] = 'createCategory';
+			} else {
+				$created['category'] = $category_result;
+			}
+		}
+		if ( ! empty( $action_config['createProductCategory']['enabled'] ) ) {
+			$product_category_result = self::create_term_from_submission( 'product_cat', $action_config['createProductCategory'], $submission_payload );
+			if ( is_wp_error( $product_category_result ) ) {
+				$errors[] = 'createProductCategory';
+			} else {
+				$created['productCategory'] = $product_category_result;
+			}
+		}
+		if ( ! empty( $action_config['createProduct']['enabled'] ) ) {
+			$product_result = self::create_product_from_submission( $action_config['createProduct'], $submission_payload );
+			if ( is_wp_error( $product_result ) ) {
+				$errors[] = 'createProduct';
+			} else {
+				$created['product'] = $product_result;
+			}
+		}
+
+		if ( ! empty( $errors ) ) {
+			return new WP_Error( 'submit_failed', $config['errorMessage'], [ 'status' => 500, 'actions' => $errors ] );
+		}
+
+		return [
+			'success' => true,
+			'message' => $config['successMessage'],
+			'submission' => $submission_payload,
+			'created' => $created,
+			'values' => $submission_payload['values'],
+		];
 	}
 
 	// Site-wide colour styles stored as a WP option (not per-post).
@@ -1005,6 +2315,7 @@ class FrameBuilder_API {
 				];
 			}, $posts ),
 			'products' => $products,
+			'formTargets' => self::get_form_action_targets(),
 		];
 	}
 

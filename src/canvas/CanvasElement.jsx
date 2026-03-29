@@ -9,6 +9,8 @@ import { getHoverAnimationStyle, getLoopAnimationStyle, useLoopAnimationPlayback
 import { getResolvedRichTextHtml, plainTextToRichTextHtml } from '../components/richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from '../components/videoUtils';
 import { buildElementRotationTransform, hasElement3DRotation } from '../utils/elementTransform';
+import { isFormContainerType, isFormFieldType, isFormSubmitButtonType } from '../domain/formModel';
+import { FORM_STYLE_DEFAULTS, getFormIndicatorOffset, getFormSelectPaddingRight, getFormStateVisualModel, getFormVisualModel } from '../domain/formStyleModel';
 
 function rectStateChanged(current, next) {
   if (current === next) return false;
@@ -227,7 +229,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const dropTargetElementId = id;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!el?.componentInstance;
   const canNestChildrenOnto = !!onDropOntoElement
-    && el.type === 'frame'
+    && (el.type === 'frame' || isFormContainerType(el.type))
     && !insideComponentInstanceOnPage
     && !isComponentInstanceOnPage;
   const hasGradientFrameStroke = typeof styles?.borderColor === 'string' && styles.borderColor.includes('gradient(');
@@ -251,6 +253,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     && !resolved?.absoluteInLayout
     && !isFixed;
   const effectiveFlowPosition = isRelative || isSticky || isFlowInLayout;
+  const isSurfaceStyledFormField = isFormFieldType(el.type);
 
   // ── Parent flex direction (needed for fill mode) ───────────
   const parentResolved = parentEl ? resolveElementWithVariables(parentEl, bpId, pageVariables, globalVariables) : null;
@@ -324,13 +327,15 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   };
 
   useEffect(() => {
-    if (!el || el.type !== 'text') return;
-    ensureGoogleFontLoaded(styles?.fontFamily ?? 'Inter', {
-      text: resolved?.text || 'Text',
-      weight: styles?.fontWeight ?? 400,
+    if (!el) return;
+    const shouldLoadFont = el.type === 'text' || isFormFieldType(el.type) || isFormSubmitButtonType(el.type);
+    if (!shouldLoadFont) return;
+    ensureGoogleFontLoaded(styles?.fontFamily ?? FORM_STYLE_DEFAULTS.fontFamily, {
+      text: resolved?.text || resolved?.label || resolved?.placeholder || el.name || 'Text',
+      weight: styles?.fontWeight ?? (isFormSubmitButtonType(el.type) ? 600 : 400),
       style: styles?.fontStyle ?? 'normal',
     });
-  }, [el?.type, resolved?.text, styles?.fontFamily, styles?.fontStyle, styles?.fontWeight]);
+  }, [el, resolved?.label, resolved?.placeholder, resolved?.text, styles?.fontFamily, styles?.fontStyle, styles?.fontWeight]);
 
   useEffect(() => {
     if (!el || el.type !== 'text') return;
@@ -764,6 +769,34 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     ...(activeAnimationStyle ?? {}),
   };
 
+  const elementBorderRadiusValue = (() => {
+    if (styles?.borderRadiusMode === 'independent') {
+      const tl = typeof styles.borderRadiusTL === 'number' ? styles.borderRadiusTL : (styles.borderRadius ?? 0);
+      const tr = typeof styles.borderRadiusTR === 'number' ? styles.borderRadiusTR : (styles.borderRadius ?? 0);
+      const br = typeof styles.borderRadiusBR === 'number' ? styles.borderRadiusBR : (styles.borderRadius ?? 0);
+      const bl = typeof styles.borderRadiusBL === 'number' ? styles.borderRadiusBL : (styles.borderRadius ?? 0);
+      return `${tl}px ${tr}px ${br}px ${bl}px`;
+    }
+    return typeof styles?.borderRadius === 'number' ? `${styles.borderRadius}px` : (styles?.borderRadius ?? '0px');
+  })();
+
+  if (isSurfaceStyledFormField) {
+    inlineStyle.backgroundColor = undefined;
+    inlineStyle.backgroundImage = undefined;
+    inlineStyle.borderRadius = undefined;
+    inlineStyle.border = undefined;
+    inlineStyle.boxShadow = undefined;
+    inlineStyle.overflow = 'visible';
+    inlineStyle.display = undefined;
+    inlineStyle.gap = undefined;
+    inlineStyle.paddingTop = undefined;
+    inlineStyle.paddingRight = undefined;
+    inlineStyle.paddingBottom = undefined;
+    inlineStyle.paddingLeft = undefined;
+    inlineStyle.alignItems = undefined;
+    inlineStyle.justifyContent = undefined;
+  }
+
   const textStyle = el.type === 'text' ? {
     fontFamily: familyToFontStack(styles?.fontFamily ?? 'Inter'),
     fontWeight: styles?.fontWeight ?? 400,
@@ -1196,6 +1229,472 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           }}
         />
       ) : null}
+      {isFormContainerType(el.type) ? (
+        <div
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: 10,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '5px 8px',
+            borderRadius: 999,
+            background: 'rgba(5,10,24,0.64)',
+            color: 'rgba(255,255,255,0.92)',
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            pointerEvents: 'none',
+          }}
+        >
+          <span>Form</span>
+          <span style={{ opacity: 0.6 }}>{children.length} fields</span>
+        </div>
+      ) : null}
+      {isFormFieldType(el.type) ? (() => {
+        const label = resolved?.label || el.name || 'Field';
+        const placeholder = resolved?.placeholder || '';
+        const helperText = resolved?.helperText || '';
+        const options = Array.isArray(resolved?.fieldOptions) ? resolved.fieldOptions.filter((option) => option?.enabled !== false) : [];
+        const visualModel = getFormVisualModel(styles);
+        const stateVisualModel = getFormStateVisualModel(styles, { visualModel });
+        const previewState = stateVisualModel.previewState;
+        const isHoverStatePreview = previewState === 'hover';
+        const isFocusStatePreview = previewState === 'focus';
+        const isCheckedStatePreview = previewState === 'checked';
+        const fontFamily = familyToFontStack(visualModel.fontFamily);
+        const fontSize = visualModel.fontSize;
+        const lineHeight = visualModel.lineHeight;
+        const letterSpacing = visualModel.letterSpacing;
+        const fieldGap = visualModel.gap;
+        const paddingTop = visualModel.paddingTop;
+        const paddingRight = visualModel.paddingRight;
+        const paddingBottom = visualModel.paddingBottom;
+        const paddingLeft = visualModel.paddingLeft;
+        const textAlign = visualModel.textAlign;
+        const textColor = visualModel.textColor;
+        const fontWeight = visualModel.fontWeight;
+        const labelStyle = {
+          fontFamily,
+          fontSize: visualModel.labelFontSize,
+          fontWeight: Math.max(600, fontWeight),
+          color: textColor,
+          letterSpacing,
+          lineHeight,
+          textAlign,
+        };
+        const bodyTextStyle = {
+          fontFamily,
+          fontSize,
+          fontWeight,
+          fontStyle: styles?.fontStyle ?? 'normal',
+          color: textColor,
+          letterSpacing,
+          lineHeight,
+          textAlign,
+          textDecoration: styles?.textDecoration ?? 'none',
+        };
+        const helperStyle = {
+          ...bodyTextStyle,
+          fontSize: visualModel.helperFontSize,
+          color: visualModel.helperColor,
+        };
+        const placeholderColor = visualModel.placeholderColor;
+        const indicatorColor = visualModel.iconColor;
+        const selectIcon = visualModel.selectIcon;
+        const checkboxAccentColor = styles?.checkboxAccentColor ?? FORM_STYLE_DEFAULTS.checkboxAccentColor;
+        const controlBorderColor = isFocusStatePreview
+          ? stateVisualModel.focusBorderColor
+          : (isHoverStatePreview ? stateVisualModel.hoverBorderColor : visualModel.borderColor);
+        const controlBackgroundColor = isFocusStatePreview
+          ? stateVisualModel.focusBackgroundColor
+          : (isHoverStatePreview ? stateVisualModel.hoverBackgroundColor : visualModel.backgroundColor);
+        const controlBoxShadow = isFocusStatePreview ? stateVisualModel.focusBoxShadow : visualModel.boxShadow;
+        const choiceControlBorderColor = isCheckedStatePreview
+          ? stateVisualModel.checkedBorderColor
+          : controlBorderColor;
+        const choiceControlBackgroundColor = isCheckedStatePreview
+          ? stateVisualModel.checkedBackgroundColor
+          : controlBackgroundColor;
+        const choiceControlBoxShadow = isCheckedStatePreview
+          ? stateVisualModel.checkedBoxShadow
+          : controlBoxShadow;
+        const stateTransition = `${Math.max(0, stateVisualModel.stateTransitionDuration)}s ${stateVisualModel.stateTransitionEasing}`;
+        const shellStyle = {
+          position: 'absolute',
+          inset: 0,
+          borderRadius: elementBorderRadiusValue,
+          border: `${visualModel.borderWidth}px ${visualModel.borderStyle} ${controlBorderColor}`,
+          background: controlBackgroundColor,
+          color: '#0f172a',
+          pointerEvents: 'none',
+          overflow: 'hidden',
+          boxShadow: controlBoxShadow,
+        };
+        const controlShellStyle = {
+          ...shellStyle,
+          position: 'relative',
+          inset: 'auto',
+          minHeight: visualModel.controlMinHeight,
+          width: '100%',
+          boxSizing: 'border-box',
+          flex: '0 0 auto',
+        };
+        const nativeControlStyle = {
+          width: '100%',
+          minHeight: visualModel.controlMinHeight,
+          display: 'block',
+          boxSizing: 'border-box',
+          border: 0,
+          outline: 'none',
+          background: 'transparent',
+          color: textColor,
+          boxShadow: 'none',
+          WebkitBoxShadow: 'none',
+          margin: 0,
+          maxWidth: 'none',
+          minWidth: 0,
+          borderRadius: 0,
+          ...bodyTextStyle,
+        };
+        const transparentShellStyle = {
+          ...shellStyle,
+          border: 'none',
+          borderRadius: 0,
+          background: 'transparent',
+          boxShadow: 'none',
+        };
+        const stackHeight = heightMode === 'hug' ? 'auto' : '100%';
+        const buildFieldGridRows = (controlMinHeight) => {
+          const rows = [];
+          if (label) rows.push('auto');
+          rows.push(`minmax(${controlMinHeight}px, ${heightMode === 'hug' ? 'auto' : '1fr'})`);
+          if (helperText) rows.push('auto');
+          return rows.join(' ');
+        };
+        const richTextPreviewHtml = typeof resolved?.defaultValue === 'string' ? resolved.defaultValue.trim() : '';
+        const richTextPreviewPlainText = richTextPreviewHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        const richTextPreviewIsEmpty = richTextPreviewPlainText.length === 0;
+        const choiceControlStyle = {
+          width: FORM_STYLE_DEFAULTS.checkboxSize,
+          height: FORM_STYLE_DEFAULTS.checkboxSize,
+          minWidth: FORM_STYLE_DEFAULTS.checkboxSize,
+          minHeight: FORM_STYLE_DEFAULTS.checkboxSize,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxSizing: 'border-box',
+          border: `${visualModel.borderWidth}px ${visualModel.borderStyle} ${choiceControlBorderColor}`,
+          borderRadius: elementBorderRadiusValue,
+          background: choiceControlBackgroundColor,
+          boxShadow: choiceControlBoxShadow,
+          color: checkboxAccentColor,
+          transition: `border-color ${stateTransition}, background-color ${stateTransition}, box-shadow ${stateTransition}, color ${stateTransition}`,
+          flex: '0 0 auto',
+        };
+        const checkboxMarkStyle = {
+          width: 8,
+          height: 5,
+          borderLeft: `1.8px solid ${checkboxAccentColor}`,
+          borderBottom: `1.8px solid ${checkboxAccentColor}`,
+          transform: 'rotate(-45deg) translateY(-1px)',
+        };
+        const radioDotStyle = {
+          width: 6,
+          height: 6,
+          borderRadius: '50%',
+          background: checkboxAccentColor,
+        };
+
+        if (el.type === 'checkbox') {
+          const isChecked = isCheckedStatePreview || !!resolved?.defaultValue;
+          return (
+            <div style={{ ...transparentShellStyle, display: 'grid', height: '100%', alignContent: 'center', gap: fieldGap }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: fieldGap, width: '100%', height: '100%', color: textColor, ...bodyTextStyle }}>
+                <span aria-hidden="true" style={choiceControlStyle}>{isChecked ? <span style={checkboxMarkStyle} /> : null}</span>
+                <span>{label}</span>
+              </label>
+              {helperText ? <span style={helperStyle}>{helperText}</span> : null}
+            </div>
+          );
+        }
+
+        if (el.type === 'radio-group') {
+          const checkedValue = isCheckedStatePreview
+            ? (resolved?.defaultValue || options[0]?.value || '')
+            : (resolved?.defaultValue || '');
+          return (
+            <div style={{ ...transparentShellStyle, display: 'grid', height: '100%', alignContent: 'start', gap: fieldGap }}>
+              {label ? <span style={labelStyle}>{label}</span> : null}
+              <div style={{ display: 'grid', gap: fieldGap }}>
+                {options.length
+                  ? options.map((option) => (
+                      <label key={option.id || option.value} style={{ display: 'flex', alignItems: 'center', gap: fieldGap, color: textColor, ...bodyTextStyle }}>
+                        <span aria-hidden="true" style={{ ...choiceControlStyle, borderRadius: '999px' }}>{checkedValue === option.value ? <span style={radioDotStyle} /> : null}</span>
+                        <span>{option.label}</span>
+                      </label>
+                    ))
+                  : <span style={bodyTextStyle}>{label}</span>}
+              </div>
+              {helperText ? <span style={helperStyle}>{helperText}</span> : null}
+            </div>
+          );
+        }
+
+        if (el.type === 'dropdown') {
+          return (
+            <div style={{ ...transparentShellStyle, display: 'grid', height: '100%', alignContent: 'start', gap: fieldGap }}>
+              {label ? <span style={labelStyle}>{label}</span> : null}
+              <div style={{ ...controlShellStyle }}>
+                <select
+                  value={resolved?.defaultValue ?? ''}
+                  disabled
+                  tabIndex={-1}
+                  style={{
+                    ...nativeControlStyle,
+                    appearance: 'none',
+                    WebkitAppearance: 'none',
+                    padding: `${paddingTop}px ${getFormSelectPaddingRight(paddingRight)}px ${paddingBottom}px ${paddingLeft}px`,
+                    color: placeholderColor,
+                  }}
+                >
+                  <option value="">{placeholder || 'Select an option'}</option>
+                  {options.map((option) => (
+                    <option key={option.id || option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                {selectIcon !== 'none' ? <span aria-hidden="true" style={{ position: 'absolute', right: getFormIndicatorOffset(paddingRight), top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: indicatorColor, pointerEvents: 'none' }}>{selectIcon === 'chevron' ? '⌄' : '▼'}</span> : null}
+              </div>
+              {helperText ? <span style={helperStyle}>{helperText}</span> : null}
+            </div>
+          );
+        }
+
+        if (el.type === 'textarea-field') {
+          const previewContent = `${resolved?.defaultValue ?? ''}`.trim();
+          const controlMinHeight = Math.max(96, visualModel.controlMinHeight);
+          return (
+            <div style={{ ...transparentShellStyle, display: 'grid', height: stackHeight, alignContent: 'start', gap: fieldGap, gridTemplateRows: buildFieldGridRows(controlMinHeight) }}>
+              {label ? <span style={labelStyle}>{label}</span> : null}
+              <div style={{ ...controlShellStyle, minHeight: controlMinHeight, height: heightMode === 'hug' ? 'auto' : '100%', display: 'flex', alignItems: 'stretch' }}>
+                <textarea
+                  value={previewContent || placeholder || 'Write a longer message...'}
+                  readOnly
+                  tabIndex={-1}
+                  rows={4}
+                  style={{
+                    ...nativeControlStyle,
+                    minHeight: controlMinHeight,
+                    height: heightMode === 'hug' ? 'auto' : '100%',
+                    color: previewContent ? textColor : placeholderColor,
+                    padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`,
+                    resize: 'none',
+                  }}
+                />
+              </div>
+              {helperText ? <span style={helperStyle}>{helperText}</span> : null}
+            </div>
+          );
+        }
+
+        if (el.type === 'rich-text-editor') {
+          const controlMinHeight = Math.max(120, visualModel.controlMinHeight);
+          const editorMinHeight = Math.max(96, visualModel.controlMinHeight);
+          const toolbarStyle = {
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: 8,
+            minHeight: 36,
+            background: 'rgba(15,23,42,0.04)',
+            padding: `8px ${paddingRight}px 8px ${paddingLeft}px`,
+            borderBottom: `${visualModel.borderWidth}px ${visualModel.borderStyle} ${controlBorderColor}`,
+            ...bodyTextStyle,
+            fontSize,
+            color: textColor,
+          };
+          const toolbarButtonStyle = {
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minWidth: 30,
+            height: 28,
+            padding: '0 8px',
+            border: 0,
+            borderRadius: 8,
+            background: 'transparent',
+            color: 'inherit',
+            font: 'inherit',
+            fontWeight: 600,
+            lineHeight: 1,
+            opacity: 0.78,
+          };
+          return (
+            <div style={{ ...transparentShellStyle, display: 'grid', height: stackHeight, alignContent: 'start', gap: fieldGap, gridTemplateRows: buildFieldGridRows(controlMinHeight) }}>
+              {label ? <span style={labelStyle}>{label}</span> : null}
+              <div style={{ ...controlShellStyle, display: 'grid', gridTemplateRows: `auto minmax(${editorMinHeight}px, ${heightMode === 'hug' ? 'auto' : '1fr'})`, minHeight: controlMinHeight, height: heightMode === 'hug' ? 'auto' : '100%' }}>
+                <div style={toolbarStyle}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span style={toolbarButtonStyle}>P</span>
+                    <span style={toolbarButtonStyle}>H2</span>
+                    <span style={toolbarButtonStyle}>Q</span>
+                  </span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span style={toolbarButtonStyle}><strong>B</strong></span>
+                    <span style={toolbarButtonStyle}><em>I</em></span>
+                    <span style={toolbarButtonStyle}><span style={{ textDecoration: 'underline' }}>U</span></span>
+                    <span style={toolbarButtonStyle}>Tx</span>
+                  </span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span style={toolbarButtonStyle}>•</span>
+                    <span style={toolbarButtonStyle}>1.</span>
+                    <span style={toolbarButtonStyle}>Link</span>
+                    <span style={toolbarButtonStyle}>↺</span>
+                    <span style={toolbarButtonStyle}>↻</span>
+                  </span>
+                </div>
+                <div
+                  className="fb-builder-form-richtext__editor"
+                  style={{
+                    padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`,
+                    minHeight: editorMinHeight,
+                    height: heightMode === 'hug' ? 'auto' : '100%',
+                    overflow: heightMode === 'hug' ? 'visible' : 'auto',
+                    color: richTextPreviewIsEmpty ? placeholderColor : textColor,
+                    ...bodyTextStyle,
+                  }}
+                >
+                  {richTextPreviewIsEmpty ? (
+                    <span>{placeholder || 'Write formatted content...'}</span>
+                  ) : (
+                    <div
+                      className="fb-builder-form-richtext__content fb-text-content"
+                      dangerouslySetInnerHTML={{ __html: richTextPreviewHtml }}
+                    />
+                  )}
+                </div>
+              </div>
+              {helperText ? <span style={helperStyle}>{helperText}</span> : null}
+            </div>
+          );
+        }
+
+        if (el.type === 'file-upload') {
+          const allowsMultipleFiles = resolved?.allowMultipleFiles === true;
+          return (
+            <div style={{ ...transparentShellStyle, display: 'grid', height: '100%', alignContent: 'start', gap: fieldGap }}>
+              {label ? <span style={labelStyle}>{label}</span> : null}
+              <div style={{ display: 'grid', placeItems: 'center', gap: fieldGap, height: '100%', padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`, textAlign: 'center', border: `1.5px dashed ${controlBorderColor}`, borderRadius: elementBorderRadiusValue, background: controlBackgroundColor, boxShadow: controlBoxShadow }}>
+                <span style={{ ...labelStyle, textAlign: 'center' }}>{allowsMultipleFiles ? 'Multi-file dropzone' : 'File dropzone'}</span>
+                <span style={{ ...helperStyle, textAlign: 'center', color: placeholderColor }}>{placeholder || 'Drop files here or browse'}</span>
+                <span style={{ ...helperStyle, textAlign: 'center', fontSize: Math.max(10, visualModel.helperFontSize - 1), opacity: 0.85 }}>{allowsMultipleFiles ? 'Accepts multiple files' : 'Accepts one file'}</span>
+              </div>
+              {helperText ? <span style={helperStyle}>{helperText}</span> : null}
+            </div>
+          );
+        }
+
+        if (el.type === 'captcha') {
+          return (
+            <div style={{ ...transparentShellStyle, display: 'grid', placeItems: 'center', gap: fieldGap, height: '100%', padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`, textAlign: 'center' }}>
+              <span style={{ ...labelStyle, color: FORM_STYLE_DEFAULTS.captchaLabelColor, textAlign: 'center' }}>Captcha</span>
+              <span style={{ ...bodyTextStyle, fontSize: visualModel.captchaHelperFontSize, color: FORM_STYLE_DEFAULTS.captchaHelperColor, textAlign: 'center' }}>{placeholder || 'Provider-backed verification'}</span>
+            </div>
+          );
+        }
+
+        return (
+          <div style={{ ...transparentShellStyle, display: 'grid', height: '100%', alignContent: 'start', gap: fieldGap }}>
+            {label ? <span style={labelStyle}>{label}</span> : null}
+            <div style={{ ...controlShellStyle }}>
+              <input
+                type="text"
+                value={placeholder || 'Type here...'}
+                readOnly
+                tabIndex={-1}
+                style={{
+                  ...nativeControlStyle,
+                  color: placeholderColor,
+                  padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`,
+                }}
+              />
+            </div>
+            {helperText ? <span style={helperStyle}>{helperText}</span> : null}
+          </div>
+        );
+      })() : null}
+      {isFormSubmitButtonType(el.type) ? (() => {
+        const label = resolved?.label || el.name || 'Submit';
+        const visualModel = getFormVisualModel(styles, { submit: true });
+        const stateVisualModel = getFormStateVisualModel(styles, { submit: true, visualModel });
+        const previewState = stateVisualModel.previewState;
+        const fontFamily = familyToFontStack(visualModel.fontFamily);
+        const fontSize = visualModel.fontSize;
+        const lineHeight = visualModel.lineHeight;
+        const letterSpacing = visualModel.letterSpacing;
+        const paddingTop = visualModel.paddingTop;
+        const paddingRight = visualModel.paddingRight;
+        const paddingBottom = visualModel.paddingBottom;
+        const paddingLeft = visualModel.paddingLeft;
+        let textColor = visualModel.textColor;
+        let backgroundColor = visualModel.backgroundColor;
+        let borderColor = visualModel.borderColor;
+        let buttonLabel = label;
+        if (previewState === 'hover') {
+          textColor = stateVisualModel.hoverTextColor;
+          backgroundColor = stateVisualModel.hoverBackgroundColor;
+          borderColor = stateVisualModel.hoverBorderColor;
+        } else if (previewState === 'pressed') {
+          textColor = stateVisualModel.pressedTextColor;
+          backgroundColor = stateVisualModel.pressedBackgroundColor;
+          borderColor = stateVisualModel.pressedBorderColor;
+        } else if (previewState === 'submitting') {
+          textColor = stateVisualModel.processingTextColor;
+          backgroundColor = stateVisualModel.processingBackgroundColor;
+          borderColor = stateVisualModel.processingBorderColor;
+          buttonLabel = 'Submitting...';
+        } else if (previewState === 'success') {
+          textColor = stateVisualModel.successTextColor;
+          backgroundColor = stateVisualModel.successBackgroundColor;
+          borderColor = stateVisualModel.successBorderColor;
+        } else if (previewState === 'error') {
+          textColor = stateVisualModel.errorTextColor;
+          backgroundColor = stateVisualModel.errorBackgroundColor;
+          borderColor = stateVisualModel.errorBorderColor;
+        }
+        const fontWeight = visualModel.fontWeight;
+        return (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`,
+              borderRadius: 'inherit',
+              background: backgroundColor,
+              border: `${visualModel.borderWidth}px ${visualModel.borderStyle} ${borderColor}`,
+              boxShadow: visualModel.boxShadow,
+              color: textColor,
+              fontFamily,
+              fontSize,
+              fontWeight,
+              fontStyle: visualModel.fontStyle,
+              lineHeight,
+              letterSpacing,
+              textAlign: visualModel.textAlign,
+              textDecoration: visualModel.textDecoration,
+              pointerEvents: 'none',
+              overflow: 'hidden',
+            }}
+          >
+            <span>{buttonLabel}</span>
+          </div>
+        );
+      })() : null}
       {el.type === 'text' && (
         <>
           {textStrokeLayerStyle ? (
@@ -1279,7 +1778,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         </div>
       ))}
       {/* Padding handles — shaded zones + drag lines (when selected and padding > 0) */}
-      {isSelected && !interactionLocked && onStartPaddingDrag && (() => {
+      {isSelected && !interactionLocked && onStartPaddingDrag && !isSurfaceStyledFormField && (() => {
         const toNum = v => typeof v === 'number' ? v : parseFloat(v) || 0;
         const pt = toNum(styles?.paddingTop);
         const pr = toNum(styles?.paddingRight);

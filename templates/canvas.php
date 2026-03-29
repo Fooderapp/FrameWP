@@ -14,7 +14,7 @@ $layout_raw = get_post_meta( $post->ID, '_fb_layout', true );
 if ( is_string( $layout_raw ) && '' !== trim( $layout_raw ) ) {
 	$layout = json_decode( wp_unslash( $layout_raw ), true );
 	if ( is_array( $layout ) ) {
-		$exporter = new FrameBuilder_Exporter( $layout );
+		$exporter = new FrameBuilder_Exporter( $layout, (int) $post->ID );
 		$html = $exporter->generate_html();
 	}
 }
@@ -35,6 +35,7 @@ if ( ! is_array( $global_variables ) ) $global_variables = [];
 	};
 	window.fbRuntimeData = window.fbRuntimeData || {
 		postId: <?php echo (int) $post->ID; ?>,
+		restUrl: <?php echo wp_json_encode( rest_url( 'framebuilder/v1/' ) ); ?>,
 		globalVariables: <?php echo wp_json_encode( $global_variables ); ?>
 	};
 	</script>

@@ -12,6 +12,8 @@ import VariantTransitionModal from '../components/VariantTransitionModal';
 import ElementAnimationModal from '../components/ElementAnimationModal';
 import { toViewportRect } from '../utils/rect';
 import { hasElement3DRotation } from '../utils/elementTransform';
+import { isFormContainerType, isFormFieldType, isFormSubmitButtonType, normalizeFormConfig } from '../domain/formModel';
+import { FORM_STYLE_DEFAULTS } from '../domain/formStyleModel';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -27,6 +29,12 @@ function Section({ title, children, defaultOpen = true, action }) {
       {open && <div className="fb-prop-section__body">{children}</div>}
     </div>
   );
+}
+
+function getShadowStyleKey(prefix, key) {
+  if (!prefix) return key;
+  if (key === 'boxShadow') return `${prefix}BoxShadow`;
+  return `${prefix}${key.charAt(0).toUpperCase()}${key.slice(1)}`;
 }
 
 function HeaderActionButton({ icon, title, label, className = '', children, ...props }) {
@@ -487,6 +495,451 @@ function ChoiceGroup({ value, onChange, options }) {
   );
 }
 
+const FORM_STATE_OPTIONS = [
+  { value: 'idle', label: 'Idle' },
+  { value: 'submitting', label: 'Submitting' },
+  { value: 'success', label: 'Success' },
+  { value: 'error', label: 'Error' },
+];
+
+const FORM_SELECT_ICON_OPTIONS = [
+  { value: 'caret', label: 'Caret', icon: '▼' },
+  { value: 'chevron', label: 'Chevron', icon: '⌄' },
+  { value: 'none', label: 'None', icon: '∅' },
+];
+
+const FORM_FIELD_PREVIEW_STATE_OPTIONS = [
+  { value: 'default', label: 'Default' },
+  { value: 'hover', label: 'Hover' },
+  { value: 'focus', label: 'Focus' },
+  { value: 'checked', label: 'Checked' },
+];
+
+const FORM_STATE_EASING_OPTIONS = [
+  { value: 'ease', label: 'Ease' },
+  { value: 'linear', label: 'Linear' },
+  { value: 'ease-in-out', label: 'Ease In Out' },
+];
+
+const FORM_BUTTON_PREVIEW_STATE_OPTIONS = [
+  { value: 'default', label: 'Default' },
+  { value: 'hover', label: 'Hover' },
+  { value: 'pressed', label: 'Pressed' },
+  { value: 'submitting', label: 'Processing' },
+  { value: 'success', label: 'Success' },
+  { value: 'error', label: 'Error' },
+];
+
+const FORM_BUTTON_STATE_GROUPS = [
+  { key: 'hover', label: 'Hover' },
+  { key: 'pressed', label: 'Pressed' },
+  { key: 'processing', label: 'Processing' },
+  { key: 'success', label: 'Success' },
+  { key: 'error', label: 'Error' },
+];
+
+function getFormOptionKindIcon(fieldType) {
+  if (fieldType === 'radio-group') {
+    return (
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.25" />
+        <circle cx="8" cy="8" r="1.75" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="1.8" />
+      <path d="m9.25 6.75 2 2 2-2" />
+    </svg>
+  );
+}
+
+function EdgeInsetsControl({ values, onChange, syncKey, min = 0, step = 1 }) {
+  const top = normalizeFiniteNumber(values?.top, 0);
+  const right = normalizeFiniteNumber(values?.right, 0);
+  const bottom = normalizeFiniteNumber(values?.bottom, 0);
+  const left = normalizeFiniteNumber(values?.left, 0);
+  const isUniform = top === right && top === bottom && top === left;
+  const [linked, setLinked] = React.useState(isUniform);
+
+  React.useEffect(() => {
+    setLinked(isUniform);
+  }, [syncKey]);
+
+  const applyUniformValue = (nextValue) => {
+    onChange('top', nextValue);
+    onChange('right', nextValue);
+    onChange('bottom', nextValue);
+    onChange('left', nextValue);
+  };
+
+  return (
+    <div className="fb-spacing-control">
+      <div className="fb-spacing-control__mode">
+        <IconButton
+          icon={UIIcons.radiusLinked}
+          title="Uniform padding"
+          active={linked}
+          onClick={() => {
+            setLinked(true);
+            applyUniformValue(top);
+          }}
+        />
+        <IconButton
+          icon={UIIcons.radiusIndependent}
+          title="Independent padding"
+          active={!linked}
+          onClick={() => setLinked(false)}
+        />
+      </div>
+
+      {linked ? (
+        <div className="fb-spacing-control__single">
+          <NumberInput value={top} min={min} step={step} label="All" onChange={applyUniformValue} />
+        </div>
+      ) : (
+        <div className="fb-quad fb-spacing-control__grid">
+          <NumberInput value={top} min={min} step={step} label="Top" onChange={(nextValue) => onChange('top', nextValue)} />
+          <NumberInput value={right} min={min} step={step} label="Right" onChange={(nextValue) => onChange('right', nextValue)} />
+          <NumberInput value={bottom} min={min} step={step} label="Bottom" onChange={(nextValue) => onChange('bottom', nextValue)} />
+          <NumberInput value={left} min={min} step={step} label="Left" onChange={(nextValue) => onChange('left', nextValue)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ensureFormOptions(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((option, index) => ({
+    id: typeof option?.id === 'string' && option.id ? option.id : `form-option-${index + 1}`,
+    label: typeof option?.label === 'string' && option.label ? option.label : `Option ${index + 1}`,
+    value: typeof option?.value === 'string' && option.value ? option.value : `option-${index + 1}`,
+    enabled: option?.enabled !== false,
+  }));
+}
+
+function getFormStatePopupSummary(styles, stateKey) {
+  if (stateKey === 'checked') {
+    const hasChecked = !!(styles?.checkedBackgroundColor || styles?.checkedBorderColor || styles?.checkedBoxShadow);
+    return hasChecked ? 'Effect' : 'Add...';
+  }
+  const hasFocus = !!(styles?.focusBackgroundColor || styles?.focusBorderColor || styles?.focusBoxShadow || styles?.focusRingWidth);
+  return hasFocus ? 'Effect' : 'Add...';
+}
+
+function AnchoredPanelPopup({ anchorElement, onClose, className = '', width = 340, children }) {
+  const popupRef = useRef(null);
+  const [position, setPosition] = useState({ top: 32, left: 32, ready: false });
+
+  useLayoutEffect(() => {
+    if (!anchorElement) return undefined;
+
+    const updatePosition = () => {
+      const anchorRect = anchorElement.getBoundingClientRect();
+      const panelRect = anchorElement.closest('.fb-right')?.getBoundingClientRect();
+      const popupWidth = Math.min(popupRef.current?.offsetWidth ?? width, window.innerWidth - 24);
+      const popupHeight = Math.min(popupRef.current?.offsetHeight ?? 560, window.innerHeight - 24);
+      const panelLeft = panelRect?.left ?? anchorRect.left;
+      const panelRight = panelRect?.right ?? anchorRect.right;
+      const fitsLeft = panelLeft - popupWidth - 12 >= 12;
+      let left = fitsLeft ? panelLeft - popupWidth - 12 : panelRight + 12;
+      if (left + popupWidth > window.innerWidth - 12) left = window.innerWidth - popupWidth - 12;
+      const top = Math.max(12, Math.min(window.innerHeight - popupHeight - 12, anchorRect.top - 6));
+      setPosition({ top, left: Math.max(12, left), ready: true });
+    };
+
+    const rafId = window.requestAnimationFrame(updatePosition);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [anchorElement, width]);
+
+  useEffect(() => {
+    if (!anchorElement) return undefined;
+    const handlePointerDown = (event) => {
+      const target = event.target;
+      if (popupRef.current?.contains(target)) return;
+      if (anchorElement?.contains?.(target)) return;
+      if (target instanceof Element && target.closest('.fb-fill-popover')) return;
+      onClose();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [anchorElement, onClose]);
+
+  if (!anchorElement || typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div
+      ref={popupRef}
+      className={`fb-shadow-popup fb-form-mini-popup${className ? ` ${className}` : ''}`}
+      data-inline-editor-ui="true"
+      style={{ top: position.top, left: position.left, width, visibility: position.ready ? 'visible' : 'hidden' }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <div className="fb-shadow-popup__card fb-form-mini-popup__card">
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function FormStatePopupButton({ title, stateKey, styles, onPatch, onCommit, onPreview }) {
+  const triggerRef = useRef(null);
+  const shadowTriggerRef = useRef(null);
+  const shadowDirtyRef = useRef(false);
+  const [open, setOpen] = useState(false);
+  const [shadowOpen, setShadowOpen] = useState(false);
+  const prefix = stateKey === 'checked' ? 'checked' : 'focus';
+  const backgroundKey = `${prefix}BackgroundColor`;
+  const borderKey = `${prefix}BorderColor`;
+
+  const handleOpen = () => {
+    onPreview?.(stateKey);
+    setOpen(true);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        ref={triggerRef}
+        className={`fb-shadow-style-cta${getFormStatePopupSummary(styles, stateKey) !== 'Add...' ? ' is-active' : ''}`}
+        onClick={handleOpen}
+      >
+        <span className={`fb-shadow-style-cta__indicator${getFormStatePopupSummary(styles, stateKey) !== 'Add...' ? ' is-active' : ''}`} />
+        <span>{getFormStatePopupSummary(styles, stateKey)}</span>
+      </button>
+
+      {open ? (
+        <AnchoredPanelPopup anchorElement={triggerRef.current} onClose={() => { setOpen(false); onCommit?.(); }} width={320}>
+          <div className="fb-shadow-popup__head fb-form-mini-popup__head">
+            <div className="fb-shadow-popup__title">{title}</div>
+            <IconButton icon={UIIcons.close} title={`Close ${title.toLowerCase()} popup`} onClick={() => { setOpen(false); onCommit?.(); }} />
+          </div>
+          <div className="fb-shadow-popup__body fb-form-mini-popup__body">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Fill</span>
+              <ColorInput value={styles?.[backgroundKey] ?? styles?.backgroundColor ?? FORM_STYLE_DEFAULTS[backgroundKey] ?? FORM_STYLE_DEFAULTS.backgroundColor} onChange={(value) => onPatch({ [backgroundKey]: value })} />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Border</span>
+              <ColorInput value={styles?.[borderKey] ?? styles?.borderColor ?? FORM_STYLE_DEFAULTS[borderKey] ?? FORM_STYLE_DEFAULTS.borderColor} onChange={(value) => onPatch({ [borderKey]: value })} />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Shadows</span>
+              <button
+                type="button"
+                ref={shadowTriggerRef}
+                className={`fb-shadow-style-cta${styles?.[`${prefix}BoxShadow`] ? ' is-active' : ''}`}
+                onClick={() => setShadowOpen(true)}
+              >
+                <span className={`fb-shadow-style-cta__indicator${styles?.[`${prefix}BoxShadow`] ? ' is-active' : ''}`} />
+                <span>{getShadowSummary(styles, prefix)}</span>
+              </button>
+            </div>
+            {stateKey === 'focus' ? (
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Ring</span>
+                <div className="fb-style-inline-group fb-style-inline-group--stacked">
+                  <NumberInput value={styles?.focusRingWidth ?? FORM_STYLE_DEFAULTS.focusRingWidth} min={0} onChange={(value) => onPatch({ focusRingWidth: value })} />
+                  <ColorInput value={styles?.focusRingColor ?? FORM_STYLE_DEFAULTS.focusRingColor} onChange={(value) => onPatch({ focusRingColor: value })} />
+                </div>
+              </div>
+            ) : null}
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Transition</span>
+              <div className="fb-form-mini-popup__transition">
+                <NumberInput value={styles?.stateTransitionDuration ?? FORM_STYLE_DEFAULTS.stateTransitionDuration} min={0} step={0.01} label="Sec" onChange={(value) => onPatch({ stateTransitionDuration: value })} />
+                <select className="fb-prop-input" value={styles?.stateTransitionEasing ?? FORM_STYLE_DEFAULTS.stateTransitionEasing} onChange={(event) => onPatch({ stateTransitionEasing: event.target.value })}>
+                  {FORM_STATE_EASING_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        </AnchoredPanelPopup>
+      ) : null}
+
+      {shadowOpen ? (
+        <ShadowSetupModal
+          anchorRef={shadowTriggerRef}
+          initialValue={getShadowDraftFromStyles(styles, prefix)}
+          onClose={() => {
+            setShadowOpen(false);
+            if (shadowDirtyRef.current) {
+              shadowDirtyRef.current = false;
+              onCommit?.();
+            }
+          }}
+          onChange={(draft) => {
+            shadowDirtyRef.current = true;
+            onPatch(buildShadowStylePayload(draft, prefix));
+          }}
+          onRemove={() => {
+            shadowDirtyRef.current = false;
+            onPatch(buildShadowStylePayload({ ...getShadowDraftFromStyles(styles, prefix), enabled: false }, prefix));
+            setShadowOpen(false);
+            onCommit?.();
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function FormOptionsEditor({ value, onChange, onCommit, fieldType = 'dropdown', defaultValue = '', onDefaultChange = null }) {
+  const options = ensureFormOptions(value);
+  const [openOptionId, setOpenOptionId] = useState(null);
+  const triggerMapRef = useRef(new Map());
+
+  const setTriggerRef = (optionId) => (node) => {
+    if (node) triggerMapRef.current.set(optionId, node);
+    else triggerMapRef.current.delete(optionId);
+  };
+
+  const updateOption = (index, key, nextValue) => {
+    const nextOptions = options.map((option, optionIndex) => (
+      optionIndex === index
+        ? { ...option, [key]: nextValue }
+        : option
+    ));
+    onChange(nextOptions);
+  };
+
+  const moveOption = (index, direction) => {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= options.length) return;
+    const nextOptions = [...options];
+    const [item] = nextOptions.splice(index, 1);
+    nextOptions.splice(nextIndex, 0, item);
+    onChange(nextOptions);
+    onCommit?.();
+  };
+
+  const removeOption = (index) => {
+    onChange(options.filter((_, optionIndex) => optionIndex !== index));
+    onCommit?.();
+  };
+
+  const addOption = () => {
+    onChange([
+      ...options,
+      {
+        id: `form-option-${Date.now()}-${options.length + 1}`,
+        label: `Option ${options.length + 1}`,
+        value: `option-${options.length + 1}`,
+        enabled: true,
+      },
+    ]);
+    onCommit?.();
+  };
+
+  const activeOption = options.find((option) => option.id === openOptionId) ?? null;
+  const activeIndex = activeOption ? options.findIndex((option) => option.id === activeOption.id) : -1;
+  const activeAnchor = activeOption ? triggerMapRef.current.get(activeOption.id) ?? null : null;
+
+  return (
+    <div className="fb-form-options-editor">
+      <div className="fb-form-options-editor__toolbar">
+        <div className="fb-artboard-bp-note">
+          {fieldType === 'radio-group'
+            ? 'Radio options render in order and share one selection state.'
+            : 'Dropdown options render in order and use the value for submitted data.'}
+        </div>
+        <button type="button" className="fb-secondary-btn fb-btn--sm" onClick={addOption}>Add Option</button>
+      </div>
+      {options.length ? options.map((option, index) => (
+        <div key={option.id} className="fb-form-option-card">
+          <button type="button" ref={setTriggerRef(option.id)} className="fb-form-option-card__main" onClick={() => setOpenOptionId(option.id)}>
+            <div className="fb-form-option-card__icon">{getFormOptionKindIcon(fieldType)}</div>
+            <div className="fb-form-option-card__fields">
+              <span className="fb-form-option-card__title">{option.label}</span>
+              <span className="fb-form-option-card__meta">{option.value}</span>
+            </div>
+          </button>
+          <div className="fb-form-option-card__actions">
+            <button type="button" className="fb-icon-btn fb-btn--sm" title="Move up" onClick={() => moveOption(index, -1)} disabled={index === 0}><span aria-hidden="true">↑</span></button>
+            <button type="button" className="fb-icon-btn fb-btn--sm" title="Move down" onClick={() => moveOption(index, 1)} disabled={index === options.length - 1}><span aria-hidden="true">↓</span></button>
+            <button type="button" className="fb-icon-btn fb-btn--sm" title="Remove option" onClick={() => removeOption(index)}><span aria-hidden="true">{UIIcons.trash}</span></button>
+          </div>
+        </div>
+      )) : <div className="fb-artboard-bp-note">No options yet. Add the first option to define the order shown in the field.</div>}
+
+      {activeOption ? (
+        <AnchoredPanelPopup anchorElement={activeAnchor} onClose={() => { setOpenOptionId(null); onCommit?.(); }} width={320}>
+          <div className="fb-shadow-popup__head fb-form-mini-popup__head">
+            <div className="fb-shadow-popup__title">Option</div>
+            <IconButton icon={UIIcons.close} title="Close option popup" onClick={() => { setOpenOptionId(null); onCommit?.(); }} />
+          </div>
+          <div className="fb-shadow-popup__body fb-form-mini-popup__body">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Value</span>
+              <input
+                className="fb-prop-input"
+                type="text"
+                value={activeOption.value}
+                onChange={(event) => updateOption(activeIndex, 'value', event.target.value)}
+                onBlur={onCommit}
+                placeholder="option-value"
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Title</span>
+              <input
+                className="fb-prop-input"
+                type="text"
+                value={activeOption.label}
+                onChange={(event) => updateOption(activeIndex, 'label', event.target.value)}
+                onBlur={onCommit}
+                placeholder="Option title"
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Enabled</span>
+              <ChoiceGroup
+                value={activeOption.enabled === false ? 'no' : 'yes'}
+                onChange={(nextValue) => {
+                  updateOption(activeIndex, 'enabled', nextValue === 'yes');
+                  onCommit?.();
+                }}
+                options={[{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }]}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Default</span>
+              <ChoiceGroup
+                value={defaultValue === activeOption.value ? 'yes' : 'no'}
+                onChange={(nextValue) => {
+                  onDefaultChange?.(nextValue === 'yes' ? activeOption.value : '');
+                  onCommit?.();
+                }}
+                options={[{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }]}
+              />
+            </div>
+          </div>
+        </AnchoredPanelPopup>
+      ) : null}
+    </div>
+  );
+}
+
 function getTransformMode(rotationX, rotationY) {
   return Math.abs(normalizeFiniteNumber(rotationX, 0)) > 0.01 || Math.abs(normalizeFiniteNumber(rotationY, 0)) > 0.01 ? '3d' : '2d';
 }
@@ -596,7 +1049,13 @@ function InteractionSection({ flow, legacyInteractions, onOpenFlow, onMigrateLeg
             <span className="fb-interaction-card__status is-active">Flow</span>
           </div>
           <div className="fb-interaction-flow-summary">
-            {flow.trigger?.type === 'element-click' ? 'Starts on click' : 'Custom trigger'}
+            {flow.trigger?.type === 'element-click'
+              ? 'Starts on click'
+              : flow.trigger?.type === 'form-submit'
+                ? 'Starts after form submission'
+                : flow.trigger?.type === 'page-load'
+                  ? 'Starts on page load'
+                  : 'Custom trigger'}
           </div>
         </div>
       ) : interactionCount ? (
@@ -994,23 +1453,23 @@ function buildShadowColor(color, opacity) {
   return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${roundShadowValue(clampShadowValue(opacity, 1, 0, 1), 3)})`;
 }
 
-function getShadowDraftFromStyles(styles) {
-  const boxShadow = typeof styles?.boxShadow === 'string' ? styles.boxShadow.trim() : '';
+function getShadowDraftFromStyles(styles, prefix = '') {
+  const boxShadow = typeof styles?.[getShadowStyleKey(prefix, 'boxShadow')] === 'string' ? styles[getShadowStyleKey(prefix, 'boxShadow')].trim() : '';
   const parsed = parseSingleShadow(splitShadowLayers(boxShadow)[0] || '');
-  const type = styles?.shadowType === 'realistic' ? 'realistic' : 'drop';
+  const type = styles?.[getShadowStyleKey(prefix, 'shadowType')] === 'realistic' ? 'realistic' : 'drop';
 
   return {
     enabled: !!boxShadow,
     type,
-    position: styles?.shadowPosition === 'inside' ? 'inside' : parsed.position,
-    color: typeof styles?.shadowColor === 'string' && styles.shadowColor ? rgbaToHex(styles.shadowColor) : parsed.color,
-    opacity: clampShadowValue(styles?.shadowOpacity, parsed.opacity, 0, 1),
-    x: clampShadowValue(styles?.shadowX, parsed.x, -9999, 9999),
-    y: clampShadowValue(styles?.shadowY, parsed.y, -9999, 9999),
-    blur: clampShadowValue(styles?.shadowBlur, parsed.blur, 0, 9999),
-    spread: clampShadowValue(styles?.shadowSpread, parsed.spread, -9999, 9999),
-    diffusion: clampShadowValue(styles?.shadowDiffusion, 0.25, 0, 1),
-    focus: clampShadowValue(styles?.shadowFocus, 0.5, 0, 1),
+    position: styles?.[getShadowStyleKey(prefix, 'shadowPosition')] === 'inside' ? 'inside' : parsed.position,
+    color: typeof styles?.[getShadowStyleKey(prefix, 'shadowColor')] === 'string' && styles[getShadowStyleKey(prefix, 'shadowColor')] ? rgbaToHex(styles[getShadowStyleKey(prefix, 'shadowColor')]) : parsed.color,
+    opacity: clampShadowValue(styles?.[getShadowStyleKey(prefix, 'shadowOpacity')], parsed.opacity, 0, 1),
+    x: clampShadowValue(styles?.[getShadowStyleKey(prefix, 'shadowX')], parsed.x, -9999, 9999),
+    y: clampShadowValue(styles?.[getShadowStyleKey(prefix, 'shadowY')], parsed.y, -9999, 9999),
+    blur: clampShadowValue(styles?.[getShadowStyleKey(prefix, 'shadowBlur')], parsed.blur, 0, 9999),
+    spread: clampShadowValue(styles?.[getShadowStyleKey(prefix, 'shadowSpread')], parsed.spread, -9999, 9999),
+    diffusion: clampShadowValue(styles?.[getShadowStyleKey(prefix, 'shadowDiffusion')], 0.25, 0, 1),
+    focus: clampShadowValue(styles?.[getShadowStyleKey(prefix, 'shadowFocus')], 0.5, 0, 1),
   };
 }
 
@@ -1037,40 +1496,40 @@ function buildShadowCss(draft) {
   return `${inset}${x}px ${y}px ${Math.max(0, roundShadowValue(draft.blur, 2))}px ${roundShadowValue(draft.spread, 2)}px ${buildShadowColor(draft.color, draft.opacity)}`;
 }
 
-function buildShadowStylePayload(draft) {
+function buildShadowStylePayload(draft, prefix = '') {
   if (!draft?.enabled) {
     return {
-      boxShadow: '',
-      shadowType: null,
-      shadowPosition: null,
-      shadowColor: null,
-      shadowOpacity: null,
-      shadowX: null,
-      shadowY: null,
-      shadowBlur: null,
-      shadowSpread: null,
-      shadowDiffusion: null,
-      shadowFocus: null,
+      [getShadowStyleKey(prefix, 'boxShadow')]: '',
+      [getShadowStyleKey(prefix, 'shadowType')]: null,
+      [getShadowStyleKey(prefix, 'shadowPosition')]: null,
+      [getShadowStyleKey(prefix, 'shadowColor')]: null,
+      [getShadowStyleKey(prefix, 'shadowOpacity')]: null,
+      [getShadowStyleKey(prefix, 'shadowX')]: null,
+      [getShadowStyleKey(prefix, 'shadowY')]: null,
+      [getShadowStyleKey(prefix, 'shadowBlur')]: null,
+      [getShadowStyleKey(prefix, 'shadowSpread')]: null,
+      [getShadowStyleKey(prefix, 'shadowDiffusion')]: null,
+      [getShadowStyleKey(prefix, 'shadowFocus')]: null,
     };
   }
 
   return {
-    boxShadow: buildShadowCss(draft),
-    shadowType: draft.type,
-    shadowPosition: draft.position,
-    shadowColor: rgbaToHex(draft.color),
-    shadowOpacity: clampShadowValue(draft.opacity, 0.25, 0, 1),
-    shadowX: clampShadowValue(draft.x, 0, -9999, 9999),
-    shadowY: clampShadowValue(draft.y, 0, -9999, 9999),
-    shadowBlur: clampShadowValue(draft.blur, 16, 0, 9999),
-    shadowSpread: clampShadowValue(draft.spread, 0, -9999, 9999),
-    shadowDiffusion: clampShadowValue(draft.diffusion, 0.25, 0, 1),
-    shadowFocus: clampShadowValue(draft.focus, 0.5, 0, 1),
+    [getShadowStyleKey(prefix, 'boxShadow')]: buildShadowCss(draft),
+    [getShadowStyleKey(prefix, 'shadowType')]: draft.type,
+    [getShadowStyleKey(prefix, 'shadowPosition')]: draft.position,
+    [getShadowStyleKey(prefix, 'shadowColor')]: rgbaToHex(draft.color),
+    [getShadowStyleKey(prefix, 'shadowOpacity')]: clampShadowValue(draft.opacity, 0.25, 0, 1),
+    [getShadowStyleKey(prefix, 'shadowX')]: clampShadowValue(draft.x, 0, -9999, 9999),
+    [getShadowStyleKey(prefix, 'shadowY')]: clampShadowValue(draft.y, 0, -9999, 9999),
+    [getShadowStyleKey(prefix, 'shadowBlur')]: clampShadowValue(draft.blur, 16, 0, 9999),
+    [getShadowStyleKey(prefix, 'shadowSpread')]: clampShadowValue(draft.spread, 0, -9999, 9999),
+    [getShadowStyleKey(prefix, 'shadowDiffusion')]: clampShadowValue(draft.diffusion, 0.25, 0, 1),
+    [getShadowStyleKey(prefix, 'shadowFocus')]: clampShadowValue(draft.focus, 0.5, 0, 1),
   };
 }
 
-function getShadowSummary(styles) {
-  const draft = getShadowDraftFromStyles(styles);
+function getShadowSummary(styles, prefix = '') {
+  const draft = getShadowDraftFromStyles(styles, prefix);
   if (!draft.enabled) return 'No shadow';
   return `${draft.type === 'realistic' ? 'Realistic' : 'Drop'} · ${draft.position === 'inside' ? 'Inside' : 'Outside'}`;
 }
@@ -1321,6 +1780,7 @@ export default function PropertiesPanel() {
   const clearActiveVectorPoint = useEditorStore(s => s.clearActiveVectorPoint);
   const updateElementLayout = useEditorStore(s => s.updateElementLayout);
   const updateElementsLayout = useEditorStore(s => s.updateElementsLayout);
+  const updateElementBase = useEditorStore(s => s.updateElementBase);
   const updateStyles        = useEditorStore(s => s.updateElementStyles);
   const updateElementsStyles = useEditorStore(s => s.updateElementsStyles);
   const pushHistory         = useEditorStore(s => s.pushHistory);
@@ -1618,18 +2078,44 @@ export default function PropertiesPanel() {
     if (!nextInteraction) return;
     updateInteractions([...interactions, nextInteraction]);
   };
-  const selectedElementFlow = element
-    ? (pageFlows.find((flow) => flow?.trigger?.type === 'element-click' && flow?.trigger?.elementId === element.id) ?? null)
+  const parentFormElement = element
+    ? (() => {
+      let ancestorId = element.parentId ?? null;
+      while (ancestorId) {
+        const ancestor = allEls.find((entry) => entry.id === ancestorId) ?? null;
+        if (!ancestor) return null;
+        if (isFormContainerType(ancestor.type)) return ancestor;
+        ancestorId = ancestor.parentId ?? null;
+      }
+      return null;
+    })()
+    : null;
+  const flowTargetElement = isFormContainerType(element?.type)
+    ? element
+    : (parentFormElement ?? element);
+  const selectedElementTriggerType = isFormContainerType(flowTargetElement?.type) ? 'form-submit' : 'element-click';
+  const selectedElementFlow = flowTargetElement
+    ? (pageFlows.find((flow) => (
+      selectedElementTriggerType === 'form-submit'
+        ? flow?.trigger?.type === 'form-submit' && flow?.trigger?.formId === flowTargetElement.id
+        : flow?.trigger?.type === 'element-click' && flow?.trigger?.elementId === flowTargetElement.id
+    )) ?? null)
     : null;
   const handleOpenInteractionFlow = () => {
-    if (!element) return;
-    const flowId = selectedElementFlow?.id || ensureElementFlow(element.id, { name: `${element.name || 'Element'} interaction` });
-    openFlowEditor({ elementId: element.id, flowId });
+    if (!flowTargetElement) return;
+    const flowId = selectedElementFlow?.id || ensureElementFlow(flowTargetElement.id, {
+      triggerType: selectedElementTriggerType,
+      name: `${flowTargetElement.name || 'Element'} ${selectedElementTriggerType === 'form-submit' ? 'submission' : 'interaction'}`,
+    });
+    openFlowEditor({ elementId: flowTargetElement.id, flowId });
   };
   const handleMigrateLegacyInteractions = () => {
-    if (!element) return;
-    const flowId = migrateLegacyElementInteractionsToFlow(element.id) || selectedElementFlow?.id || ensureElementFlow(element.id, { name: `${element.name || 'Element'} interaction` });
-    openFlowEditor({ elementId: element.id, flowId });
+    if (!flowTargetElement) return;
+    const flowId = migrateLegacyElementInteractionsToFlow(flowTargetElement.id) || selectedElementFlow?.id || ensureElementFlow(flowTargetElement.id, {
+      triggerType: selectedElementTriggerType,
+      name: `${flowTargetElement.name || 'Element'} ${selectedElementTriggerType === 'form-submit' ? 'submission' : 'interaction'}`,
+    });
+    openFlowEditor({ elementId: flowTargetElement.id, flowId });
   };
 
   useEffect(() => {
@@ -1910,7 +2396,7 @@ export default function PropertiesPanel() {
       const positionMode = getResolvedSelectionPositionMode(selected, resolved, pageLayout);
       return positionMode === 'relative' || positionMode === 'sticky';
     });
-    const allFrames = selectedElements.every((selected) => selected.type === 'frame' && !selected.componentInstance && !selected.componentRoot);
+    const allFrames = selectedElements.every((selected) => (selected.type === 'frame' || isFormContainerType(selected.type)) && !selected.componentInstance && !selected.componentRoot);
     const allTexts = selectedElements.every((selected) => selected.type === 'text');
     const frameFillValue = allFrames ? getSharedValue(({ resolved }) => resolved.styles?.backgroundColor ?? 'rgba(180,180,200,0.18)') : null;
     const frameFillDisplayValue = allFrames
@@ -2333,7 +2819,13 @@ export default function PropertiesPanel() {
 
   const resolved = resolveElementWithVariables(element, bpId, pageVariables, globalVariables);
   const s = resolved.styles || {};
-  const textColorMeta = element.type === 'text' ? getTextColorMeta(resolved) : { baseColor: s.color ?? '#000000', mixed: false };
+  const isFormField = isFormFieldType(element.type);
+  const isFormSubmitButton = isFormSubmitButtonType(element.type);
+  const isDropdownField = element.type === 'dropdown';
+  const supportsPlaceholderStyling = isFormField && !['checkbox', 'radio-group'].includes(element.type);
+  const textColorMeta = (element.type === 'text' || isFormField || isFormSubmitButton)
+    ? getTextColorMeta(resolved)
+    : { baseColor: s.color ?? '#000000', mixed: false };
   const textGrow = (resolved.widthMode === 'hug' && resolved.heightMode === 'hug')
     ? 'auto-width'
     : resolved.heightMode === 'hug'
@@ -2373,6 +2865,9 @@ export default function PropertiesPanel() {
 
   const upd = (key, val) => {
     updateElementLayout(element.id, bpId, { [key]: val });
+  };
+  const updBase = (updates) => {
+    updateElementBase(element.id, updates);
   };
   const updText = (val) => {
     updateElementLayout(element.id, bpId, {
@@ -2414,6 +2909,8 @@ export default function PropertiesPanel() {
   const isAssetStorageSurface = activeSurface === 'component' && componentEditor.componentId === ASSET_STORAGE_COMPONENT_ID;
   const isComponentRoot = activeSurface === 'component' && !isAssetStorageSurface && !element.parentId;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!element.componentInstance;
+  const formConfig = normalizeFormConfig(resolved?.formConfig);
+  const formFieldOptions = ensureFormOptions(resolved?.fieldOptions);
   const allowVariableBindings = activeSurface === 'page';
   const componentMeta = isComponentInstanceOnPage ? selectedComponentMeta : null;
   const componentVariants = isComponentInstanceOnPage ? selectedComponentVariants : [];
@@ -3536,33 +4033,37 @@ export default function PropertiesPanel() {
           </Section>
         ) : null}
 
-        {element.type === 'text' && (
+        {(element.type === 'text' || isFormSubmitButton) && (
           <Section title="Text" action={<ResetBtn show={isOv('text','richTextHtml') || isSOv('color','strokeWidth','strokeColor','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text','richTextHtml'); resetSOv('color','strokeWidth','strokeColor','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
-            <div className="fb-prop-row" style={{ marginBottom: 8 }}>
-              <VariableBindingLabel label="Content">
-                {allowVariableBindings ? (
-                  <VariableBindingButton
-                    variables={getCompatibleBindingVariables('text')}
-                    binding={textBinding}
-                    onSelect={(binding) => commitBinding('text', binding, (value) => updText(`${value ?? ''}`))}
-                    onRemove={() => commitBinding('text', null)}
-                  />
-                ) : null}
-              </VariableBindingLabel>
-              {textBindingVariable ? <BoundVariableCta variable={textBindingVariable} fallbackLabel="Text source" /> : <div className="fb-prop-value">Text source</div>}
-            </div>
-            {textBindingVariable ? null : (
-              <div className="fb-prop-row--full" style={{ marginBottom: 8 }}>
-                <textarea
-                  className="fb-prop-input"
-                  value={resolved.text ?? 'Text'}
-                  onChange={e => updText(e.target.value)}
-                  onBlur={commit}
-                  rows={4}
-                  style={{ width: '100%', resize: 'vertical', minHeight: 92, lineHeight: 1.4 }}
-                />
-              </div>
-            )}
+            {element.type === 'text' ? (
+              <>
+                <div className="fb-prop-row" style={{ marginBottom: 8 }}>
+                  <VariableBindingLabel label="Content">
+                    {allowVariableBindings ? (
+                      <VariableBindingButton
+                        variables={getCompatibleBindingVariables('text')}
+                        binding={textBinding}
+                        onSelect={(binding) => commitBinding('text', binding, (value) => updText(`${value ?? ''}`))}
+                        onRemove={() => commitBinding('text', null)}
+                      />
+                    ) : null}
+                  </VariableBindingLabel>
+                  {textBindingVariable ? <BoundVariableCta variable={textBindingVariable} fallbackLabel="Text source" /> : <div className="fb-prop-value">Text source</div>}
+                </div>
+                {textBindingVariable ? null : (
+                  <div className="fb-prop-row--full" style={{ marginBottom: 8 }}>
+                    <textarea
+                      className="fb-prop-input"
+                      value={resolved.text ?? 'Text'}
+                      onChange={e => updText(e.target.value)}
+                      onBlur={commit}
+                      rows={4}
+                      style={{ width: '100%', resize: 'vertical', minHeight: 92, lineHeight: 1.4 }}
+                    />
+                  </div>
+                )}
+              </>
+            ) : null}
 
             <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
               <VariableBindingLabel label="Font">
@@ -3635,6 +4136,13 @@ export default function PropertiesPanel() {
               {textColorBindingVariable ? <BoundVariableCta variable={textColorBindingVariable} fallbackLabel="Color variable" /> : <ColorInput value={textColorMeta.baseColor} mixed={textColorMeta.mixed} onChange={v => { updS('color', v); commit(); }} />}
             </div>
 
+            {supportsPlaceholderStyling ? (
+              <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Placeholder</span>
+                <ColorInput value={s.placeholderColor ?? FORM_STYLE_DEFAULTS.placeholderColor} onChange={v => { updS('placeholderColor', v); commit(); }} />
+              </div>
+            ) : null}
+
             <div className="fb-prop-row" style={{ marginTop: 8 }}>
               <span className="fb-prop-label">Align</span>
               <IconGroup
@@ -3644,23 +4152,25 @@ export default function PropertiesPanel() {
               />
             </div>
 
-            <div className="fb-prop-row" style={{ marginTop: 8 }}>
-              <span className="fb-prop-label">Grow</span>
-              <IconGroup
-                value={textGrow}
-                onChange={value => {
-                  if (value === 'auto-width') {
-                    updateElementLayout(element.id, bpId, { widthMode: 'hug', heightMode: 'hug' });
-                  } else if (value === 'auto-height') {
-                    updateElementLayout(element.id, bpId, { widthMode: 'fixed', heightMode: 'hug', width: resolved.width ?? 240 });
-                  } else {
-                    updateElementLayout(element.id, bpId, { widthMode: 'fixed', heightMode: 'fixed', width: resolved.width ?? 240, height: resolved.height ?? 60 });
-                  }
-                  commit();
-                }}
-                options={TEXT_GROW_OPTIONS}
-              />
-            </div>
+            {element.type === 'text' ? (
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Grow</span>
+                <IconGroup
+                  value={textGrow}
+                  onChange={value => {
+                    if (value === 'auto-width') {
+                      updateElementLayout(element.id, bpId, { widthMode: 'hug', heightMode: 'hug' });
+                    } else if (value === 'auto-height') {
+                      updateElementLayout(element.id, bpId, { widthMode: 'fixed', heightMode: 'hug', width: resolved.width ?? 240 });
+                    } else {
+                      updateElementLayout(element.id, bpId, { widthMode: 'fixed', heightMode: 'fixed', width: resolved.width ?? 240, height: resolved.height ?? 60 });
+                    }
+                    commit();
+                  }}
+                  options={TEXT_GROW_OPTIONS}
+                />
+              </div>
+            ) : null}
           </Section>
         )}
 
@@ -3766,106 +4276,688 @@ export default function PropertiesPanel() {
           </Section>
         )}
 
-        {/* ── Layout (frame-specific) ────────────────────────── */}
-        {element.type === 'frame' ? (() => {
-          if (isComponentInstanceOnPage) return null;
-          const frameLayoutOn = s.display === 'flex';
-          return (
-            <Section title="Layout" action={<ResetBtn show={isSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} onReset={() => resetSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} />}>
+        {element.type === 'form' ? (
+          <Section title="Form">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">State</span>
+              <ChoiceGroup
+                value={formConfig.state ?? 'idle'}
+                onChange={(value) => {
+                  updBase({
+                    formConfig: {
+                      ...formConfig,
+                      state: value,
+                    },
+                  });
+                  commit();
+                }}
+                options={FORM_STATE_OPTIONS}
+              />
+            </div>
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Submit Label</span>
+              <input
+                className="fb-prop-input"
+                type="text"
+                value={formConfig.submitLabel ?? 'Submit'}
+                onChange={(event) => {
+                  updBase({
+                    formConfig: {
+                      ...formConfig,
+                      submitLabel: event.target.value,
+                    },
+                  });
+                }}
+                onBlur={commit}
+                placeholder="Submit"
+              />
+            </div>
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Success Message</span>
+              <input
+                className="fb-prop-input"
+                type="text"
+                value={formConfig.successMessage ?? ''}
+                onChange={(event) => {
+                  updBase({
+                    formConfig: {
+                      ...formConfig,
+                      successMessage: event.target.value,
+                    },
+                  });
+                }}
+                onBlur={commit}
+                placeholder="Thanks. Your submission was received."
+              />
+            </div>
+            <div className="fb-prop-row" style={{ marginTop: 8 }}>
+              <span className="fb-prop-label">Error Message</span>
+              <input
+                className="fb-prop-input"
+                type="text"
+                value={formConfig.errorMessage ?? ''}
+                onChange={(event) => {
+                  updBase({
+                    formConfig: {
+                      ...formConfig,
+                      errorMessage: event.target.value,
+                    },
+                  });
+                }}
+                onBlur={commit}
+                placeholder="Something went wrong. Please try again."
+              />
+            </div>
+            <div className="fb-artboard-bp-note" style={{ marginTop: 8 }}>
+              Configure store, email, webhook, and create actions from the Submission Form node inside the form's interaction flow.
+            </div>
+          </Section>
+        ) : null}
+
+        {isFormField ? (
+          <>
+            <Section title="Input">
               <div className="fb-prop-row">
-                <span className="fb-prop-label">Space</span>
-                <ChoiceGroup
-                  value={frameLayoutOn ? 'auto' : 'free'}
-                  onChange={v => {
-                    if (v === 'free') updS('display', null);
-                    else {
-                      updS('display', 'flex');
-                      if (!s.flexDirection) updS('flexDirection', 'column');
-                    }
-                    commit();
-                  }}
-                  options={[
-                    { value: 'free', label: 'Free' },
-                    { value: 'auto', label: 'Auto' },
-                  ]}
+                <span className="fb-prop-label">Name</span>
+                <input
+                  className="fb-prop-input"
+                  type="text"
+                  value={resolved.label ?? ''}
+                  onChange={(event) => updBase({ label: event.target.value })}
+                  onBlur={commit}
+                  placeholder="Field label"
                 />
               </div>
-              {frameLayoutOn && (
-                <>
-                  <div className="fb-prop-row">
-                    <span className="fb-prop-label">Direction</span>
-                    <IconGroup
-                      value={s.flexDirection}
-                      onChange={v => { updS('flexDirection', v); commit(); }}
-                      options={[
-                        { value: 'row', icon: LAYOUT_ICONS.row, label: 'Row' },
-                        { value: 'column', icon: LAYOUT_ICONS.column, label: 'Column' },
-                      ]}
-                    />
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Field</span>
+                <input
+                  className="fb-prop-input"
+                  type="text"
+                  value={resolved.fieldName ?? ''}
+                  onChange={(event) => updBase({ fieldName: event.target.value })}
+                  onBlur={commit}
+                  placeholder="email"
+                />
+              </div>
+
+              {element.type !== 'checkbox' ? (
+                <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                  <span className="fb-prop-label">Placeholder</span>
+                  <input
+                    className="fb-prop-input"
+                    type="text"
+                    value={resolved.placeholder ?? ''}
+                    onChange={(event) => updBase({ placeholder: event.target.value })}
+                    onBlur={commit}
+                    placeholder="Placeholder"
+                  />
+                </div>
+              ) : null}
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Helper Text</span>
+                <input
+                  className="fb-prop-input"
+                  type="text"
+                  value={resolved.helperText ?? ''}
+                  onChange={(event) => updBase({ helperText: event.target.value })}
+                  onBlur={commit}
+                  placeholder="Optional guidance"
+                />
+              </div>
+
+              {element.type === 'textarea-field' ? (
+                <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                  <span className="fb-prop-label">Default Text</span>
+                  <textarea
+                    className="fb-prop-input"
+                    value={resolved.defaultValue ?? ''}
+                    onChange={(event) => updBase({ defaultValue: event.target.value })}
+                    onBlur={commit}
+                    rows={4}
+                    style={{ width: '100%', resize: 'vertical', minHeight: 96, lineHeight: 1.4 }}
+                    placeholder="Prefilled textarea content"
+                  />
+                </div>
+              ) : null}
+
+              {element.type === 'rich-text-editor' ? (
+                <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                  <span className="fb-prop-label">Default HTML</span>
+                  <textarea
+                    className="fb-prop-input"
+                    value={resolved.defaultValue ?? ''}
+                    onChange={(event) => updBase({ defaultValue: event.target.value })}
+                    onBlur={commit}
+                    rows={5}
+                    style={{ width: '100%', resize: 'vertical', minHeight: 110, lineHeight: 1.4 }}
+                    placeholder="<p>Prefilled rich text content</p>"
+                  />
+                </div>
+              ) : null}
+
+              {element.type === 'file-upload' ? (
+                <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                  <span className="fb-prop-label">Selection</span>
+                  <ChoiceGroup
+                    value={resolved.allowMultipleFiles === true ? 'multiple' : 'single'}
+                    onChange={(value) => {
+                      updBase({ allowMultipleFiles: value === 'multiple' });
+                      commit();
+                    }}
+                    options={[{ value: 'single', label: 'Single' }, { value: 'multiple', label: 'Multiple' }]}
+                  />
+                </div>
+              ) : null}
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Required</span>
+                <ChoiceGroup
+                  value={resolved.required === true ? 'yes' : 'no'}
+                  onChange={(value) => {
+                    updBase({ required: value === 'yes' });
+                    commit();
+                  }}
+                  options={[{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }]}
+                />
+              </div>
+
+            </Section>
+
+            {element.type === 'checkbox' ? (
+              <Section title="Checkbox">
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Checked</span>
+                  <Toggle
+                    value={resolved.defaultValue === true}
+                    onChange={(value) => {
+                      updBase({ defaultValue: value });
+                      commit();
+                    }}
+                  />
+                </div>
+
+                <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                  <span className="fb-prop-label">Indicator</span>
+                  <ColorInput value={s.checkboxAccentColor ?? FORM_STYLE_DEFAULTS.checkboxAccentColor} onChange={v => { updS('checkboxAccentColor', v); commit(); }} />
+                </div>
+              </Section>
+            ) : null}
+
+            {element.type === 'radio-group' ? (
+              <Section title="Radio">
+                <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                  <span className="fb-prop-label">Indicator</span>
+                  <ColorInput value={s.checkboxAccentColor ?? FORM_STYLE_DEFAULTS.checkboxAccentColor} onChange={v => { updS('checkboxAccentColor', v); commit(); }} />
+                </div>
+              </Section>
+            ) : null}
+
+            {element.type === 'dropdown' ? (
+              <Section title="Dropdown">
+                <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+                  <span className="fb-prop-label">Icon</span>
+                  <div style={{ width: '100%', display: 'grid', gap: 8 }}>
+                    <div className="fb-icon-group" role="group" aria-label="Dropdown icon">
+                      {FORM_SELECT_ICON_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`fb-icon-btn${(s.selectIcon ?? FORM_STYLE_DEFAULTS.selectIcon) === option.value ? ' fb-icon-btn--active' : ''}`}
+                          title={option.label}
+                          onClick={() => { updS('selectIcon', option.value); commit(); }}
+                        >
+                          <span aria-hidden="true">{option.icon}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {(s.selectIcon ?? FORM_STYLE_DEFAULTS.selectIcon) !== 'none' ? (
+                      <ColorInput value={s.iconColor ?? s.placeholderColor ?? FORM_STYLE_DEFAULTS.iconColor} onChange={v => { updS('iconColor', v); commit(); }} />
+                    ) : null}
                   </div>
-                  <div className="fb-prop-row">
-                    <span className="fb-prop-label">Wrap</span>
-                    <IconGroup
-                      value={s.flexWrap}
-                      onChange={v => { updS('flexWrap', v); commit(); }}
-                      options={[
-                        { value: 'nowrap', icon: LAYOUT_ICONS.nowrap, label: 'No wrap' },
-                        { value: 'wrap', icon: LAYOUT_ICONS.wrap, label: 'Wrap' },
-                      ]}
-                    />
+                </div>
+              </Section>
+            ) : null}
+
+            {(element.type === 'radio-group' || element.type === 'dropdown') ? (
+              <Section title="Options">
+                <FormOptionsEditor
+                  value={formFieldOptions}
+                  fieldType={element.type}
+                  defaultValue={resolved.defaultValue ?? ''}
+                  onChange={(nextOptions) => updBase({ fieldOptions: nextOptions })}
+                  onDefaultChange={(nextValue) => updBase({ defaultValue: nextValue })}
+                  onCommit={commit}
+                />
+              </Section>
+            ) : null}
+
+            <Section title="Styles">
+              <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Font</span>
+                <div style={{ flex: 1 }}>
+                  <GoogleFontPicker
+                    value={s.fontFamily ?? 'Inter'}
+                    onChange={value => commitFontFamily([element.id], bpId, value)}
+                    onPreviewChange={(value) => previewFontFamily([element.id], bpId, value)}
+                    onPreviewReset={resetFontPreview}
+                  />
+                </div>
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Weight</span>
+                <select
+                  className="fb-prop-input"
+                  value={String(s.fontWeight ?? 500)}
+                  onChange={e => { updS('fontWeight', Number(e.target.value)); commit(); }}
+                >
+                  {FONT_WEIGHT_OPTIONS.map(weight => (
+                    <option key={weight} value={weight}>{weight}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 6 }}>
+                <span className="fb-prop-label">Style</span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <IconButton icon={UIIcons.regular} title="Regular" active={(s.fontStyle ?? 'normal') === 'normal'} onClick={() => { updS('fontStyle', 'normal'); commit(); }} />
+                  <IconButton icon={UIIcons.italic} title="Italic" active={s.fontStyle === 'italic'} onClick={() => { updS('fontStyle', s.fontStyle === 'italic' ? 'normal' : 'italic'); commit(); }} />
+                  <IconButton icon={UIIcons.underline} title="Underline" active={(s.textDecoration ?? 'none') === 'underline'} onClick={() => { updS('textDecoration', (s.textDecoration ?? 'none') === 'underline' ? 'none' : 'underline'); commit(); }} />
+                </div>
+              </div>
+
+              <div className="fb-quad" style={{ marginTop: 8 }}>
+                <NumberInput value={s.fontSize ?? 14} min={1} label="Size" onChange={v => { updS('fontSize', v); commit(); }} />
+                <NumberInput value={s.lineHeight ?? 1.4} min={0.5} step={0.05} label="Line" onChange={v => { updS('lineHeight', v); commit(); }} />
+              </div>
+
+              <div className="fb-quad" style={{ marginTop: 6 }}>
+                <NumberInput value={s.letterSpacing ?? 0} step={0.01} label="Track" onChange={v => { updS('letterSpacing', v); commit(); }} />
+                <div />
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Align</span>
+                <IconGroup
+                  value={s.textAlign ?? 'left'}
+                  onChange={v => { updS('textAlign', v); commit(); }}
+                  options={TEXT_ALIGN_OPTIONS}
+                />
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Color</span>
+                <ColorInput value={s.color ?? '#0f172a'} onChange={v => { updS('color', v); commit(); }} />
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Helper</span>
+                <ColorInput value={s.helperColor ?? FORM_STYLE_DEFAULTS.helperColor} onChange={v => { updS('helperColor', v); commit(); }} />
+              </div>
+
+              {supportsPlaceholderStyling ? (
+                <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                  <span className="fb-prop-label">Placeholder</span>
+                  <ColorInput value={s.placeholderColor ?? FORM_STYLE_DEFAULTS.placeholderColor} onChange={v => { updS('placeholderColor', v); commit(); }} />
+                </div>
+              ) : null}
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Opacity</span>
+                <div className="fb-slider-field">
+                  <input
+                    className="fb-prop-input fb-slider-field__value"
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={Math.round((s.opacity ?? 1) * 100) / 100}
+                    onChange={e => { const next = Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)); updS('opacity', next); }}
+                    onBlur={commit}
+                  />
+                  <input
+                    className="fb-slider"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={s.opacity ?? 1}
+                    onChange={e => updS('opacity', parseFloat(e.target.value))}
+                    onMouseUp={commit}
+                  />
+                </div>
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Fill</span>
+                <div style={{ width: '100%' }}>
+                  <FillPicker value={s.backgroundColor ?? '#ffffff'} onChange={v => { updS('backgroundColor', v); commit(); }} />
+                </div>
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Radius</span>
+                <div className="fb-style-inline-group">
+                  <NumberInput value={s.borderRadius ?? 0} min={0} onChange={v => { updS('borderRadius', v); commit(); }} />
+                  <IconButton icon={UIIcons.radiusLinked} title="All corners equal" active={(s.borderRadiusMode ?? 'linked') === 'linked'} onClick={() => { updS('borderRadiusMode', 'linked'); commit(); }} />
+                  <IconButton icon={UIIcons.radiusIndependent} title="Individual corners" active={s.borderRadiusMode === 'independent'} onClick={() => { updS('borderRadiusMode', 'independent'); commit(); }} />
+                </div>
+              </div>
+
+              {s.borderRadiusMode === 'independent' ? (
+                <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                  <span className="fb-prop-label" />
+                  <div className="fb-quad fb-quad--spaced">
+                    <NumberInput value={s.borderRadiusTL ?? s.borderRadius ?? 0} min={0} label="TL" onChange={v => { updS('borderRadiusTL', v); commit(); }} />
+                    <NumberInput value={s.borderRadiusTR ?? s.borderRadius ?? 0} min={0} label="TR" onChange={v => { updS('borderRadiusTR', v); commit(); }} />
+                    <NumberInput value={s.borderRadiusBL ?? s.borderRadius ?? 0} min={0} label="BL" onChange={v => { updS('borderRadiusBL', v); commit(); }} />
+                    <NumberInput value={s.borderRadiusBR ?? s.borderRadius ?? 0} min={0} label="BR" onChange={v => { updS('borderRadiusBR', v); commit(); }} />
                   </div>
-                  <div className="fb-prop-row">
-                    <span className="fb-prop-label">Align</span>
-                    <IconGroup
-                      value={s.alignItems}
-                      onChange={v => { updS('alignItems', v); commit(); }}
-                      options={[
-                        { value: 'flex-start', icon: LAYOUT_ICONS['align-start'], label: 'Start' },
-                        { value: 'center', icon: LAYOUT_ICONS['align-center'], label: 'Center' },
-                        { value: 'flex-end', icon: LAYOUT_ICONS['align-end'], label: 'End' },
-                        { value: 'stretch', icon: LAYOUT_ICONS['align-stretch'], label: 'Stretch' },
-                      ]}
-                    />
-                  </div>
-                  <div className="fb-prop-row">
-                    <span className="fb-prop-label">Justify</span>
-                    <IconGroup
-                      value={s.justifyContent}
-                      onChange={v => { updS('justifyContent', v); commit(); }}
-                      options={[
-                        { value: 'flex-start', icon: LAYOUT_ICONS['just-start'], label: 'Start' },
-                        { value: 'center', icon: LAYOUT_ICONS['just-center'], label: 'Center' },
-                        { value: 'flex-end', icon: LAYOUT_ICONS['just-end'], label: 'End' },
-                        { value: 'space-between', icon: LAYOUT_ICONS['just-between'], label: 'Between' },
-                        { value: 'space-around', icon: LAYOUT_ICONS['just-around'], label: 'Around' },
-                      ]}
-                    />
-                  </div>
-                  <div className="fb-prop-row">
-                    <span className="fb-prop-label">Gap</span>
-                    <NumberInput value={s.gap ?? 0} min={0} onChange={v => { updS('gap', v); commit(); }} />
-                  </div>
-                </>
-              )}
-              <div className="fb-prop-row">
+                </div>
+              ) : null}
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Gap</span>
+                <NumberInput value={s.gap ?? FORM_STYLE_DEFAULTS.fieldGap} min={0} onChange={v => { updS('gap', v); commit(); }} />
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
                 <span className="fb-prop-label">Padding</span>
-                <div className="fb-quad-wide fb-quad-wide--compact">
-                  <NumberInput value={s.paddingTop ?? 0} min={0} onChange={v => updS('paddingTop', v)} label="T" />
-                  <NumberInput value={s.paddingRight ?? 0} min={0} onChange={v => updS('paddingRight', v)} label="R" />
-                  <NumberInput value={s.paddingBottom ?? 0} min={0} onChange={v => updS('paddingBottom', v)} label="B" />
-                  <NumberInput value={s.paddingLeft ?? 0} min={0} onChange={v => updS('paddingLeft', v)} label="L" />
+                <EdgeInsetsControl
+                  syncKey={`${element.id}:form-padding`}
+                  values={{
+                    top: s.paddingTop ?? 0,
+                    right: s.paddingRight ?? 0,
+                    bottom: s.paddingBottom ?? 0,
+                    left: s.paddingLeft ?? 0,
+                  }}
+                  onChange={(side, nextValue) => {
+                    const keyMap = {
+                      top: 'paddingTop',
+                      right: 'paddingRight',
+                      bottom: 'paddingBottom',
+                      left: 'paddingLeft',
+                    };
+                    updS(keyMap[side], nextValue);
+                  }}
+                />
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Border</span>
+                {(s.borderWidth ?? 0) > 0 ? (
+                  <div className="fb-style-inline-group fb-style-inline-group--stacked">
+                    <NumberInput value={s.borderWidth ?? 0} min={0} onChange={v => { updS('borderWidth', v); updS('borderStyle', 'solid'); commit(); }} />
+                    <FillPicker value={s.borderColor ?? '#000000'} onChange={v => { updS('borderColor', v); updS('borderStyle', 'solid'); commit(); }} />
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="fb-add-field"
+                    onClick={() => { updS('borderWidth', 1); updS('borderStyle', 'solid'); commit(); }}
+                  >
+                    Add...
+                  </button>
+                )}
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Shadows</span>
+                <button
+                  type="button"
+                  className={`fb-shadow-style-cta${s.boxShadow ? ' is-active' : ''}`}
+                  ref={shadowTriggerRef}
+                  onClick={() => {
+                    shadowDraftDirtyRef.current = false;
+                    setShadowModalOpen(true);
+                  }}
+                >
+                  <span className={`fb-shadow-style-cta__indicator${s.boxShadow ? ' is-active' : ''}`} />
+                  <span>{getShadowSummary(s)}</span>
+                </button>
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Focus</span>
+                <FormStatePopupButton
+                  title="Focus"
+                  stateKey="focus"
+                  styles={s}
+                  onPatch={(patch) => updateStyles(element.id, bpId, patch)}
+                  onCommit={commit}
+                  onPreview={(previewState) => updateStyles(element.id, bpId, { formStatePreview: previewState })}
+                />
+              </div>
+
+              {(element.type === 'checkbox' || element.type === 'radio-group') ? (
+                <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                  <span className="fb-prop-label">Checked</span>
+                  <FormStatePopupButton
+                    title="Checked"
+                    stateKey="checked"
+                    styles={s}
+                    onPatch={(patch) => updateStyles(element.id, bpId, patch)}
+                    onCommit={commit}
+                    onPreview={(previewState) => updateStyles(element.id, bpId, { formStatePreview: previewState })}
+                  />
+                </div>
+              ) : null}
+            </Section>
+
+            <Section title="States">
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Preview</span>
+                <ChoiceGroup
+                  value={s.formStatePreview ?? FORM_STYLE_DEFAULTS.formStatePreview}
+                  onChange={(value) => {
+                    updS('formStatePreview', value);
+                    commit();
+                  }}
+                  options={FORM_FIELD_PREVIEW_STATE_OPTIONS}
+                />
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Hover Fill</span>
+                <ColorInput value={s.hoverBackgroundColor ?? s.backgroundColor ?? FORM_STYLE_DEFAULTS.hoverBackgroundColor} onChange={v => { updS('hoverBackgroundColor', v); commit(); }} />
+              </div>
+
+              <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Hover Border</span>
+                <ColorInput value={s.hoverBorderColor ?? s.borderColor ?? FORM_STYLE_DEFAULTS.hoverBorderColor} onChange={v => { updS('hoverBorderColor', v); commit(); }} />
+              </div>
+            </Section>
+          </>
+        ) : null}
+
+        {isFormSubmitButton ? (
+          <>
+            <Section title="Button">
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Label</span>
+                <input
+                  className="fb-prop-input"
+                  type="text"
+                  value={resolved.label ?? 'Submit'}
+                  onChange={(event) => updBase({ label: event.target.value })}
+                  onBlur={commit}
+                  placeholder="Submit"
+                />
+              </div>
+              <div className="fb-artboard-bp-note" style={{ marginTop: 8 }}>
+                Place this button inside a form container to trigger the live submit runtime.
+              </div>
+            </Section>
+
+            <Section title="States">
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Preview</span>
+                <ChoiceGroup
+                  value={s.formButtonStatePreview ?? FORM_STYLE_DEFAULTS.formButtonStatePreview}
+                  onChange={(value) => {
+                    updS('formButtonStatePreview', value);
+                    commit();
+                  }}
+                  options={FORM_BUTTON_PREVIEW_STATE_OPTIONS}
+                />
+              </div>
+
+              {FORM_BUTTON_STATE_GROUPS.map((state) => {
+                const backgroundKey = `${state.key}BackgroundColor`;
+                const borderKey = `${state.key}BorderColor`;
+                const textKey = `${state.key}TextColor`;
+                return (
+                  <React.Fragment key={state.key}>
+                    <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                      <span className="fb-prop-label">{state.label} Fill</span>
+                      <ColorInput value={s[backgroundKey] ?? FORM_STYLE_DEFAULTS[backgroundKey] ?? s.backgroundColor ?? FORM_STYLE_DEFAULTS.backgroundColor} onChange={v => { updS(backgroundKey, v); commit(); }} />
+                    </div>
+
+                    <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                      <span className="fb-prop-label">{state.label} Border</span>
+                      <ColorInput value={s[borderKey] ?? FORM_STYLE_DEFAULTS[borderKey] ?? s.borderColor ?? FORM_STYLE_DEFAULTS.borderColor} onChange={v => { updS(borderKey, v); commit(); }} />
+                    </div>
+
+                    <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                      <span className="fb-prop-label">{state.label} Text</span>
+                      <ColorInput value={s[textKey] ?? FORM_STYLE_DEFAULTS[textKey] ?? s.color ?? FORM_STYLE_DEFAULTS.textColor} onChange={v => { updS(textKey, v); commit(); }} />
+                    </div>
+                  </React.Fragment>
+                );
+              })}
+
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Focus Ring</span>
+                <div className="fb-style-inline-group fb-style-inline-group--stacked">
+                  <NumberInput value={s.focusRingWidth ?? FORM_STYLE_DEFAULTS.focusRingWidth} min={0} onChange={v => { updS('focusRingWidth', v); commit(); }} />
+                  <ColorInput value={s.focusRingColor ?? FORM_STYLE_DEFAULTS.focusRingColor} onChange={v => { updS('focusRingColor', v); commit(); }} />
                 </div>
               </div>
             </Section>
+          </>
+        ) : null}
+
+        {/* ── Layout / Spacing ────────────────────────── */}
+        {(element.type === 'frame' || isFormContainerType(element.type) || isFormSubmitButton) ? (() => {
+          if (isComponentInstanceOnPage) return null;
+          const supportsAutoLayout = element.type === 'frame' || isFormContainerType(element.type);
+          const supportsGap = supportsAutoLayout || isFormField || isFormSubmitButton;
+          const frameLayoutOn = s.display === 'flex';
+          return (
+            <Section title="Layout" action={<ResetBtn show={isSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} onReset={() => resetSOv('display','flexDirection','flexWrap','gap','alignItems','justifyContent','paddingTop','paddingRight','paddingBottom','paddingLeft')} />}>
+              {supportsAutoLayout ? (
+                <>
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Space</span>
+                    <ChoiceGroup
+                      value={frameLayoutOn ? 'auto' : 'free'}
+                      onChange={v => {
+                        if (v === 'free') updS('display', null);
+                        else {
+                          updS('display', 'flex');
+                          if (!s.flexDirection) updS('flexDirection', 'column');
+                        }
+                        commit();
+                      }}
+                      options={[
+                        { value: 'free', label: 'Free' },
+                        { value: 'auto', label: 'Auto' },
+                      ]}
+                    />
+                  </div>
+                  {frameLayoutOn && (
+                    <>
+                      <div className="fb-prop-row">
+                        <span className="fb-prop-label">Direction</span>
+                        <IconGroup
+                          value={s.flexDirection}
+                          onChange={v => { updS('flexDirection', v); commit(); }}
+                          options={[
+                            { value: 'row', icon: LAYOUT_ICONS.row, label: 'Row' },
+                            { value: 'column', icon: LAYOUT_ICONS.column, label: 'Column' },
+                          ]}
+                        />
+                      </div>
+                      <div className="fb-prop-row">
+                        <span className="fb-prop-label">Wrap</span>
+                        <IconGroup
+                          value={s.flexWrap}
+                          onChange={v => { updS('flexWrap', v); commit(); }}
+                          options={[
+                            { value: 'nowrap', icon: LAYOUT_ICONS.nowrap, label: 'No wrap' },
+                            { value: 'wrap', icon: LAYOUT_ICONS.wrap, label: 'Wrap' },
+                          ]}
+                        />
+                      </div>
+                      <div className="fb-prop-row">
+                        <span className="fb-prop-label">Align</span>
+                        <IconGroup
+                          value={s.alignItems}
+                          onChange={v => { updS('alignItems', v); commit(); }}
+                          options={[
+                            { value: 'flex-start', icon: LAYOUT_ICONS['align-start'], label: 'Start' },
+                            { value: 'center', icon: LAYOUT_ICONS['align-center'], label: 'Center' },
+                            { value: 'flex-end', icon: LAYOUT_ICONS['align-end'], label: 'End' },
+                            { value: 'stretch', icon: LAYOUT_ICONS['align-stretch'], label: 'Stretch' },
+                          ]}
+                        />
+                      </div>
+                      <div className="fb-prop-row">
+                        <span className="fb-prop-label">Justify</span>
+                        <IconGroup
+                          value={s.justifyContent}
+                          onChange={v => { updS('justifyContent', v); commit(); }}
+                          options={[
+                            { value: 'flex-start', icon: LAYOUT_ICONS['just-start'], label: 'Start' },
+                            { value: 'center', icon: LAYOUT_ICONS['just-center'], label: 'Center' },
+                            { value: 'flex-end', icon: LAYOUT_ICONS['just-end'], label: 'End' },
+                            { value: 'space-between', icon: LAYOUT_ICONS['just-between'], label: 'Between' },
+                            { value: 'space-around', icon: LAYOUT_ICONS['just-around'], label: 'Around' },
+                          ]}
+                        />
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : null}
+              {supportsGap ? (
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Gap</span>
+                  <NumberInput value={s.gap ?? 0} min={0} onChange={v => { updS('gap', v); commit(); }} />
+                </div>
+              ) : null}
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Padding</span>
+                <EdgeInsetsControl
+                  syncKey={`${element.id}:layout-padding`}
+                  values={{
+                    top: s.paddingTop ?? 0,
+                    right: s.paddingRight ?? 0,
+                    bottom: s.paddingBottom ?? 0,
+                    left: s.paddingLeft ?? 0,
+                  }}
+                  onChange={(side, nextValue) => {
+                    const keyMap = {
+                      top: 'paddingTop',
+                      right: 'paddingRight',
+                      bottom: 'paddingBottom',
+                      left: 'paddingLeft',
+                    };
+                    updS(keyMap[side], nextValue);
+                  }}
+                />
+              </div>
+            </Section>
           );
-        })() : (
-          <Section title="Layout" defaultOpen={false} />
-        )}
+        })() : null}
 
         <Section title="Overlays" defaultOpen={false} />
 
         <Section title="Cursor" defaultOpen={false} />
 
+        {!isFormField ? (
         <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','brightness','contrast','saturation','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','brightness','contrast','saturation','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Opacity</span>
@@ -3908,6 +5000,30 @@ export default function PropertiesPanel() {
                 <span className={`fb-shadow-style-cta__indicator${s.boxShadow ? ' is-active' : ''}`} />
                 <span>{getShadowSummary(s)}</span>
               </button>
+            </div>
+          ) : null}
+
+          {!isComponentInstanceOnPage && isDropdownField ? (
+            <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+              <span className="fb-prop-label">Icon</span>
+              <div style={{ width: '100%', display: 'grid', gap: 8 }}>
+                <div className="fb-icon-group" role="group" aria-label="Dropdown icon">
+                  {FORM_SELECT_ICON_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`fb-icon-btn${(s.selectIcon ?? FORM_STYLE_DEFAULTS.selectIcon) === option.value ? ' fb-icon-btn--active' : ''}`}
+                      title={option.label}
+                      onClick={() => { updS('selectIcon', option.value); commit(); }}
+                    >
+                      <span aria-hidden="true">{option.icon}</span>
+                    </button>
+                  ))}
+                </div>
+                {(s.selectIcon ?? FORM_STYLE_DEFAULTS.selectIcon) !== 'none' ? (
+                  <ColorInput value={s.iconColor ?? s.placeholderColor ?? FORM_STYLE_DEFAULTS.iconColor} onChange={v => { updS('iconColor', v); commit(); }} />
+                ) : null}
+              </div>
             </div>
           ) : null}
 
@@ -4051,7 +5167,7 @@ export default function PropertiesPanel() {
           </div>
           )}
 
-          {!isComponentInstanceOnPage && (element.type === 'frame' || element.type === 'icon') ? (
+          {!isComponentInstanceOnPage && ((element.type === 'frame' || isFormContainerType(element.type)) || element.type === 'icon') ? (
             <div className="fb-prop-row">
               <span className="fb-prop-label">Background Blur</span>
               <div className="fb-slider-field">
@@ -4128,7 +5244,7 @@ export default function PropertiesPanel() {
           </div>
           )}
 
-          {!isComponentInstanceOnPage && element.type === 'frame' && (
+          {!isComponentInstanceOnPage && (element.type === 'frame' || isFormContainerType(element.type)) && (
             <div className="fb-prop-row">
               <VariableBindingLabel label="Image">
                 {allowVariableBindings ? (
@@ -4458,7 +5574,7 @@ export default function PropertiesPanel() {
             </div>
           )}
 
-          {!isComponentInstanceOnPage && ((element.type === 'image') || (element.type === 'frame' && s.backgroundImage)) && (
+          {!isComponentInstanceOnPage && ((element.type === 'image') || ((element.type === 'frame' || isFormContainerType(element.type)) && s.backgroundImage)) && (
             <div className="fb-prop-row">
               <span className="fb-prop-label">Fit</span>
               <IconGroup
@@ -4590,6 +5706,7 @@ export default function PropertiesPanel() {
             )}
           </div>
         </Section>
+        ) : null}
 
         <Section title="Advanced" defaultOpen={false} action={<ResetBtn show={isOv('src')} onReset={() => { resetOv('src'); }} />}>
           <div className="fb-prop-row">

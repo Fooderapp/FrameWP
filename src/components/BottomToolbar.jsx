@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorStore } from '../store/editorStore';
 import { UIIcons } from './UIIcons';
-import { ElementPickerGrid } from '../panels/ElementsPanel';
+import { ElementPickerGrid, FORM_ELEMENT_TYPES } from '../panels/ElementsPanel';
 
 const SHAPE_OPTIONS = [
   {
@@ -26,9 +26,9 @@ const SHAPE_OPTIONS = [
   },
 ];
 
-function ToolButton({ active = false, icon, title, openable = false, badge = null, onClick }) {
+function ToolButton({ active = false, icon, title, openable = false, badge = null, className = '', onClick }) {
   return (
-    <button type="button" className={`fb-bottom-toolbar__tool${active ? ' is-active' : ''}`} onClick={onClick} title={title} aria-label={title}>
+    <button type="button" className={`fb-bottom-toolbar__tool${active ? ' is-active' : ''}${className ? ` ${className}` : ''}`} onClick={onClick} title={title} aria-label={title}>
       <span className="fb-bottom-toolbar__icon">{icon}</span>
       {openable ? <span className="fb-bottom-toolbar__chevron">{UIIcons.chevronDown}</span> : null}
       {badge ? <span className="fb-bottom-toolbar__badge">{badge}</span> : null}
@@ -74,6 +74,7 @@ export default function BottomToolbar() {
 
   const unresolvedCount = useMemo(() => (comments ?? []).filter((entry) => !entry.resolved).length, [comments]);
   const elementToolActive = ['draw-frame', 'draw-image', 'draw-video', 'draw-text', 'draw-icon'].includes(activeCanvasTool);
+  const formToolActive = ['draw-form', 'draw-text-field', 'draw-textarea-field', 'draw-rich-text-editor', 'draw-radio-group', 'draw-dropdown', 'draw-checkbox', 'draw-file-upload', 'draw-captcha', 'draw-submit-button'].includes(activeCanvasTool);
   const shapeToolActive = ['draw-circle', 'draw-line', 'draw-polygon', 'draw-pen'].includes(activeCanvasTool);
 
   useEffect(() => {
@@ -123,6 +124,29 @@ export default function BottomToolbar() {
               <div className="fb-bottom-toolbar__modal-title">Elements</div>
               <div className="fb-bottom-toolbar__modal-hint">Click to draw or drag directly onto the canvas.</div>
               <ElementPickerGrid compact toolbarPalette onItemChosen={() => setOpenMenu(null)} onItemDragEnd={handleDragEnd} />
+            </div>
+          ) : null}
+        </div>
+
+        <div className={`fb-bottom-toolbar__group${openMenu === 'forms' ? ' is-open' : ''}`}>
+          <ToolButton
+            active={formToolActive}
+            icon={UIIcons.form}
+            title="Forms"
+            openable
+            onClick={() => setOpenMenu((current) => (current === 'forms' ? null : 'forms'))}
+          />
+          {openMenu === 'forms' ? (
+            <div className="fb-bottom-toolbar__modal fb-bottom-toolbar__modal--forms">
+              <div className="fb-bottom-toolbar__modal-title">Form Builder</div>
+              <div className="fb-bottom-toolbar__modal-hint">Click to draw or drag the first form elements onto the canvas.</div>
+              <ElementPickerGrid
+                items={FORM_ELEMENT_TYPES}
+                compact
+                toolbarPalette
+                onItemChosen={() => setOpenMenu(null)}
+                onItemDragEnd={handleDragEnd}
+              />
             </div>
           ) : null}
         </div>

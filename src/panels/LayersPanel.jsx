@@ -73,6 +73,78 @@ const Icons = {
       <path d="M8.9 2.5 7 13.5" />
     </svg>
   ),
+  form: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="2.5" width="11" height="11" rx="2" />
+      <path d="M5 5.5h6" />
+      <path d="M5 8h6" opacity="0.7" />
+      <path d="M5 10.5h3.5" opacity="0.45" />
+    </svg>
+  ),
+  'text-field': (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="4" width="11" height="8" rx="2" />
+      <path d="M5 8h5.5" />
+    </svg>
+  ),
+  'textarea-field': (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="2.75" width="11" height="10.5" rx="1.8" />
+      <path d="M5 5.25h6" />
+      <path d="M5 8h6" />
+      <path d="M5 10.75h4" />
+    </svg>
+  ),
+  'rich-text-editor': (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="2.75" width="11" height="10.5" rx="1.8" />
+      <path d="M4.75 5.25h2.5" />
+      <path d="M5.5 5.25v4.75" />
+      <path d="M8.75 5.25h2.5" />
+      <path d="M10 5.25v4.75" />
+      <path d="M8.75 7.75h2.5" />
+    </svg>
+  ),
+  'radio-group': (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="4.5" cy="5" r="1.75" />
+      <circle cx="4.5" cy="10.75" r="1.75" />
+      <path d="M8 5h4.5" />
+      <path d="M8 10.75h4.5" opacity="0.7" />
+    </svg>
+  ),
+  dropdown: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="4" width="11" height="8" rx="2" />
+      <path d="M10.5 7l1.75 1.75L14 7" />
+    </svg>
+  ),
+  checkbox: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="3.25" width="4" height="4" rx="1" />
+      <path d="M8.5 5.25H13" />
+    </svg>
+  ),
+  'file-upload': (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="3" width="11" height="10" rx="2" strokeDasharray="2 1.5" />
+      <path d="M8 10V6.2" />
+      <path d="m6.4 7.8 1.6-1.6 1.6 1.6" />
+    </svg>
+  ),
+  captcha: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="3" width="11" height="10" rx="2" />
+      <path d="M5 8.25 7 10l4-4" />
+    </svg>
+  ),
+  'submit-button': (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="2.2" />
+      <path d="M5 8h6" />
+      <path d="m9 6.25 2 1.75L9 9.75" />
+    </svg>
+  ),
   icon: (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
       <path d="M8 1.8l1.93 3.91 4.32.63-3.12 3.04.74 4.3L8 11.65 4.13 13.68l.74-4.3-3.12-3.04 4.32-.63L8 1.8z"/>
@@ -110,6 +182,7 @@ const Icons = {
 
 function getIconForElement(el, bpId) {
   if (el.componentInstance) return UIIcons.component;
+  if (el.type === 'form') return Icons.form;
   if (el.type !== 'frame') return Icons[el.type] ?? Icons.frame;
   const resolved = resolveElement(el, bpId || 'desktop');
   if (resolved.styles?.display === 'flex') {
