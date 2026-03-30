@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { IconButton, UIIcons } from './UIIcons';
-import { useEditorStore } from '../store/editorStore';
+import { getLoopItemPreviewVariables, useEditorStore } from '../store/editorStore';
 import { isFormContainerType, isFormFieldType, normalizeFormConfig } from '../domain/formModel';
 import { createSubmissionNodeConfig, normalizeSubmissionActionConfig, normalizeSubmissionFieldEntries } from '../domain/formSubmissionModel';
 
@@ -211,6 +211,19 @@ function getSelectedVariableOptions(pageVariables, globalVariables) {
     ...pageVariables.map((variable) => ({ ...variable, scope: 'page' })),
     ...globalVariables.map((variable) => ({ ...variable, scope: 'global' })),
   ];
+}
+
+function getNavigationVariableOptions(pageVariables, globalVariables, loopItemVariables) {
+  return [
+    ...getSelectedVariableOptions(pageVariables, globalVariables),
+    ...loopItemVariables.map((variable) => ({ ...variable, scope: 'loop-item' })),
+  ].filter((variable) => variable.type === 'string');
+}
+
+function getVariableOptionLabel(variable) {
+  if (!variable) return 'Variable';
+  const scopeLabel = variable.scope === 'global' ? 'Global' : (variable.scope === 'loop-item' ? 'Loop Item' : 'Page');
+  return `${scopeLabel} / ${variable.name}`;
 }
 
 function getNodeOutputPorts(node) {
@@ -425,7 +438,14 @@ function getNodeSummary(node, variableLookup, variableSources) {
     }
     return 'Choose fields and submit actions';
   }
-  if (node.type === 'navigate') return node.config?.pageTitle || node.config?.pageUrl || 'Choose destination';
+  if (node.type === 'navigate') {
+    if (node.config?.destinationSource === 'variable' && node.config?.variableId) {
+      const variableKey = `${node.config?.variableScope || 'page'}:${node.config?.variableId || ''}`;
+      const variableName = variableLookup.get(variableKey)?.name || 'variable';
+      return `Navigate to ${variableName}`;
+    }
+    return node.config?.pageTitle || node.config?.pageUrl || 'Choose destination';
+  }
   if (node.type === 'set-variable') {
     const variableKey = `${node.config?.variableScope || 'page'}:${node.config?.variableId || ''}`;
     const variableName = variableLookup.get(variableKey)?.name || 'variable';
@@ -1337,8 +1357,9 @@ function SubmissionFormInspector({ selectedNode, submittedFieldOptions, actionTa
   );
 }
 
-function FlowInspector({ flow, selectedNode, onFlowChange, onNodeChange, onDeleteNode, pageVariables, globalVariables, variableSources, elementName, submittedFieldOptions, legacyFormConfig }) {
+function FlowInspector({ flow, selectedNode, onFlowChange, onNodeChange, onDeleteNode, pageVariables, globalVariables, loopItemVariables, variableSources, elementName, submittedFieldOptions, legacyFormConfig }) {
   const variableOptions = getSelectedVariableOptions(pageVariables, globalVariables);
+  const navigationVariableOptions = getNavigationVariableOptions(pageVariables, globalVariables, loopItemVariables);
   const triggerSummary = getTriggerSummary(flow, elementName);
   const supportsSubmissionData = getFlowTriggerType(flow) === 'form-submit';
 
@@ -1363,29 +1384,84 @@ function FlowInspector({ flow, selectedNode, onFlowChange, onNodeChange, onDelet
       </div>
 
       {selectedNode.type === 'navigate' ? (
-        <label className="fb-variable-field">
-          <span className="fb-variable-field__label">Target Page</span>
-          <select
-            className="fb-prop-input"
-            value={selectedNode.config?.pageId || ''}
-            onChange={(event) => {
-              const pageId = parseInt(event.target.value, 10) || 0;
-              const page = variableSources.pages.find((entry) => entry.id === pageId) || null;
-              onNodeChange({
-                ...selectedNode,
-                config: {
-                  ...selectedNode.config,
-                  pageId,
-                  pageTitle: page?.title || '',
-                  pageUrl: page?.url || '',
-                },
-              });
-            }}
-          >
-            <option value="">Select page…</option>
-            {(variableSources.pages ?? []).map((page) => <option key={page.id} value={page.id}>{page.title}</option>)}
-          </select>
-        </label>
+        <>
+          <label className="fb-variable-field">
+            <span className="fb-variable-field__label">Destination Source</span>
+            <select
+              className="fb-prop-input"
+              value={selectedNode.config?.destinationSource === 'variable' ? 'variable' : 'page'}
+              onChange={(event) => {
+                const destinationSource = event.target.value === 'variable' ? 'variable' : 'page';
+                onNodeChange({
+                  ...selectedNode,
+                  config: {
+                    ...selectedNode.config,
+                    destinationSource,
+                  },
+                });
+              }}
+            >
+              <option value="page">Page</option>
+              <option value="variable">Variable</option>
+            </select>
+          </label>
+          {selectedNode.config?.destinationSource === 'variable' ? (
+            <label className="fb-variable-field">
+              <span className="fb-variable-field__label">Destination Variable</span>
+              <select
+                className="fb-prop-input"
+                value={`${selectedNode.config?.variableScope || 'page'}:${selectedNode.config?.variableId || ''}`}
+                onChange={(event) => {
+                  const [variableScope, variableId] = event.target.value.split(':');
+                  const variable = navigationVariableOptions.find((entry) => entry.scope === variableScope && entry.id === variableId) || null;
+                  onNodeChange({
+                    ...selectedNode,
+                    config: {
+                      ...selectedNode.config,
+                      destinationSource: 'variable',
+                      variableScope,
+                      variableId,
+                      variableType: variable?.type || 'string',
+                    },
+                  });
+                }}
+              >
+                <option value="page:">Select variable…</option>
+                {navigationVariableOptions.map((variable) => (
+                  <option key={`${variable.scope}:${variable.id}`} value={`${variable.scope}:${variable.id}`}>
+                    {getVariableOptionLabel(variable)}
+                  </option>
+                ))}
+              </select>
+              <div className="fb-artboard-bp-note">Use Item URL to navigate each loop card to its own post or product.</div>
+            </label>
+          ) : (
+            <label className="fb-variable-field">
+              <span className="fb-variable-field__label">Target Page</span>
+              <select
+                className="fb-prop-input"
+                value={selectedNode.config?.pageId || ''}
+                onChange={(event) => {
+                  const pageId = parseInt(event.target.value, 10) || 0;
+                  const page = variableSources.pages.find((entry) => entry.id === pageId) || null;
+                  onNodeChange({
+                    ...selectedNode,
+                    config: {
+                      ...selectedNode.config,
+                      destinationSource: 'page',
+                      pageId,
+                      pageTitle: page?.title || '',
+                      pageUrl: page?.url || '',
+                    },
+                  });
+                }}
+              >
+                <option value="">Select page…</option>
+                {(variableSources.pages ?? []).map((page) => <option key={page.id} value={page.id}>{page.title}</option>)}
+              </select>
+            </label>
+          )}
+        </>
       ) : null}
 
       {selectedNode.type === 'submission-form' ? (
@@ -1739,9 +1815,11 @@ export default function FlowEditorModal() {
   const flows = getCurrentPageFlows({ includeLegacy: false });
   const pageVariables = getCurrentPageVariables();
   const element = flowEditorState.elementId ? allElements.find((entry) => entry.id === flowEditorState.elementId) || null : null;
+  const loopItemVariables = useMemo(() => getLoopItemPreviewVariables(element, allElements, variableSources, pageVariables, globalVariables), [allElements, element, globalVariables, pageVariables, variableSources]);
   const selectedTriggerType = isFormContainerType(element?.type) ? 'form-submit' : 'element-click';
   const variableOptions = useMemo(() => getSelectedVariableOptions(pageVariables, globalVariables), [pageVariables, globalVariables]);
-  const variableLookup = useMemo(() => new Map(variableOptions.map((variable) => [`${variable.scope}:${variable.id}`, variable])), [variableOptions]);
+  const navigationVariableOptions = useMemo(() => getNavigationVariableOptions(pageVariables, globalVariables, loopItemVariables), [globalVariables, loopItemVariables, pageVariables]);
+  const variableLookup = useMemo(() => new Map([...variableOptions, ...navigationVariableOptions].map((variable) => [`${variable.scope}:${variable.id}`, variable])), [navigationVariableOptions, variableOptions]);
 
   const activeFlow = useMemo(() => {
     const requestedFlow = flowEditorState.flowId
@@ -2060,6 +2138,7 @@ export default function FlowEditorModal() {
               onDeleteNode={handleDeleteNode}
               pageVariables={pageVariables}
               globalVariables={globalVariables}
+              loopItemVariables={loopItemVariables}
               variableSources={variableSources}
               elementName={element?.name || 'Selected element'}
               submittedFieldOptions={submittedFieldOptions}

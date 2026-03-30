@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { useEditorStore, createFrame, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
+import { useEditorStore, createFrame, createLoop, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
 import { getAssetStyleUpdatesForElement, parseAssetDragPayload } from '../store/assetStyles';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
@@ -8,6 +8,7 @@ import { extractSvgMarkup, sanitizeSvgMarkup } from '../components/iconLibrary';
 import { plainTextToRichTextHtml, sanitizeRichTextHtml } from '../components/richText';
 import { hasAnyElementRotation } from '../utils/elementTransform';
 import { isFormContainerType, isFormFieldType } from '../domain/formModel';
+import { isLoopElementType } from '../domain/loopModel';
 
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
@@ -19,10 +20,11 @@ const TELEPORT_MARKER = 'FRAMEWP_TELEPORT';
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
 
 function isCanvasContainerElement(candidate) {
-  return candidate?.type === 'frame' || isFormContainerType(candidate?.type);
+  return candidate?.type === 'frame' || isLoopElementType(candidate?.type) || isFormContainerType(candidate?.type);
 }
 
 function createElementByType(type, x, y) {
+  if (type === 'loop') return createLoop(x, y);
   if (type === 'form') return createForm(x, y);
   if (type === 'text-field') return createFormTextField(x, y);
   if (type === 'textarea-field') return createFormTextareaField(x, y);
@@ -72,11 +74,20 @@ function cloneSubtree(subtree, rootId) {
   return subtree.map(el => ({
     ...el,
     id: idMap[el.id],
+    ...(el.loopTemplateRootFor ? { loopTemplateRootFor: idMap[el.loopTemplateRootFor] ?? el.loopTemplateRootFor } : {}),
     parentId: idMap[el.parentId] ?? null,
     children: (el.children ?? []).map(cid => idMap[cid]).filter(Boolean),
     base: el.id === rootId
-      ? { ...el.base, x: (el.base.x ?? 0) + 20, y: (el.base.y ?? 0) + 20 }
-      : { ...el.base },
+      ? {
+          ...el.base,
+          ...(el.base?.loop ? { loop: { ...el.base.loop, ...(el.base.loop.templateRootId ? { templateRootId: idMap[el.base.loop.templateRootId] ?? el.base.loop.templateRootId } : {}) } } : {}),
+          x: (el.base.x ?? 0) + 20,
+          y: (el.base.y ?? 0) + 20,
+        }
+      : {
+          ...el.base,
+          ...(el.base?.loop ? { loop: { ...el.base.loop, ...(el.base.loop.templateRootId ? { templateRootId: idMap[el.base.loop.templateRootId] ?? el.base.loop.templateRootId } : {}) } } : {}),
+        },
     overrides: { ...(el.overrides ?? {}) },
   }));
 }

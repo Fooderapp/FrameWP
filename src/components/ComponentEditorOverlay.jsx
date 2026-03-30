@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import LeftPanel from '../panels/LeftPanel';
 import InfiniteCanvas from '../canvas/InfiniteCanvas';
 import PropertiesPanel from '../panels/PropertiesPanel';
@@ -18,6 +18,9 @@ function getBaseVariantId(variants, variantId) {
 
 export default function ComponentEditorOverlay() {
   const [playModeOpen, setPlayModeOpen] = useState(false);
+  const [leftWidth, setLeftWidth] = useState(240);
+  const [rightWidth, setRightWidth] = useState(312);
+  const resizeStateRef = useRef(null);
   const componentEditor = useEditorStore(s => s.componentEditor);
   const components = useEditorStore(s => s.components);
   const previewVariants = useEditorStore(s => getLiveComponentEditorVariants(s.componentEditor));
@@ -32,6 +35,47 @@ export default function ComponentEditorOverlay() {
   const activeVariantId = componentEditor.activeVariantId;
   const defaultVariants = (componentEditor.variants ?? []).filter(isDefaultVariant);
   const activeBaseVariantId = getBaseVariantId(componentEditor.variants ?? [], activeVariantId);
+
+  useEffect(() => {
+    const handlePointerMove = (event) => {
+      const state = resizeStateRef.current;
+      if (!state) return;
+      if (state.side === 'left') {
+        const nextWidth = Math.min(420, Math.max(220, event.clientX - state.containerLeft));
+        setLeftWidth(nextWidth);
+        return;
+      }
+      const nextWidth = Math.min(360, Math.max(280, state.containerRight - event.clientX));
+      setRightWidth(nextWidth);
+    };
+
+    const stopResize = () => {
+      resizeStateRef.current = null;
+      document.body.classList.remove('fb-is-resizing-panels');
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+    };
+  }, []);
+
+  const startResize = (side) => (event) => {
+    const container = event.currentTarget.parentElement;
+    const rect = container?.getBoundingClientRect();
+    if (!rect) return;
+    resizeStateRef.current = {
+      side,
+      containerLeft: rect.left,
+      containerRight: rect.right,
+    };
+    document.body.classList.add('fb-is-resizing-panels');
+    event.preventDefault();
+  };
 
   if (!componentEditor.isOpen || !component) return null;
 
@@ -80,11 +124,13 @@ export default function ComponentEditorOverlay() {
         </div>
       </div>
       <div className="fb-editor fb-component-editor-overlay__body">
-        <div className="fb-side-shell fb-side-shell--left" style={{ width: 240 }}>
+        <div className="fb-side-shell fb-side-shell--left" style={{ width: leftWidth }}>
           <LeftPanel />
+          <button type="button" className="fb-panel-resize-handle fb-panel-resize-handle--left" aria-label="Resize left panel" onPointerDown={startResize('left')} />
         </div>
         <InfiniteCanvas />
-        <div className="fb-side-shell fb-side-shell--right" style={{ width: 312 }}>
+        <div className="fb-side-shell fb-side-shell--right" style={{ width: rightWidth }}>
+          <button type="button" className="fb-panel-resize-handle fb-panel-resize-handle--right" aria-label="Resize right panel" onPointerDown={startResize('right')} />
           <PropertiesPanel />
         </div>
       </div>

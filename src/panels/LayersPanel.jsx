@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, loopTemplateRootHasContent } from '../store/editorStore';
 import { UIIcons } from '../components/UIIcons';
+import { isLoopElementType } from '../domain/loopModel';
 
 function LayerComponentCreateModal({ defaultName, errorMessage = '', onCancel, onSubmit }) {
   const [name, setName] = useState(defaultName || 'Component');
@@ -42,6 +43,11 @@ const Icons = {
   frame: (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="none">
       <rect x="2" y="2" width="12" height="12" rx="1.5"/>
+    </svg>
+  ),
+  loop: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.8 11a2.2 2.2 0 1 1 0-4.4c.98 0 1.47.57 2.2 1.7.73-1.13 1.22-1.7 2.2-1.7a2.2 2.2 0 1 1 0 4.4c-.98 0-1.47-.57-2.2-1.7-.73 1.13-1.22 1.7-2.2 1.7Z" />
     </svg>
   ),
   frameAutoHorizontal: (
@@ -183,7 +189,8 @@ const Icons = {
 function getIconForElement(el, bpId) {
   if (el.componentInstance) return UIIcons.component;
   if (el.type === 'form') return Icons.form;
-  if (el.type !== 'frame') return Icons[el.type] ?? Icons.frame;
+  if (isLoopElementType(el.type)) return Icons.loop;
+  if (el.type !== 'frame' && !isLoopElementType(el.type)) return Icons[el.type] ?? Icons.frame;
   const resolved = resolveElement(el, bpId || 'desktop');
   if (resolved.styles?.display === 'flex') {
     return resolved.styles?.flexDirection === 'row'
@@ -194,9 +201,11 @@ function getIconForElement(el, bpId) {
 }
 
 function getLayerChildren(el, allElements) {
-  return el?.children?.length
+  const children = el?.children?.length
     ? el.children.map((childId) => allElements.find((candidate) => candidate.id === childId)).filter(Boolean)
     : allElements.filter((candidate) => candidate.parentId === el.id);
+  if (!isLoopElementType(el?.type)) return children;
+  return children.filter((child) => !(child?.loopTemplateRootFor === el.id && !loopTemplateRootHasContent(child)));
 }
 
 function hasHoveredDescendant(el, allElements, hoveredId) {

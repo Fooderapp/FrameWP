@@ -3,7 +3,7 @@ import { getShapePresetKind } from './editorStore';
 export const FB_ASSET_PAYLOAD_MIME = 'application/x-framebuilder-asset';
 export const FB_ASSET_PAYLOAD_FALLBACK = 'fb-asset-payload';
 
-const KNOWN_ELEMENT_TYPES = new Set(['frame', 'text', 'icon', 'image', 'video', 'embed', 'scroll-sequence']);
+const KNOWN_ELEMENT_TYPES = new Set(['frame', 'loop', 'text', 'icon', 'image', 'video', 'embed', 'scroll-sequence']);
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -16,7 +16,7 @@ function sanitizeStyleProps(styleProps) {
 function buildColorStyleUpdates(targetElement, value) {
   if (!targetElement || typeof value !== 'string' || !value.trim()) return null;
   if (targetElement.type === 'text') return { color: value };
-  if (targetElement.type === 'frame') return { backgroundColor: value };
+  if (targetElement.type === 'frame' || targetElement.type === 'loop') return { backgroundColor: value };
   if (targetElement.type === 'icon') {
     return getShapePresetKind(targetElement) === 'line'
       ? { strokeColor: value }

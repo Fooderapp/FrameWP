@@ -9,6 +9,7 @@ import IconLibraryModal from './components/IconLibraryModal';
 import FlowEditorModal from './components/FlowEditorModal';
 import VariablesModal from './components/VariablesModal';
 import BottomToolbar from './components/BottomToolbar';
+import AtomLogo from './components/AtomLogo';
 import { ICON_PACK_MANIFEST, warmIconPackPreviewCache } from './components/iconCatalog';
 import { useEditorStore, resolveElement } from './store/editorStore';
 import { ensureGoogleFontLoaded } from './components/googleFonts';
@@ -49,25 +50,30 @@ export default function App() {
   const activeCommentId = useEditorStore(s => s.activeCommentId);
   const [leftWidth, setLeftWidth] = useState(300);
   const [rightWidth, setRightWidth] = useState(332);
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
   const resizeStateRef = useRef(null);
   const autoSaveReadyRef = useRef(false);
   const autoSaveTimerRef = useRef(null);
 
   useEffect(() => {
     (async () => {
-      const layoutState = await loadLayout();
-      await Promise.all([
-        layoutState?.hasStoredComponentLibrary ? Promise.resolve() : loadComponents(),
-        loadColorStyles(),
-        loadTextStyles(),
-        loadElementStyles(),
-        loadGlobalVariables(),
-        loadVariableSources(),
-      ]);
-      await acquireDocumentLock();
-      repairComponentEditorState();
-      pushHistory();
-      autoSaveReadyRef.current = true;
+      try {
+        const layoutState = await loadLayout();
+        await Promise.all([
+          layoutState?.hasStoredComponentLibrary ? Promise.resolve() : loadComponents(),
+          loadColorStyles(),
+          loadTextStyles(),
+          loadElementStyles(),
+          loadGlobalVariables(),
+          loadVariableSources(),
+        ]);
+        await acquireDocumentLock();
+        repairComponentEditorState();
+        pushHistory();
+        autoSaveReadyRef.current = true;
+      } finally {
+        setIsBootstrapping(false);
+      }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -191,7 +197,7 @@ export default function App() {
       const state = resizeStateRef.current;
       if (!state) return;
       if (state.side === 'left') {
-        const nextWidth = Math.min(320, Math.max(220, event.clientX - state.containerLeft));
+        const nextWidth = Math.min(420, Math.max(220, event.clientX - state.containerLeft));
         setLeftWidth(nextWidth);
         return;
       }
@@ -281,6 +287,18 @@ export default function App() {
         />
       ) : null}
       {componentEditorOpen ? <ComponentEditorOverlay /> : null}
+      {isBootstrapping ? (
+        <div className="fb-app-loading" role="status" aria-live="polite" aria-busy="true">
+          <div className="fb-app-loading__card">
+            <div className="fb-app-loading__logo" aria-hidden="true">
+              <AtomLogo />
+            </div>
+            <div className="fb-app-loading__progress" aria-hidden="true">
+              <div className="fb-app-loading__progress-bar" />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -16,6 +16,17 @@ export const ELEMENT_TYPES = [
     meta: 'Layout',
   },
   {
+    type: 'loop',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4.6 11a2.4 2.4 0 1 1 0-4.8c1.06 0 1.6.62 2.4 1.82.8-1.2 1.34-1.82 2.4-1.82a2.4 2.4 0 1 1 0 4.8c-1.06 0-1.6-.62-2.4-1.82-.8 1.2-1.34 1.82-2.4 1.82Z" />
+      </svg>
+    ),
+    label: 'Loop',
+    hint: 'Repeater container for vertical, horizontal, or grid item layouts',
+    meta: 'Dynamic',
+  },
+  {
     type: 'image',
     icon: (
       <svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor" stroke="none">

@@ -17,6 +17,7 @@ import { clampFinite, normalizeComponentTransition, normalizeViewportValue } fro
 import { createSubmissionNodeConfig, normalizeSubmissionFieldEntries } from '../domain/formSubmissionModel.js';
 import { normalizeConstraints, sanitizeLayoutUpdates } from '../domain/layoutModel.js';
 import { getDefaultFormConfig, getDefaultFormOptions, isFormContainerType, isFormFieldType } from '../domain/formModel.js';
+import { getDefaultLoopConfig, isLoopElementType, normalizeLoopConfig } from '../domain/loopModel.js';
 import { FORM_STYLE_DEFAULTS } from '../domain/formStyleModel.js';
 
 export { applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, resolveElementAnimations } from '../domain/animationModel.js';
@@ -234,10 +235,12 @@ function releaseDocumentLockWithBeacon(postId) {
 
 const VARIABLE_TYPES = new Set(['string', 'boolean', 'color', 'number', 'image', 'post', 'product']);
 const VARIABLE_SCOPES = new Set(['page', 'global']);
+const VARIABLE_BINDING_SCOPES = new Set(['page', 'global', 'loop-item']);
 const VARIABLE_BINDING_BREAKPOINTS = ['desktop', 'tablet', 'mobile'];
 const VARIABLE_PROPERTY_COMPATIBILITY = {
   text: ['string', 'number'],
   hidden: ['boolean'],
+  linkUrl: ['string'],
   'styles.backgroundColor': ['color'],
   'styles.backgroundImage': ['image'],
   'styles.color': ['color'],
@@ -415,7 +418,7 @@ function normalizeVariableValue(type, value) {
 }
 
 function normalizeVariableDefinition(variable, scope = 'page') {
-  const normalizedScope = VARIABLE_SCOPES.has(variable?.scope) ? variable.scope : scope;
+  const normalizedScope = VARIABLE_BINDING_SCOPES.has(variable?.scope) ? variable.scope : scope;
   const type = VARIABLE_TYPES.has(variable?.type) ? variable.type : 'string';
   const name = typeof variable?.name === 'string' && variable.name.trim()
     ? variable.name.trim()
@@ -441,7 +444,7 @@ function normalizeVariableList(variables, scope = 'page') {
 
 function normalizeBindingDefinition(binding) {
   if (!binding || typeof binding !== 'object') return null;
-  const scope = VARIABLE_SCOPES.has(binding.scope) ? binding.scope : 'page';
+  const scope = VARIABLE_BINDING_SCOPES.has(binding.scope) ? binding.scope : 'page';
   const variableId = typeof binding.variableId === 'string' && binding.variableId ? binding.variableId : null;
   if (!variableId) return null;
   return {
@@ -476,14 +479,30 @@ function normalizeElementInteraction(interaction) {
   const type = interaction.type === 'set-variable' ? 'set-variable' : (interaction.type === 'navigate' ? 'navigate' : null);
   if (!type) return null;
   if (type === 'navigate') {
+    const destinationSource = interaction.destinationSource === 'variable' ? 'variable' : 'page';
+    if (destinationSource === 'variable') {
+      const variableId = typeof interaction.variableId === 'string' && interaction.variableId ? interaction.variableId : '';
+      if (!variableId) return null;
+      return {
+        id: typeof interaction.id === 'string' && interaction.id ? interaction.id : makeId('int'),
+        type,
+        destinationSource,
+        variableScope: VARIABLE_BINDING_SCOPES.has(interaction.variableScope) ? interaction.variableScope : 'page',
+        variableId,
+        variableType: VARIABLE_TYPES.has(interaction.variableType) ? interaction.variableType : 'string',
+        autoLoopNavigate: interaction.autoLoopNavigate === true,
+      };
+    }
     const pageUrl = typeof interaction.pageUrl === 'string' ? interaction.pageUrl : '';
     if (!pageUrl) return null;
     return {
       id: typeof interaction.id === 'string' && interaction.id ? interaction.id : makeId('int'),
       type,
+      destinationSource,
       pageId: typeof interaction.pageId === 'number' ? interaction.pageId : parseInt(interaction.pageId, 10) || 0,
       pageTitle: typeof interaction.pageTitle === 'string' ? interaction.pageTitle : '',
       pageUrl,
+      autoLoopNavigate: interaction.autoLoopNavigate === true,
     };
   }
 
@@ -1253,9 +1272,37 @@ function normalizeEmbedElementFields(element) {
   };
 }
 
+function normalizeLoopElementFields(element) {
+  if (!element || !isLoopElementType(element.type)) return element;
+
+  const normalizedBase = {
+    ...(element.base ?? {}),
+    loop: normalizeLoopConfig(element.base?.loop),
+  };
+  const normalizedOverrides = { ...(element.overrides ?? {}) };
+
+  ['tablet', 'mobile'].forEach((bpId) => {
+    const bpOverride = normalizedOverrides[bpId];
+    if (!bpOverride || bpOverride.loop == null) return;
+    normalizedOverrides[bpId] = {
+      ...bpOverride,
+      loop: normalizeLoopConfig({
+        ...normalizedBase.loop,
+        ...bpOverride.loop,
+      }),
+    };
+  });
+
+  return {
+    ...element,
+    base: normalizedBase,
+    overrides: normalizedOverrides,
+  };
+}
+
 function normalizeElementDynamicFields(element) {
   const normalizedElement = normalizeElementConstraints(pruneElementBreakpointOverrides(
-    normalizeEmbedElementFields(normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element)))))
+    normalizeLoopElementFields(normalizeEmbedElementFields(normalizeScrollSequenceElementFields(normalizeVideoElementFields(normalizeIconElementFields(normalizeTextElementFields(element))))))
   ));
   return syncElementLockedFlag({
     ...normalizedElement,
@@ -1265,10 +1312,11 @@ function normalizeElementDynamicFields(element) {
   });
 }
 
-function getVariableMap(pageVariables = [], globalVariables = []) {
+function getVariableMap(pageVariables = [], globalVariables = [], loopItemVariables = []) {
   const pageMap = new Map(normalizeVariableList(pageVariables, 'page').map((variable) => [variable.id, variable]));
   const globalMap = new Map(normalizeVariableList(globalVariables, 'global').map((variable) => [variable.id, variable]));
-  return { page: pageMap, global: globalMap };
+  const loopItemMap = new Map(normalizeVariableList(loopItemVariables, 'loop-item').map((variable) => [variable.id, variable]));
+  return { page: pageMap, global: globalMap, 'loop-item': loopItemMap };
 }
 
 function applyVariableBindingValue(resolved, propertyKey, variable) {
@@ -1282,6 +1330,9 @@ function applyVariableBindingValue(resolved, propertyKey, variable) {
       break;
     case 'hidden':
       next.hidden = !value;
+      break;
+    case 'linkUrl':
+      next.linkUrl = value == null ? '' : `${value}`;
       break;
     case 'styles.backgroundImage':
       next.styles.backgroundImage = getMediaUrl(value);
@@ -1791,6 +1842,529 @@ export function createFrame(x = 80, y = 80, name) {
     animations: makeDefaultElementAnimations(),
     overrides: { tablet: {}, mobile: {} },
   };
+}
+
+export function createLoop(x = 80, y = 80, name) {
+  const frame = createFrame(x, y, name || 'Loop');
+  const loop = getDefaultLoopConfig();
+  return {
+    ...frame,
+    id: `lop-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type: 'loop',
+    name: name || 'Loop',
+    base: {
+      ...frame.base,
+      width: 280,
+      height: 240,
+      loop,
+      styles: {
+        ...frame.base.styles,
+        backgroundColor: 'rgba(123, 227, 0, 0.08)',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(123, 227, 0, 0.32)',
+        borderStyle: 'dashed',
+        display: 'flex',
+        flexDirection: 'column',
+        flexWrap: 'nowrap',
+        gap: loop.gap,
+        paddingTop: 16,
+        paddingRight: 16,
+        paddingBottom: 16,
+        paddingLeft: 16,
+      },
+    },
+  };
+}
+
+function createLoopTemplateElement(loopElement, bpId = 'desktop') {
+  const loopConfig = normalizeLoopConfig(loopElement?.base?.loop);
+  const template = createFrame(0, 0, 'Loop Item');
+  const paddingLeft = Math.max(0, parseFloat(loopElement?.base?.styles?.paddingLeft) || 0);
+  const paddingRight = Math.max(0, parseFloat(loopElement?.base?.styles?.paddingRight) || 0);
+  const width = Math.max(80, (parseFloat(loopElement?.base?.width) || 280) - paddingLeft - paddingRight);
+  const nextTemplate = {
+    ...template,
+    name: 'Loop Item',
+    parentId: loopElement?.id ?? null,
+    loopTemplateRootFor: loopElement?.id ?? null,
+    generatedLoopTemplateShell: true,
+    base: {
+      ...template.base,
+      x: 0,
+      y: 0,
+      width,
+      height: 120,
+      positionType: 'relative',
+      absoluteInLayout: false,
+      styles: {
+        ...template.base.styles,
+        backgroundColor: 'rgba(255,255,255,0.52)',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(123, 227, 0, 0.18)',
+        borderStyle: 'solid',
+        display: 'flex',
+        flexDirection: 'column',
+        flexWrap: 'nowrap',
+        gap: loopConfig.gap,
+        paddingTop: 12,
+        paddingRight: 12,
+        paddingBottom: 12,
+        paddingLeft: 12,
+      },
+    },
+  };
+
+  if (bpId && bpId !== 'desktop') {
+    nextTemplate.base = { ...nextTemplate.base, hidden: true };
+    nextTemplate.overrides = {
+      ...nextTemplate.overrides,
+      [bpId]: {
+        ...(nextTemplate.overrides?.[bpId] ?? {}),
+        hidden: false,
+      },
+    };
+  }
+
+  return nextTemplate;
+}
+
+function isGeneratedLoopTemplateShell(element) {
+  if (!element || !element.loopTemplateRootFor) return false;
+  const childCount = Array.isArray(element.children) ? element.children.length : 0;
+  if (childCount > 0) return false;
+  if (element.generatedLoopTemplateShell === true) return true;
+  return element.type === 'frame' && `${element.name ?? ''}`.trim().toLowerCase() === 'loop item';
+}
+
+export function loopTemplateRootHasContent(element) {
+  if (!element || !element.loopTemplateRootFor) return false;
+  return !isGeneratedLoopTemplateShell(element);
+}
+
+function getLoopTemplateRootId(loopElement, elements = []) {
+  if (!loopElement || !isLoopElementType(loopElement.type)) return null;
+  const directChildIds = Array.isArray(loopElement.children) ? loopElement.children : [];
+  const configuredId = loopElement.base?.loop?.templateRootId;
+  if (configuredId && directChildIds.includes(configuredId)) return configuredId;
+  const directChildren = directChildIds
+    .map((childId) => elements.find((candidate) => candidate.id === childId) ?? null)
+    .filter(Boolean);
+  const explicitTemplate = directChildren.find((child) => child.loopTemplateRootFor === loopElement.id);
+  if (explicitTemplate) return explicitTemplate.id;
+  return directChildren[0]?.id ?? null;
+}
+
+function getLoopElementForTemplateDescendant(element, elements = []) {
+  if (!element || !Array.isArray(elements) || !elements.length) return null;
+  const byId = new Map(elements.map((entry) => [entry.id, entry]));
+  let current = element;
+
+  while (current) {
+    if (current.loopTemplateRootFor) {
+      const loopElement = current.parentId ? byId.get(current.parentId) ?? null : null;
+      return loopElement && isLoopElementType(loopElement.type) ? loopElement : null;
+    }
+    if (!current.parentId) return null;
+    const parent = byId.get(current.parentId) ?? null;
+    if (parent && isLoopElementType(parent.type)) {
+      const templateRootId = getLoopTemplateRootId(parent, elements);
+      return templateRootId === current.id ? parent : null;
+    }
+    current = parent;
+  }
+
+  return null;
+}
+
+export function getLoopTemplateRootForElement(element, elements = []) {
+  if (!element || !Array.isArray(elements) || !elements.length) return null;
+  const byId = new Map(elements.map((entry) => [entry.id, entry]));
+  if (element.loopTemplateRootFor) return element;
+
+  let current = element;
+  while (current) {
+    if (!current.parentId) return null;
+    const parent = byId.get(current.parentId) ?? null;
+    if (!parent) return null;
+    if (isLoopElementType(parent.type)) {
+      const templateRootId = getLoopTemplateRootId(parent, elements);
+      return templateRootId ? (byId.get(templateRootId) ?? null) : null;
+    }
+    if (current.loopTemplateRootFor) return current;
+    current = parent;
+  }
+
+  return null;
+}
+
+function isAutoLoopNavigateInteraction(interaction) {
+  return !!interaction
+    && interaction.type === 'navigate'
+    && interaction.destinationSource === 'variable'
+    && interaction.variableScope === 'loop-item'
+    && interaction.variableId === 'loop-item-url'
+    && interaction.autoLoopNavigate === true;
+}
+
+function isLoopItemUrlNavigateNode(node) {
+  return !!node
+    && node.type === 'navigate'
+    && node.config?.destinationSource === 'variable'
+    && node.config?.variableScope === 'loop-item'
+    && node.config?.variableId === 'loop-item-url';
+}
+
+function isAutoLoopNavigateNode(node) {
+  return isLoopItemUrlNavigateNode(node) && node.config?.autoLoopNavigate === true;
+}
+
+function buildAutoLoopNavigateNode() {
+  return {
+    id: makeId('flow-node'),
+    type: 'navigate',
+    label: 'Navigate',
+    position: { x: 0, y: 0 },
+    config: {
+      destinationSource: 'variable',
+      variableScope: 'loop-item',
+      variableId: 'loop-item-url',
+      variableType: 'string',
+      autoLoopNavigate: true,
+    },
+  };
+}
+
+function buildAutoLoopNavigateFlow(element) {
+  if (!element?.id) return null;
+  const triggerNodeId = makeId('flow-node');
+  const navigateNode = buildAutoLoopNavigateNode();
+  return normalizePageFlow({
+    id: makeId('flow'),
+    name: `${element?.name || 'Loop Item'} interaction`,
+    trigger: { type: 'element-click', elementId: element.id, event: 'click' },
+    nodes: [
+      {
+        id: triggerNodeId,
+        type: 'trigger',
+        label: 'Trigger',
+        position: { x: 0, y: 0 },
+        config: { triggerType: 'element-click', elementId: element.id, event: 'click' },
+      },
+      navigateNode,
+    ],
+    edges: [{
+      id: makeId('flow-edge'),
+      source: triggerNodeId,
+      sourcePort: 'next',
+      target: navigateNode.id,
+      targetPort: 'in',
+    }],
+  });
+}
+
+function stripAutoLoopNavigateInteractions(elements) {
+  return (Array.isArray(elements) ? elements : []).map((element) => {
+    const existingInteractions = normalizeElementInteractions(element?.interactions ?? []);
+    const nextInteractions = existingInteractions.filter((interaction) => !isAutoLoopNavigateInteraction(interaction));
+    if (existingInteractions.length === nextInteractions.length) return element;
+    return {
+      ...element,
+      interactions: nextInteractions,
+    };
+  });
+}
+
+function removeAutoLoopNavigateNodesFromFlow(flow) {
+  if (!flow) return null;
+  const autoNodeIds = new Set((flow.nodes ?? []).filter((node) => isAutoLoopNavigateNode(node)).map((node) => node.id));
+  if (!autoNodeIds.size) return flow;
+  const nextFlow = normalizePageFlow({
+    ...flow,
+    nodes: (flow.nodes ?? []).filter((node) => !autoNodeIds.has(node.id)),
+    edges: (flow.edges ?? []).filter((edge) => !autoNodeIds.has(edge.source) && !autoNodeIds.has(edge.target)),
+  });
+  if (!nextFlow) return null;
+  const nonTriggerNodes = (nextFlow.nodes ?? []).filter((node) => node.type !== 'trigger');
+  return nonTriggerNodes.length ? nextFlow : null;
+}
+
+function syncLoopTemplateNavigateFlows(page) {
+  const elements = Array.isArray(page?.elements) ? page.elements : [];
+  const flows = normalizePageFlowList(page?.flows);
+  const templateRoots = elements.filter((element) => element?.loopTemplateRootFor);
+  const shouldNavigateByElementId = new Map(templateRoots.map((element) => [element.id, loopTemplateRootHasContent(element)]));
+  const flowsByElementId = new Map();
+
+  flows.forEach((flow) => {
+    if (flow?.trigger?.type !== 'element-click' || !flow?.trigger?.elementId) return;
+    if (!flowsByElementId.has(flow.trigger.elementId)) flowsByElementId.set(flow.trigger.elementId, []);
+    flowsByElementId.get(flow.trigger.elementId).push(flow);
+  });
+
+  const nextFlows = [];
+  flows.forEach((flow) => {
+    const elementId = flow?.trigger?.type === 'element-click' ? flow?.trigger?.elementId : '';
+    if (!elementId || !shouldNavigateByElementId.has(elementId)) {
+      nextFlows.push(flow);
+      return;
+    }
+    if (shouldNavigateByElementId.get(elementId)) {
+      nextFlows.push(flow);
+      return;
+    }
+    const cleanedFlow = removeAutoLoopNavigateNodesFromFlow(flow);
+    if (cleanedFlow) nextFlows.push(cleanedFlow);
+  });
+
+  templateRoots.forEach((element) => {
+    if (!shouldNavigateByElementId.get(element.id)) return;
+    const existingFlows = (flowsByElementId.get(element.id) ?? []).filter(Boolean);
+    const hasLoopUrlNavigate = existingFlows.some((flow) => (flow.nodes ?? []).some((node) => isLoopItemUrlNavigateNode(node)));
+    if (existingFlows.length && hasLoopUrlNavigate) return;
+    if (existingFlows.length) return;
+    const autoFlow = buildAutoLoopNavigateFlow(element);
+    if (autoFlow) nextFlows.push(autoFlow);
+  });
+
+  return {
+    ...page,
+    flows: normalizePageFlowList(nextFlows),
+  };
+}
+
+function getLoopCollectionSourceItems(collection, variableSources = {}) {
+  return Array.isArray(variableSources?.[collection]) ? variableSources[collection] : [];
+}
+
+function findLoopPreviewVariable(loopConfig, pageVariables = [], globalVariables = []) {
+  const variableBinding = loopConfig?.query?.variable;
+  if (!variableBinding?.variableId) return null;
+  const sourceVariables = variableBinding.scope === 'global' ? globalVariables : pageVariables;
+  return normalizeVariableList(sourceVariables, variableBinding.scope === 'global' ? 'global' : 'page')
+    .find((variable) => variable.id === variableBinding.variableId) ?? null;
+}
+
+function buildLoopPreviewItems(loopElement, variableSources = {}, pageVariables = [], globalVariables = []) {
+  if (!loopElement || !isLoopElementType(loopElement.type)) return [];
+  const loopConfig = normalizeLoopConfig(loopElement.base?.loop);
+  const collection = loopConfig.query?.collection ?? 'posts';
+  let sourceItems = getLoopCollectionSourceItems(collection, variableSources);
+  const sourceType = loopConfig.query?.source ?? 'collection';
+  const categoryIds = Array.isArray(loopConfig.query?.categoryIds) ? loopConfig.query.categoryIds : [];
+
+  if (categoryIds.length && ['posts', 'products'].includes(collection)) {
+    sourceItems = sourceItems.filter((item) => {
+      const itemTermIds = Array.isArray(item?.termIds) ? item.termIds : [];
+      return itemTermIds.some((termId) => categoryIds.includes(parseInt(termId, 10)));
+    });
+  }
+
+  if (collection !== 'pages' && (loopConfig.query?.order ?? 'desc') === 'asc') {
+    sourceItems = [...sourceItems].reverse();
+  }
+
+  if (sourceType === 'selected') {
+    const selectedIds = Array.isArray(loopConfig.query?.selectedIds) ? loopConfig.query.selectedIds : [];
+    const sourceById = new Map(sourceItems.map((item) => [item?.id, item]));
+    return selectedIds
+      .map((id) => sourceById.get(id) ?? null)
+      .filter((item) => item && typeof item === 'object');
+  }
+
+  if (sourceType === 'variable') {
+    const variable = findLoopPreviewVariable(loopConfig, pageVariables, globalVariables);
+    if (!variable || !['post', 'product'].includes(variable.type) || !variable.value || typeof variable.value !== 'object') return [];
+    const normalizedId = parseInt(variable.value.id, 10) || 0;
+    const matchedItem = normalizedId
+      ? sourceItems.find((item) => parseInt(item?.id, 10) === normalizedId) ?? null
+      : null;
+    if (matchedItem) return [matchedItem];
+    return [{
+      id: normalizedId,
+      title: typeof variable.value.title === 'string' ? variable.value.title : '',
+      url: typeof variable.value.url === 'string' ? variable.value.url : '',
+      postType: typeof variable.value.postType === 'string' ? variable.value.postType : (variable.type === 'product' ? 'product' : 'post'),
+      image: '',
+      excerpt: '',
+      date: '',
+    }];
+  }
+
+  return sourceItems.slice(0, Math.max(1, loopConfig.query?.limit ?? 1));
+}
+
+function buildLoopItemPreviewVariables(loopElement, variableSources = {}, pageVariables = [], globalVariables = []) {
+  const previewItems = buildLoopPreviewItems(loopElement, variableSources, pageVariables, globalVariables);
+  const sample = previewItems[0] && typeof previewItems[0] === 'object' ? previewItems[0] : {};
+  const variableEntries = [
+    {
+      id: 'loop-item-title',
+      scope: 'loop-item',
+      type: 'string',
+      name: 'Item Title',
+      category: 'Loop Item',
+      value: typeof sample.title === 'string' ? sample.title : '',
+    },
+    {
+      id: 'loop-item-url',
+      scope: 'loop-item',
+      type: 'string',
+      name: 'Item URL',
+      category: 'Loop Item',
+      value: typeof sample.url === 'string' ? sample.url : '',
+    },
+    {
+      id: 'loop-item-excerpt',
+      scope: 'loop-item',
+      type: 'string',
+      name: 'Item Excerpt',
+      category: 'Loop Item',
+      value: typeof sample.excerpt === 'string' ? sample.excerpt : '',
+    },
+    {
+      id: 'loop-item-date',
+      scope: 'loop-item',
+      type: 'string',
+      name: 'Item Date',
+      category: 'Loop Item',
+      value: typeof sample.date === 'string' ? sample.date : '',
+    },
+    {
+      id: 'loop-item-image',
+      scope: 'loop-item',
+      type: 'image',
+      name: 'Item Image',
+      category: 'Loop Item',
+      value: typeof sample.image === 'string' ? sample.image : '',
+    },
+  ];
+
+  if (typeof sample.price === 'string' && sample.price.trim()) {
+    variableEntries.push({
+      id: 'loop-item-price',
+      scope: 'loop-item',
+      type: 'string',
+      name: 'Item Price',
+      category: 'Loop Item',
+      value: sample.price,
+    });
+  }
+
+  return normalizeVariableList(variableEntries, 'loop-item');
+}
+
+export function getLoopItemPreviewVariables(element, elements = [], variableSources = {}, pageVariables = [], globalVariables = []) {
+  const loopElement = getLoopElementForTemplateDescendant(element, elements);
+  return loopElement ? buildLoopItemPreviewVariables(loopElement, variableSources, pageVariables, globalVariables) : [];
+}
+
+function resolveLoopInsertionParentId(elements, parentId = null) {
+  if (!parentId) return null;
+  const parentElement = elements.find((candidate) => candidate.id === parentId) ?? null;
+  if (!parentElement || !isLoopElementType(parentElement.type)) return parentId;
+  const templateRootId = getLoopTemplateRootId(parentElement, elements);
+  const templateRoot = templateRootId
+    ? (elements.find((candidate) => candidate.id === templateRootId) ?? null)
+    : null;
+  const templateIsEmpty = !!templateRoot
+    && templateRoot.loopTemplateRootFor === parentElement.id
+    && !loopTemplateRootHasContent(templateRoot);
+  if (!templateRootId || templateIsEmpty) return parentId;
+  return templateRootId;
+}
+
+function ensureLoopTemplateStructure(elements, bpId = 'desktop') {
+  let nextElements = Array.isArray(elements) ? [...elements] : [];
+
+  nextElements = nextElements.map((element) => (
+    element?.loopTemplateRootFor && element.parentId !== element.loopTemplateRootFor
+      ? { ...element, loopTemplateRootFor: null }
+      : element
+  ));
+
+  nextElements
+    .filter((element) => isLoopElementType(element?.type))
+    .forEach((loopElement) => {
+      const currentLoop = nextElements.find((candidate) => candidate.id === loopElement.id) ?? loopElement;
+      const directChildIds = Array.isArray(currentLoop.children) ? [...currentLoop.children] : [];
+      let templateId = getLoopTemplateRootId(currentLoop, nextElements);
+
+      if (!templateId) {
+        const templateElement = createLoopTemplateElement(currentLoop, bpId);
+        templateId = templateElement.id;
+        nextElements = [...nextElements, templateElement];
+      }
+
+      const templateElement = nextElements.find((candidate) => candidate.id === templateId) ?? null;
+      const siblingIds = directChildIds.filter((childId) => childId !== templateId);
+
+      if (
+        templateElement
+        && templateElement.loopTemplateRootFor === currentLoop.id
+        && (!Array.isArray(templateElement.children) || templateElement.children.length === 0)
+        && siblingIds.length === 1
+      ) {
+        const promotedId = siblingIds[0];
+        nextElements = nextElements
+          .filter((candidate) => candidate.id !== templateId)
+          .map((candidate) => {
+            if (candidate.id === currentLoop.id) {
+              return {
+                ...candidate,
+                children: [promotedId],
+                base: {
+                  ...candidate.base,
+                  loop: {
+                    ...normalizeLoopConfig(candidate.base?.loop),
+                    templateRootId: promotedId,
+                  },
+                },
+              };
+            }
+            if (candidate.id === promotedId) {
+              return {
+                ...candidate,
+                parentId: currentLoop.id,
+                loopTemplateRootFor: currentLoop.id,
+              };
+            }
+            return candidate;
+          });
+        return;
+      }
+
+      nextElements = nextElements.map((candidate) => {
+        if (candidate.id === currentLoop.id) {
+          return {
+            ...candidate,
+            children: [templateId],
+            base: {
+              ...candidate.base,
+              loop: {
+                ...normalizeLoopConfig(candidate.base?.loop),
+                templateRootId: templateId,
+              },
+            },
+          };
+        }
+        if (candidate.id === templateId) {
+          return {
+            ...candidate,
+            parentId: currentLoop.id,
+            loopTemplateRootFor: currentLoop.id,
+            children: Array.from(new Set([...(templateElement?.children ?? candidate.children ?? []), ...siblingIds])),
+          };
+        }
+        if (siblingIds.includes(candidate.id)) {
+          return { ...candidate, parentId: templateId };
+        }
+        return candidate;
+      });
+    });
+
+  return stripAutoLoopNavigateInteractions(nextElements);
 }
 
 export function createForm(x = 80, y = 80, name) {
@@ -2933,10 +3507,10 @@ export function resolveElement(el, bpId) {
   };
 }
 
-export function resolveElementWithVariables(el, bpId, pageVariables = [], globalVariables = []) {
+export function resolveElementWithVariables(el, bpId, pageVariables = [], globalVariables = [], loopItemVariables = []) {
   const resolved = resolveElement(el, bpId);
   const bindings = normalizeElementBindings(el?.bindings);
-  const variableMaps = getVariableMap(pageVariables, globalVariables);
+  const variableMaps = getVariableMap(pageVariables, globalVariables, loopItemVariables);
   let next = resolved;
 
   Object.keys(bindings?.desktop ?? {})
@@ -3273,20 +3847,21 @@ export const useEditorStore = create((set, get) => {
   // Helper: update elements array of current page
   const withPage = (updater) =>
     set(state => {
+      const syncPage = (page) => syncLoopTemplateNavigateFlows({
+        ...page,
+        elements: updater(page?.elements ?? []),
+      });
       if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
         return {
           componentEditor: {
             ...state.componentEditor,
-            page: {
-              ...state.componentEditor.page,
-              elements: updater(state.componentEditor.page?.elements ?? []),
-            },
+            page: syncPage(state.componentEditor.page ?? {}),
           },
         };
       }
       return {
         pages: state.pages.map(p =>
-          p.id === state.currentPageId ? { ...p, elements: updater(p.elements) } : p
+          p.id === state.currentPageId ? syncPage(p) : p
         ),
       };
     });
@@ -3333,12 +3908,14 @@ export const useEditorStore = create((set, get) => {
     // ── Variables (page + site-wide) ──────────────────────
     globalVariables: [],
     setGlobalVariables: (variables) => set({ globalVariables: normalizeVariableList(variables, 'global') }),
-    variableSources: { pages: [], posts: [], products: [], formTargets: {} },
+    variableSources: { pages: [], posts: [], products: [], postCategories: [], productCategories: [], formTargets: {} },
     setVariableSources: (sources) => set({
       variableSources: {
         pages: Array.isArray(sources?.pages) ? sources.pages : [],
         posts: Array.isArray(sources?.posts) ? sources.posts : [],
         products: Array.isArray(sources?.products) ? sources.products : [],
+        postCategories: Array.isArray(sources?.postCategories) ? sources.postCategories : [],
+        productCategories: Array.isArray(sources?.productCategories) ? sources.productCategories : [],
         formTargets: sources?.formTargets && typeof sources.formTargets === 'object' ? sources.formTargets : {},
       },
     }),
@@ -3392,9 +3969,10 @@ export const useEditorStore = create((set, get) => {
       ];
     },
 
-    getCompatibleVariables(propertyKey) {
+    getCompatibleVariables(propertyKey, additionalVariables = []) {
       const allowedTypes = VARIABLE_PROPERTY_COMPATIBILITY[propertyKey] ?? [];
-      return get().getAllVariables().filter((variable) => allowedTypes.includes(variable.type));
+      return [...get().getAllVariables(), ...normalizeVariableList(additionalVariables, 'loop-item')]
+        .filter((variable) => allowedTypes.includes(variable.type));
     },
 
     async loadGlobalVariables() {
@@ -3440,6 +4018,8 @@ export const useEditorStore = create((set, get) => {
                 pages: Array.isArray(data.pages) ? data.pages : [],
                 posts: Array.isArray(data.posts) ? data.posts : [],
                 products: Array.isArray(data.products) ? data.products : [],
+                postCategories: Array.isArray(data.postCategories) ? data.postCategories : [],
+                productCategories: Array.isArray(data.productCategories) ? data.productCategories : [],
                 formTargets: data.formTargets && typeof data.formTargets === 'object' ? data.formTargets : {},
               },
             });
@@ -3587,6 +4167,15 @@ export const useEditorStore = create((set, get) => {
           : flow.trigger?.type === 'element-click' && flow.trigger?.elementId === elementId
       )) || null;
       if (existing) return existing.id;
+      if (element?.loopTemplateRootFor && loopTemplateRootHasContent(element) && requestedTriggerType === 'element-click') {
+        const autoFlow = buildAutoLoopNavigateFlow(element);
+        if (!autoFlow) return null;
+        get().updateCurrentPage((currentPage) => syncLoopTemplateNavigateFlows({
+          ...currentPage,
+          flows: [...normalizePageFlowList(currentPage?.flows), autoFlow],
+        }));
+        return autoFlow.id;
+      }
       const triggerNodeId = makeId('flow-node');
       const flowName = typeof options.name === 'string' && options.name.trim()
         ? options.name.trim()
@@ -3609,7 +4198,7 @@ export const useEditorStore = create((set, get) => {
         edges: [],
       });
       if (!flow) return null;
-      get().updateCurrentPage((currentPage) => ({
+      get().updateCurrentPage((currentPage) => syncLoopTemplateNavigateFlows({
         ...currentPage,
         flows: [...normalizePageFlowList(currentPage?.flows), flow],
       }));
@@ -3777,8 +4366,9 @@ export const useEditorStore = create((set, get) => {
 
     insertComponentInstance(componentId, { x = 80, y = 80, bpId = 'desktop', parentId = null } = {}) {
       const component = get().components.find(item => item.id === componentId);
+      const resolvedParentId = resolveLoopInsertionParentId(getEls(), parentId);
       const { instantiated, root } = buildComponentInstanceSubtree(component, {
-        targetParentId: parentId,
+        targetParentId: resolvedParentId,
         rootPosition: { x, y },
         bpId,
         role: 'instance',
@@ -3787,14 +4377,14 @@ export const useEditorStore = create((set, get) => {
 
       withPage((els) => {
         let next = [...els, ...instantiated];
-        if (parentId) {
+        if (resolvedParentId) {
           next = next.map(el => (
-            el.id === parentId
+            el.id === resolvedParentId
               ? { ...el, children: [...(el.children ?? []), root.id] }
               : el
           ));
         }
-        return next;
+        return ensureLoopTemplateStructure(next, bpId);
       });
       set({ selection: buildSelection([root.id], bpId, root.id) });
       return root.id;
@@ -4720,10 +5310,12 @@ export const useEditorStore = create((set, get) => {
     /** Add element. If bpId is non-desktop, element is hidden by default everywhere
      *  except the originating breakpoint. */
     addElement(element, parentId = null, bpId = 'desktop') {
-      let el = { ...element, parentId: parentId ?? null };
+      const currentElements = getEls();
+      const resolvedParentId = resolveLoopInsertionParentId(currentElements, parentId);
+      let el = { ...element, parentId: resolvedParentId ?? null };
       const currentPage = get().getCurrentPage?.() ?? null;
-      const pageLayout = !parentId ? resolvePageLayout(currentPage?.layout, bpId) : null;
-      const shouldFlowAtRoot = !parentId
+      const pageLayout = !resolvedParentId ? resolvePageLayout(currentPage?.layout, bpId) : null;
+      const shouldFlowAtRoot = !resolvedParentId
         && pageLayout !== null
         && (el.base?.positionType == null || el.base.positionType === 'absolute')
         && !el.base?.absoluteInLayout;
@@ -4755,13 +5347,34 @@ export const useEditorStore = create((set, get) => {
         };
       }
       withPage(els => {
-        const next = [...els, el];
-        if (parentId) {
-          return next.map(e =>
-            e.id === parentId ? { ...e, children: [...(e.children ?? []), el.id] } : e
+        let next = [...els, el];
+        if (resolvedParentId) {
+          next = next.map(e =>
+            e.id === resolvedParentId ? { ...e, children: [...(e.children ?? []), el.id] } : e
           );
         }
-        return next;
+        if (isLoopElementType(el.type)) {
+          const templateElement = createLoopTemplateElement(el, bpId);
+          next = [
+            ...next.map((candidate) => (
+              candidate.id === el.id
+                ? {
+                    ...candidate,
+                    children: [templateElement.id],
+                    base: {
+                      ...candidate.base,
+                      loop: {
+                        ...normalizeLoopConfig(candidate.base?.loop),
+                        templateRootId: templateElement.id,
+                      },
+                    },
+                  }
+                : candidate
+            )),
+            templateElement,
+          ];
+        }
+        return ensureLoopTemplateStructure(next, bpId);
       });
       set({ selection: buildSelection([el.id], bpId ?? 'desktop', el.id), activeCommentId: null, activeCanvasTool: get().activeCanvasTool === 'comment' ? 'select' : get().activeCanvasTool });
     },
@@ -5112,10 +5725,11 @@ export const useEditorStore = create((set, get) => {
       };
       (elementIds ?? []).forEach(collect);
       if (!toDelete.size) return;
-      withPage(currEls => currEls
-        .filter(e => !toDelete.has(e.id))
-        .map(e => ({ ...e, children: (e.children ?? []).filter(c => !toDelete.has(c)) }))
-      );
+      withPage(currEls => ensureLoopTemplateStructure(
+        currEls
+          .filter(e => !toDelete.has(e.id))
+          .map(e => ({ ...e, children: (e.children ?? []).filter(c => !toDelete.has(c)) }))
+      ));
       set(state => ({
         selection: removeSelectionIds(state.selection, toDelete),
         animationEditor: toDelete.has(currentAnimationEditor?.elementId) ? null : state.animationEditor,
@@ -5319,12 +5933,12 @@ export const useEditorStore = create((set, get) => {
     /** Bulk-add a flat array of pre-cloned elements (for paste). */
     addElements(elements, bpId = 'desktop') {
       const currentPage = get().getCurrentPage?.() ?? null;
-      withPage((els) => [
+      withPage((els) => ensureLoopTemplateStructure([
         ...els,
         ...(Array.isArray(elements)
           ? elements.map((element) => normalizeElementDynamicFields(normalizeRootFlowInsertion(element, bpId, currentPage)))
           : []),
-      ]);
+      ], bpId));
     },
 
     /** Move element under a new parent (or null = root). Prevents circular nesting. */
@@ -5341,20 +5955,28 @@ export const useEditorStore = create((set, get) => {
         collect(elementId);
         if (newParentId && descendants.has(newParentId)) return els;
 
+        const resolvedParentId = resolveLoopInsertionParentId(els, newParentId);
         const el = findEl(els, elementId);
         if (!el) return els;
         const oldParentId = el.parentId;
+        const shouldClearLoopTemplateRootFor = !!el.loopTemplateRootFor && resolvedParentId !== el.loopTemplateRootFor;
 
-        return els.map(e => {
-          if (e.id === elementId) return { ...e, parentId: newParentId ?? null };
+        return ensureLoopTemplateStructure(els.map(e => {
+          if (e.id === elementId) {
+            return {
+              ...e,
+              parentId: resolvedParentId ?? null,
+              ...(shouldClearLoopTemplateRootFor ? { loopTemplateRootFor: null } : {}),
+            };
+          }
           if (e.id === oldParentId) {
             return { ...e, children: (e.children ?? []).filter(c => c !== elementId) };
           }
-          if (newParentId && e.id === newParentId) {
+          if (resolvedParentId && e.id === resolvedParentId) {
             return { ...e, children: [...(e.children ?? []), elementId] };
           }
           return e;
-        });
+        }));
       });
     },
 

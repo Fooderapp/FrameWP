@@ -3,6 +3,62 @@ defined( 'ABSPATH' ) || exit;
 
 class FrameBuilder_API {
 
+	private static function is_submission_generated_post( WP_Post $post ): bool {
+		if ( 'post' !== $post->post_type ) {
+			return false;
+		}
+		if ( get_post_meta( $post->ID, '_fb_created_from_submission', true ) ) {
+			return true;
+		}
+		$title = get_the_title( $post );
+		if ( is_string( $title ) && 0 === strpos( $title, 'Form Submission ' ) ) {
+			return true;
+		}
+		$slug = isset( $post->post_name ) ? (string) $post->post_name : '';
+		return '' !== $slug && 0 === strpos( $slug, 'form-submission-' );
+	}
+
+	private static function build_variable_source_excerpt( WP_Post $post ): string {
+		$excerpt = isset( $post->post_excerpt ) ? trim( wp_strip_all_tags( (string) $post->post_excerpt ) ) : '';
+		if ( '' !== $excerpt ) {
+			return $excerpt;
+		}
+
+		$content = isset( $post->post_content ) ? (string) $post->post_content : '';
+		$content = strip_shortcodes( $content );
+		$content = wp_strip_all_tags( $content );
+		$content = preg_replace( '/\s+/', ' ', $content ) ?? $content;
+		$content = trim( $content );
+
+		return '' !== $content ? wp_trim_words( $content, 28, '…' ) : '';
+	}
+
+	private static function map_variable_source_post( WP_Post $post, string $post_type ): array {
+		$image_url = get_the_post_thumbnail_url( $post, 'full' );
+		$taxonomy = 'product' === $post_type ? 'product_cat' : ( 'post' === $post_type ? 'category' : '' );
+		$term_ids = [];
+		if ( '' !== $taxonomy && taxonomy_exists( $taxonomy ) ) {
+			$terms = get_the_terms( $post, $taxonomy );
+			if ( is_array( $terms ) ) {
+				foreach ( $terms as $term ) {
+					if ( $term instanceof WP_Term ) {
+						$term_ids[] = (int) $term->term_id;
+					}
+				}
+			}
+		}
+		return [
+			'id' => $post->ID,
+			'title' => get_the_title( $post ),
+			'url' => get_permalink( $post ),
+			'postType' => $post_type,
+			'image' => $image_url ? esc_url_raw( $image_url ) : '',
+			'excerpt' => self::build_variable_source_excerpt( $post ),
+			'date' => get_the_date( '', $post ),
+			'termIds' => $term_ids,
+		];
+	}
+
 	public static function init() {
 		add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
 		add_action( 'wp_ajax_framebuilder_get_layout', [ __CLASS__, 'ajax_get_layout' ] );
@@ -987,6 +1043,10 @@ class FrameBuilder_API {
 			: 0;
 
 		self::apply_post_acf_mappings( (int) $post_id, $action_config['acfMappings'] ?? [], $submission_payload['values'] ?? [] );
+		update_post_meta( (int) $post_id, '_fb_created_from_submission', [
+			'submissionId' => (string) ( $submission_payload['id'] ?? '' ),
+			'createdAt' => current_time( 'mysql', true ),
+		] );
 		return [
 			'id' => (int) $post_id,
 			'title' => get_the_title( $post_id ),
@@ -2261,6 +2321,18 @@ class FrameBuilder_API {
 	}
 
 	private static function perform_get_variable_sources() {
+		$post_categories = taxonomy_exists( 'category' )
+			? get_terms( [
+				'taxonomy' => 'category',
+				'hide_empty' => false,
+			] )
+			: [];
+		$product_categories = taxonomy_exists( 'product_cat' )
+			? get_terms( [
+				'taxonomy' => 'product_cat',
+				'hide_empty' => false,
+			] )
+			: [];
 		$pages = get_posts( [
 			'post_type'      => 'page',
 			'post_status'    => [ 'publish', 'draft', 'private' ],
@@ -2276,6 +2348,9 @@ class FrameBuilder_API {
 			'orderby'        => 'date',
 			'order'          => 'DESC',
 		] );
+		$posts = array_values( array_filter( $posts, static function( $post ) {
+			return ! ( $post instanceof WP_Post ) || ! self::is_submission_generated_post( $post ) ? true : false;
+		} ) );
 
 		$products = [];
 		if ( post_type_exists( 'product' ) ) {
@@ -2287,34 +2362,40 @@ class FrameBuilder_API {
 				'order'          => 'DESC',
 			] );
 			$products = array_map( static function( $post ) {
-				return [
-					'id'       => $post->ID,
-					'title'    => get_the_title( $post ),
-					'url'      => get_permalink( $post ),
-					'postType' => 'product',
-				];
+				$item = self::map_variable_source_post( $post, 'product' );
+				if ( function_exists( 'wc_get_product' ) ) {
+					$product = wc_get_product( $post->ID );
+					if ( $product ) {
+						$item['price'] = wp_strip_all_tags( html_entity_decode( $product->get_price_html(), ENT_QUOTES, 'UTF-8' ) );
+					}
+				}
+				return $item;
 			}, $product_posts );
 		}
 
 		return [
 			'success'  => true,
 			'pages'    => array_map( static function( $post ) {
-				return [
-					'id'       => $post->ID,
-					'title'    => get_the_title( $post ),
-					'url'      => get_permalink( $post ),
-					'postType' => 'page',
-				];
+				return self::map_variable_source_post( $post, 'page' );
 			}, $pages ),
 			'posts'    => array_map( static function( $post ) {
-				return [
-					'id'       => $post->ID,
-					'title'    => get_the_title( $post ),
-					'url'      => get_permalink( $post ),
-					'postType' => 'post',
-				];
+				return self::map_variable_source_post( $post, 'post' );
 			}, $posts ),
 			'products' => $products,
+			'postCategories' => is_array( $post_categories ) ? array_map( static function( $term ) {
+				return [
+					'id' => (int) $term->term_id,
+					'name' => $term->name,
+					'slug' => $term->slug,
+				];
+			}, $post_categories ) : [],
+			'productCategories' => is_array( $product_categories ) ? array_map( static function( $term ) {
+				return [
+					'id' => (int) $term->term_id,
+					'name' => $term->name,
+					'slug' => $term->slug,
+				];
+			}, $product_categories ) : [],
 			'formTargets' => self::get_form_action_targets(),
 		];
 	}

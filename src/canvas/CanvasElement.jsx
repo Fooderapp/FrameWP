@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup, getLoopItemPreviewVariables, loopTemplateRootHasContent } from '../store/editorStore';
 import { canAssetApplyToElement, parseAssetDragPayload } from '../store/assetStyles';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 import { getEmbedPreview } from '../components/embedUtils';
@@ -10,6 +10,7 @@ import { getResolvedRichTextHtml, plainTextToRichTextHtml } from '../components/
 import { getResolvedVideoSource, getVideoEmbedLayout } from '../components/videoUtils';
 import { buildElementRotationTransform, hasElement3DRotation } from '../utils/elementTransform';
 import { isFormContainerType, isFormFieldType, isFormSubmitButtonType } from '../domain/formModel';
+import { isLoopElementType, normalizeLoopConfig } from '../domain/loopModel';
 import { FORM_STYLE_DEFAULTS, getFormIndicatorOffset, getFormSelectPaddingRight, getFormStateVisualModel, getFormVisualModel } from '../domain/formStyleModel';
 
 function rectStateChanged(current, next) {
@@ -120,6 +121,31 @@ function buildSvgDataUrl(markup) {
   return `url("data:image/svg+xml;utf8,${encodeURIComponent(markup)}")`;
 }
 
+function getLoopPreviewMetrics({ containerWidth, paddingLeft, paddingRight, templateWidth, templateHeight, loopConfig }) {
+  const contentWidth = Math.max(56, (containerWidth || 0) - (paddingLeft || 0) - (paddingRight || 0));
+  const gap = Math.max(0, loopConfig?.gap ?? 0);
+  const layout = loopConfig?.layout ?? 'vertical';
+  const columns = Math.max(1, loopConfig?.columns ?? 1);
+  const minItemWidth = Math.max(56, loopConfig?.minItemWidth ?? 56);
+  const baseWidth = Math.max(56, templateWidth ?? minItemWidth ?? 160);
+  const itemHeight = Math.max(48, templateHeight ?? 96);
+
+  if (layout === 'grid') {
+    const computedColumnWidth = Math.max(56, (contentWidth - (gap * (columns - 1))) / columns);
+    const itemWidth = Math.max(56, Math.min(contentWidth, Math.max(minItemWidth, computedColumnWidth)));
+    return { contentWidth, gap, layout, columns, itemWidth, itemHeight };
+  }
+
+  return {
+    contentWidth,
+    gap,
+    layout,
+    columns,
+    itemWidth: Math.min(baseWidth, contentWidth),
+    itemHeight,
+  };
+}
+
 function scaleTextMetric(value, unit, scale) {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return `${value ?? ''}${unit ?? ''}`;
@@ -184,6 +210,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     return s.pages.find((page) => page.id === s.currentPageId) ?? null;
   });
   const globalVariables        = useEditorStore(s => s.globalVariables);
+  const variableSources        = useEditorStore(s => s.variableSources);
   const pageVariables          = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
   const pageLayout             = resolvePageLayout(currentPage?.layout, bpId);
   const children               = el?.children?.length
@@ -202,7 +229,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       cursor = cursor.parentId ? allElements.find((candidate) => candidate.id === cursor.parentId) : null;
     }
   }
-  const rawResolved            = el ? resolveElementWithVariables(el, bpId, pageVariables, globalVariables) : null;
+  const loopItemVariables      = el ? getLoopItemPreviewVariables(el, allElements, variableSources, pageVariables, globalVariables) : [];
+  const rawResolved            = el ? resolveElementWithVariables(el, bpId, pageVariables, globalVariables, loopItemVariables) : null;
   const animationPreviewPatch  = el ? getAnimationEditorPreviewPatch(el, bpId, animationEditor) : null;
   const previewTreatAsFlowPositioned = !!rawResolved && (
     ['relative', 'sticky'].includes(rawResolved.positionType ?? 'absolute')
@@ -218,6 +246,28 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const hidden                 = resolved?.hidden ?? false;
   const rotation               = resolved?.rotation;
   const styles                 = resolved?.styles ?? {};
+  const loopConfig             = isLoopElementType(el?.type) ? normalizeLoopConfig(resolved?.loop) : null;
+  const loopTemplateChild      = isLoopElementType(el?.type)
+    ? (children.find((child) => child?.loopTemplateRootFor === el.id) ?? children[0] ?? null)
+    : null;
+  const loopTemplateHasContent = loopTemplateRootHasContent(loopTemplateChild);
+  const renderedChildren       = isLoopElementType(el?.type) && loopTemplateChild && !loopTemplateHasContent
+    ? children.filter((child) => child.id !== loopTemplateChild.id)
+    : children;
+  const resolvedLoopTemplate   = loopTemplateChild ? resolveElementWithVariables(loopTemplateChild, bpId, pageVariables, globalVariables, getLoopItemPreviewVariables(loopTemplateChild, allElements, variableSources, pageVariables, globalVariables)) : null;
+  const loopPreviewItemCount   = (() => {
+    if (!isLoopElementType(el?.type)) return 0;
+    const sourceType = loopConfig?.query?.source ?? 'collection';
+    if (sourceType === 'selected') return Math.max(0, (loopConfig?.query?.selectedIds ?? []).length);
+    if (sourceType === 'variable') return loopItemVariables.length ? 1 : 0;
+    return Math.max(0, loopConfig?.query?.limit ?? 1);
+  })();
+  const ghostCountRaw          = isLoopElementType(el?.type) ? Math.max(0, loopPreviewItemCount - 1) : 0;
+  const ghostCount             = Math.min(ghostCountRaw, 4);
+  const loopGhostPaddingTop    = Math.max(0, parseFloat(styles?.paddingTop) || 0);
+  const loopGhostPaddingRight  = Math.max(0, parseFloat(styles?.paddingRight) || 0);
+  const loopGhostPaddingBottom = Math.max(0, parseFloat(styles?.paddingBottom) || 0);
+  const loopGhostPaddingLeft   = Math.max(0, parseFloat(styles?.paddingLeft) || 0);
   const positionType           = resolved?.positionType ?? 'absolute';
   const widthMode              = resolved?.widthMode ?? 'fixed';
   const heightMode             = resolved?.heightMode ?? 'fixed';
@@ -229,7 +279,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const dropTargetElementId = id;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!el?.componentInstance;
   const canNestChildrenOnto = !!onDropOntoElement
-    && (el.type === 'frame' || isFormContainerType(el.type))
+    && (el.type === 'frame' || isLoopElementType(el.type) || isFormContainerType(el.type))
     && !insideComponentInstanceOnPage
     && !isComponentInstanceOnPage;
   const hasGradientFrameStroke = typeof styles?.borderColor === 'string' && styles.borderColor.includes('gradient(');
@@ -256,7 +306,11 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const isSurfaceStyledFormField = isFormFieldType(el.type);
 
   // ── Parent flex direction (needed for fill mode) ───────────
-  const parentResolved = parentEl ? resolveElementWithVariables(parentEl, bpId, pageVariables, globalVariables) : null;
+  const parentResolved = parentEl ? resolveElementWithVariables(parentEl, bpId, pageVariables, globalVariables, getLoopItemPreviewVariables(parentEl, allElements, variableSources, pageVariables, globalVariables)) : null;
+  const parentIsLoopElement = isLoopElementType(parentEl?.type);
+  const isLoopTemplateRoot = !!(el?.loopTemplateRootFor && parentIsLoopElement && el.loopTemplateRootFor === parentEl.id);
+  const parentLoopConfig = isLoopTemplateRoot ? normalizeLoopConfig(parentResolved?.loop ?? parentEl?.base?.loop) : null;
+  const parentLoopStyles = parentResolved?.styles ?? parentEl?.base?.styles ?? {};
   const absoluteContainerW = parentEl ? (parentResolved?.width ?? bpDef?.width ?? 0) : (bpDef?.width ?? 0);
   const absoluteContainerH = isFixed
     ? (bpDef?.viewportFoldH ?? bpDef?.height ?? 0)
@@ -389,6 +443,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   useEffect(() => {
     if (!el) return undefined;
     if (isEditingText && el.type === 'text') return undefined;
+    if (isLoopElementType(el.type)) return undefined;
     if (widthMode !== 'hug' && heightMode !== 'hug') return undefined;
     const node = elementRef.current;
     if (!node || typeof ResizeObserver === 'undefined') return undefined;
@@ -768,6 +823,26 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     pointerEvents: undefined,
     ...(activeAnimationStyle ?? {}),
   };
+
+  if (isLoopTemplateRoot && parentLoopConfig) {
+    const loopMetrics = getLoopPreviewMetrics({
+      containerWidth: parentResolved?.width ?? parentEl?.base?.width ?? 0,
+      paddingLeft: Math.max(0, parseFloat(parentLoopStyles?.paddingLeft) || 0),
+      paddingRight: Math.max(0, parseFloat(parentLoopStyles?.paddingRight) || 0),
+      templateWidth: resolved?.width ?? width,
+      templateHeight: resolved?.height ?? height,
+      loopConfig: parentLoopConfig,
+    });
+    const itemWidth = loopMetrics.itemWidth;
+
+    inlineStyle.width = itemWidth;
+    inlineStyle.minWidth = itemWidth;
+
+    if (parentLoopConfig.layout === 'grid' || parentLoopConfig.layout === 'horizontal') {
+      inlineStyle.flex = `0 0 ${itemWidth}px`;
+      inlineStyle.maxWidth = itemWidth;
+    }
+  }
 
   const elementBorderRadiusValue = (() => {
     if (styles?.borderRadiusMode === 'independent') {
@@ -1799,7 +1874,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         );
       })()}
       {/* Child elements — rendered relative to this element */}
-      {children.map(child => {
+      {renderedChildren.map(child => {
         return (
           <React.Fragment key={child.id}>
             <CanvasElement
@@ -1821,6 +1896,41 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
           </React.Fragment>
         );
       })}
+      {isLoopElementType(el?.type) && loopTemplateChild && loopTemplateHasContent && ghostCount > 0
+        ? Array.from({ length: ghostCount }, (_, index) => {
+            const metrics = getLoopPreviewMetrics({
+              containerWidth: width,
+              paddingLeft: loopGhostPaddingLeft,
+              paddingRight: loopGhostPaddingRight,
+              templateWidth: resolvedLoopTemplate?.width,
+              templateHeight: resolvedLoopTemplate?.height,
+              loopConfig,
+            });
+            let ghostStyle = {
+              width: metrics.itemWidth,
+              minWidth: metrics.itemWidth,
+              height: metrics.itemHeight,
+              minHeight: metrics.itemHeight,
+            };
+
+            if (metrics.layout === 'horizontal' || metrics.layout === 'grid') {
+              ghostStyle = {
+                ...ghostStyle,
+                flex: `0 0 ${metrics.itemWidth}px`,
+                maxWidth: metrics.itemWidth,
+              };
+            }
+
+            return (
+              <div
+                key={`ghost-${id}-${index}`}
+                className="fb-loop-ghost"
+                style={ghostStyle}
+                aria-hidden="true"
+              />
+            );
+          })
+        : null}
     </div>
   );
 }

@@ -4,6 +4,8 @@ defined( 'ABSPATH' ) || exit;
 class FrameBuilder_Plugin {
 	/** @var array<int,array{html:string,css:string}> */
 	private static array $frontend_render_cache = [];
+	/** @var array<int,bool> */
+	private static array $frontend_render_in_progress = [];
 
 	private static function force_important_in_css_block( string $block, array $properties ): string {
 		foreach ( $properties as $property ) {
@@ -1070,6 +1072,18 @@ class FrameBuilder_Plugin {
 			return self::$frontend_render_cache[ $post_id ];
 		}
 
+		if ( ! empty( self::$frontend_render_in_progress[ $post_id ] ) ) {
+			$html = get_post_meta( $post_id, '_fb_published_html', true );
+			$css  = get_post_meta( $post_id, '_fb_published_css', true );
+			if ( is_string( $html ) && '' !== trim( $html ) ) {
+				return [
+					'html' => self::normalize_frontend_render_html( $html ),
+					'css'  => is_string( $css ) ? self::normalize_frontend_google_font_imports( $css ) : '',
+				];
+			}
+			return null;
+		}
+
 		$layout_raw = get_post_meta( $post_id, '_fb_layout', true );
 		if ( is_string( $layout_raw ) && '' !== trim( $layout_raw ) ) {
 			$layout = json_decode( $layout_raw, true );
@@ -1077,11 +1091,16 @@ class FrameBuilder_Plugin {
 				$layout = json_decode( wp_unslash( $layout_raw ), true );
 			}
 			if ( is_array( $layout ) ) {
-				$exporter = new FrameBuilder_Exporter( $layout, $post_id );
-				self::$frontend_render_cache[ $post_id ] = [
-					'html' => self::normalize_frontend_render_html( $exporter->generate_html() ),
-					'css'  => self::normalize_frontend_google_font_imports( $exporter->generate_css() ),
-				];
+				self::$frontend_render_in_progress[ $post_id ] = true;
+				try {
+					$exporter = new FrameBuilder_Exporter( $layout, $post_id );
+					self::$frontend_render_cache[ $post_id ] = [
+						'html' => self::normalize_frontend_render_html( $exporter->generate_html() ),
+						'css'  => self::normalize_frontend_google_font_imports( $exporter->generate_css() ),
+					];
+				} finally {
+					unset( self::$frontend_render_in_progress[ $post_id ] );
+				}
 				return self::$frontend_render_cache[ $post_id ];
 			}
 		}

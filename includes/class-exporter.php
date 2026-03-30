@@ -49,6 +49,21 @@ class FrameBuilder_Exporter {
 	/** @var array<string,float|null> Per-breakpoint viewport fold height (null = auto-compute) */
 	private array $viewport_fold_h = [ 'desktop' => null, 'tablet' => null, 'mobile' => null ];
 
+	private function is_submission_generated_post( WP_Post $post ): bool {
+		if ( 'post' !== $post->post_type ) {
+			return false;
+		}
+		if ( get_post_meta( $post->ID, '_fb_created_from_submission', true ) ) {
+			return true;
+		}
+		$title = get_the_title( $post );
+		if ( is_string( $title ) && 0 === strpos( $title, 'Form Submission ' ) ) {
+			return true;
+		}
+		$slug = isset( $post->post_name ) ? (string) $post->post_name : '';
+		return '' !== $slug && 0 === strpos( $slug, 'form-submission-' );
+	}
+
 	private function normalize_media_url( $value ): string {
 		if ( is_array( $value ) ) {
 			if ( isset( $value['url'] ) && is_string( $value['url'] ) ) {
@@ -60,6 +75,29 @@ class FrameBuilder_Exporter {
 			return trim( $value );
 		}
 		return '';
+	}
+
+	private function normalize_link_url_value( $value ): string {
+		if ( is_array( $value ) ) {
+			if ( isset( $value['url'] ) && is_string( $value['url'] ) ) {
+				return trim( $value['url'] );
+			}
+			return '';
+		}
+		if ( is_string( $value ) ) {
+			return trim( $value );
+		}
+		if ( is_scalar( $value ) ) {
+			return trim( (string) $value );
+		}
+		return '';
+	}
+
+	private function sanitize_navigation_url( string $value ): string {
+		$value = trim( $value );
+		if ( '' === $value ) return '';
+		if ( 0 === strpos( $value, '//' ) ) return '';
+		return wp_kses_bad_protocol( $value, [ 'http', 'https', 'mailto', 'tel' ] );
 	}
 
 	private function normalize_video_provider( $value ): string {
@@ -86,6 +124,21 @@ class FrameBuilder_Exporter {
 			if ( '' !== $url ) $frames[] = $url;
 		}
 		return $frames;
+	}
+
+	private function build_loop_item_excerpt( WP_Post $post ): string {
+		$excerpt = isset( $post->post_excerpt ) ? trim( wp_strip_all_tags( (string) $post->post_excerpt ) ) : '';
+		if ( '' !== $excerpt ) {
+			return $excerpt;
+		}
+
+		$content = isset( $post->post_content ) ? (string) $post->post_content : '';
+		$content = strip_shortcodes( $content );
+		$content = wp_strip_all_tags( $content );
+		$content = preg_replace( '/\s+/', ' ', $content ) ?? $content;
+		$content = trim( $content );
+
+		return '' !== $content ? wp_trim_words( $content, 28, '…' ) : '';
 	}
 
 	private function get_constraint_axis_mode( array $constraints, string $axis ): string {
@@ -947,8 +1000,8 @@ class FrameBuilder_Exporter {
 	 * @param float $cw  Design width  of the containing context in px.
 	 * @param float $ch  Design height of the containing context in px.
 	 */
-	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none', string $parent_align_items = 'stretch' ): string {
-		$resolved = $this->resolve_element_with_variables( $el, $bpId );
+	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none', string $parent_align_items = 'stretch', array $loop_item_variables = [] ): string {
+		$resolved = $this->resolve_element_with_variables( $el, $bpId, $loop_item_variables );
 		if ( ! empty( $resolved['hidden'] ) ) return '';
 		$element_type = isset( $el['type'] ) ? (string) $el['type'] : '';
 
@@ -1191,9 +1244,13 @@ class FrameBuilder_Exporter {
 		}
 		$interactions_json = ! empty( $el['interactions'] ) ? esc_attr( wp_json_encode( $el['interactions'] ) ) : '';
 		$animations_json = ! empty( $el['animations'] ) ? esc_attr( wp_json_encode( $el['animations'] ) ) : '';
+		$link_url = $this->sanitize_navigation_url( $this->normalize_link_url_value( $resolved['linkUrl'] ?? '' ) );
 		$runtime_attrs = '';
 		if ( $bindings_json !== '' ) {
 			$runtime_attrs .= ' data-fb-bindings="' . $bindings_json . '"';
+		}
+		if ( '' !== $link_url ) {
+			$runtime_attrs .= ' data-fb-link-url="' . esc_attr( $link_url ) . '"';
 		}
 		if ( $flow_json !== '' ) {
 			$runtime_attrs .= ' data-fb-flow="' . $flow_json . '"';
@@ -1460,10 +1517,14 @@ class FrameBuilder_Exporter {
 		$child_layout_on = $child_flex_dir !== 'none';
 		$child_align_items = $child_layout_on ? ( $styles['alignItems'] ?? 'stretch' ) : 'stretch';
 		list( $child_cw, $child_ch ) = $this->compute_child_context_size( $resolved, $cw, $ch, $artboard_layout_on, $parent_flex_dir );
-		foreach ( $el['children'] ?? [] as $child_id ) {
-			$child = $this->el_index[ $child_id ] ?? null;
-			if ( $child ) {
-				$html .= $this->render_element( $child, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items );
+		if ( 'loop' === $element_type ) {
+			$html .= $this->render_loop_children( $el, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items );
+		} else {
+			foreach ( $el['children'] ?? [] as $child_id ) {
+				$child = $this->el_index[ $child_id ] ?? null;
+				if ( $child ) {
+					$html .= $this->render_element( $child, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items, $loop_item_variables );
+				}
 			}
 		}
 
@@ -1893,6 +1954,10 @@ class FrameBuilder_Exporter {
 	}
 
 	private function get_variable_map(): array {
+		return $this->get_variable_map_for_loop_item();
+	}
+
+	private function get_variable_map_for_loop_item( array $loop_item_variables = [] ): array {
 		$page_map = [];
 		foreach ( $this->page_variables as $variable ) {
 			$page_map[ $variable['id'] ] = $variable;
@@ -1901,10 +1966,15 @@ class FrameBuilder_Exporter {
 		foreach ( $this->global_variables as $variable ) {
 			$global_map[ $variable['id'] ] = $variable;
 		}
+		$loop_item_map = [];
+		foreach ( $this->normalize_variable_list( $loop_item_variables, 'loop-item' ) as $variable ) {
+			$loop_item_map[ $variable['id'] ] = $variable;
+		}
 
 		return [
 			'page'   => $page_map,
 			'global' => $global_map,
+			'loop-item' => $loop_item_map,
 		];
 	}
 
@@ -2374,7 +2444,7 @@ class FrameBuilder_Exporter {
 				$variable_id = isset( $binding['variableId'] ) ? sanitize_text_field( (string) $binding['variableId'] ) : '';
 				if ( $variable_id === '' ) continue;
 				$normalized[ $bp_id ][ $property_key ] = [
-					'scope'      => $scope === 'global' ? 'global' : 'page',
+					'scope'      => in_array( $scope, [ 'global', 'loop-item' ], true ) ? $scope : 'page',
 					'variableId' => $variable_id,
 				];
 			}
@@ -2393,6 +2463,501 @@ class FrameBuilder_Exporter {
 		return $bindings['desktop'][ $property_key ] ?? null;
 	}
 
+	private function normalize_loop_config( $value ): array {
+		$source = is_array( $value ) ? $value : [];
+		$query = is_array( $source['query'] ?? null ) ? $source['query'] : [];
+		$layout = isset( $source['layout'] ) && in_array( $source['layout'], [ 'vertical', 'horizontal', 'grid' ], true ) ? $source['layout'] : 'vertical';
+		$source_type = isset( $query['source'] ) && in_array( $query['source'], [ 'collection', 'selected', 'variable' ], true ) ? $query['source'] : 'collection';
+		$collection = isset( $query['collection'] ) && in_array( $query['collection'], [ 'posts', 'pages', 'products' ], true ) ? $query['collection'] : 'posts';
+		$limit = isset( $query['limit'] ) && is_numeric( $query['limit'] ) ? max( 1, (int) $query['limit'] ) : 6;
+		$order = isset( $query['order'] ) && 'asc' === strtolower( (string) $query['order'] ) ? 'ASC' : 'DESC';
+		$category_ids = [];
+		if ( is_array( $query['categoryIds'] ?? null ) ) {
+			foreach ( $query['categoryIds'] as $category_id ) {
+				$category_id = (int) $category_id;
+				if ( $category_id > 0 && ! in_array( $category_id, $category_ids, true ) ) {
+					$category_ids[] = $category_id;
+				}
+			}
+		}
+		$selected_ids = [];
+		if ( is_array( $query['selectedIds'] ?? null ) ) {
+			foreach ( $query['selectedIds'] as $selected_id ) {
+				$selected_id = (int) $selected_id;
+				if ( $selected_id > 0 && ! in_array( $selected_id, $selected_ids, true ) ) {
+					$selected_ids[] = $selected_id;
+				}
+			}
+		}
+		$variable = null;
+		if ( is_array( $query['variable'] ?? null ) ) {
+			$scope = isset( $query['variable']['scope'] ) && 'global' === $query['variable']['scope'] ? 'global' : 'page';
+			$variable_id = isset( $query['variable']['variableId'] ) ? sanitize_text_field( (string) $query['variable']['variableId'] ) : '';
+			if ( '' !== $variable_id ) {
+				$variable = [
+					'scope' => $scope,
+					'variableId' => $variable_id,
+				];
+			}
+		}
+
+		return [
+			'layout' => $layout,
+			'gap' => isset( $source['gap'] ) && is_numeric( $source['gap'] ) ? max( 0, (float) $source['gap'] ) : 16,
+			'columns' => isset( $source['columns'] ) && is_numeric( $source['columns'] ) ? max( 1, (int) $source['columns'] ) : 3,
+			'minItemWidth' => isset( $source['minItemWidth'] ) && is_numeric( $source['minItemWidth'] ) ? max( 40, (float) $source['minItemWidth'] ) : 220,
+			'templateRootId' => isset( $source['templateRootId'] ) ? sanitize_text_field( (string) $source['templateRootId'] ) : '',
+			'query' => [
+				'source' => $source_type,
+				'collection' => $collection,
+				'limit' => $limit,
+				'order' => $order,
+				'categoryIds' => $category_ids,
+				'selectedIds' => $selected_ids,
+				'variable' => $variable,
+			],
+		];
+	}
+
+	private function build_loop_collection_item_from_post( WP_Post $post, string $post_type ): array {
+		$image_url = get_the_post_thumbnail_url( $post, 'full' );
+		$taxonomy = 'product' === $post_type ? 'product_cat' : ( 'post' === $post_type ? 'category' : '' );
+		$term_ids = [];
+		if ( '' !== $taxonomy && taxonomy_exists( $taxonomy ) ) {
+			$terms = get_the_terms( $post, $taxonomy );
+			if ( is_array( $terms ) ) {
+				foreach ( $terms as $term ) {
+					if ( $term instanceof WP_Term ) {
+						$term_ids[] = (int) $term->term_id;
+					}
+				}
+			}
+		}
+		$item = [
+			'id' => (int) $post->ID,
+			'title' => get_the_title( $post ),
+			'url' => get_permalink( $post ),
+			'postType' => $post_type,
+			'image' => $image_url ? esc_url_raw( $image_url ) : '',
+			'excerpt' => $this->build_loop_item_excerpt( $post ),
+			'date' => get_the_date( '', $post ),
+			'termIds' => $term_ids,
+		];
+		if ( 'product' === $post_type && function_exists( 'wc_get_product' ) ) {
+			$product = wc_get_product( $post->ID );
+			if ( $product ) {
+				$item['price'] = wp_strip_all_tags( html_entity_decode( $product->get_price_html(), ENT_QUOTES, 'UTF-8' ) );
+			}
+		}
+		return $item;
+	}
+
+	private function resolve_loop_source_variable( array $loop_config ): ?array {
+		$variable_config = is_array( $loop_config['query']['variable'] ?? null ) ? $loop_config['query']['variable'] : null;
+		if ( ! $variable_config ) return null;
+		$scope = 'global' === ( $variable_config['scope'] ?? 'page' ) ? 'global' : 'page';
+		$variable_id = isset( $variable_config['variableId'] ) ? (string) $variable_config['variableId'] : '';
+		if ( '' === $variable_id ) return null;
+		$variables = 'global' === $scope ? $this->global_variables : $this->page_variables;
+		foreach ( $variables as $variable ) {
+			if ( ! is_array( $variable ) || ( $variable['id'] ?? '' ) !== $variable_id ) continue;
+			return $variable;
+		}
+		return null;
+	}
+
+	private function get_loop_collection_items( array $loop_config ): array {
+		$query = $loop_config['query'] ?? [];
+		$source_type = $query['source'] ?? 'collection';
+		$collection = $query['collection'] ?? 'posts';
+		$limit = isset( $query['limit'] ) && is_numeric( $query['limit'] ) ? max( 1, (int) $query['limit'] ) : 6;
+		$order = isset( $query['order'] ) && 'ASC' === strtoupper( (string) $query['order'] ) ? 'ASC' : 'DESC';
+		$category_ids = is_array( $query['categoryIds'] ?? null ) ? array_values( array_unique( array_filter( array_map( 'intval', $query['categoryIds'] ) ) ) ) : [];
+
+		$post_type = 'post';
+		$orderby = 'date';
+		if ( 'pages' === $collection ) {
+			$post_type = 'page';
+			$orderby = 'menu_order title';
+		} elseif ( 'products' === $collection ) {
+			if ( ! post_type_exists( 'product' ) ) {
+				return [];
+			}
+			$post_type = 'product';
+		}
+
+		if ( 'variable' === $source_type ) {
+			$variable = $this->resolve_loop_source_variable( $loop_config );
+			if ( ! $variable || ! in_array( $variable['type'] ?? '', [ 'post', 'product' ], true ) ) {
+				return [];
+			}
+			$value = is_array( $variable['value'] ?? null ) ? $variable['value'] : null;
+			$post_id = isset( $value['id'] ) ? (int) $value['id'] : 0;
+			if ( $post_id <= 0 ) {
+				return [];
+			}
+			$post = get_post( $post_id );
+			if ( ! ( $post instanceof WP_Post ) || 'publish' !== $post->post_status ) {
+				return [];
+			}
+			if ( 'product' === ( $variable['type'] ?? '' ) && 'product' !== $post->post_type ) {
+				return [];
+			}
+			if ( 'post' === ( $variable['type'] ?? '' ) && ! in_array( $post->post_type, [ 'post', 'page' ], true ) ) {
+				return [];
+			}
+			return [ $this->build_loop_collection_item_from_post( $post, (string) $post->post_type ) ];
+		}
+
+		if ( 'selected' === $source_type ) {
+			$selected_ids = is_array( $query['selectedIds'] ?? null ) ? array_values( array_unique( array_filter( array_map( 'intval', $query['selectedIds'] ) ) ) ) : [];
+			if ( empty( $selected_ids ) ) {
+				return [];
+			}
+			$posts = get_posts( [
+				'post_type' => $post_type,
+				'post_status' => 'publish',
+				'posts_per_page' => count( $selected_ids ),
+				'post__in' => $selected_ids,
+				'orderby' => 'post__in',
+				'order' => 'ASC',
+			] );
+			return array_map( function( $post ) {
+				return $this->build_loop_collection_item_from_post( $post, (string) $post->post_type );
+			}, $posts );
+		}
+
+		$posts = get_posts( [
+			'post_type' => $post_type,
+			'post_status' => 'publish',
+			'posts_per_page' => $limit,
+			'orderby' => $orderby,
+			'order' => $order,
+			...( ! empty( $category_ids ) && 'post' === $post_type ? [
+				'tax_query' => [ [
+					'taxonomy' => 'category',
+					'field' => 'term_id',
+					'terms' => $category_ids,
+				] ],
+			] : [] ),
+			...( ! empty( $category_ids ) && 'product' === $post_type ? [
+				'tax_query' => [ [
+					'taxonomy' => 'product_cat',
+					'field' => 'term_id',
+					'terms' => $category_ids,
+				] ],
+			] : [] ),
+		] );
+		if ( 'post' === $post_type ) {
+			$posts = array_values( array_filter( $posts, function( $post ) {
+				return ! ( $post instanceof WP_Post ) || ! $this->is_submission_generated_post( $post );
+			} ) );
+		}
+
+		return array_map( function( $post ) use ( $post_type ) {
+			return $this->build_loop_collection_item_from_post( $post, $post_type );
+		}, $posts );
+	}
+
+	private function build_loop_item_variables( array $item ): array {
+		$variables = [
+			[
+				'id' => 'loop-item-title',
+				'scope' => 'loop-item',
+				'type' => 'string',
+				'name' => 'Item Title',
+				'category' => 'Loop Item',
+				'value' => isset( $item['title'] ) && is_string( $item['title'] ) ? $item['title'] : '',
+			],
+			[
+				'id' => 'loop-item-url',
+				'scope' => 'loop-item',
+				'type' => 'string',
+				'name' => 'Item URL',
+				'category' => 'Loop Item',
+				'value' => isset( $item['url'] ) && is_string( $item['url'] ) ? $item['url'] : '',
+			],
+			[
+				'id' => 'loop-item-excerpt',
+				'scope' => 'loop-item',
+				'type' => 'string',
+				'name' => 'Item Excerpt',
+				'category' => 'Loop Item',
+				'value' => isset( $item['excerpt'] ) && is_string( $item['excerpt'] ) ? $item['excerpt'] : '',
+			],
+			[
+				'id' => 'loop-item-date',
+				'scope' => 'loop-item',
+				'type' => 'string',
+				'name' => 'Item Date',
+				'category' => 'Loop Item',
+				'value' => isset( $item['date'] ) && is_string( $item['date'] ) ? $item['date'] : '',
+			],
+			[
+				'id' => 'loop-item-image',
+				'scope' => 'loop-item',
+				'type' => 'image',
+				'name' => 'Item Image',
+				'category' => 'Loop Item',
+				'value' => isset( $item['image'] ) && is_string( $item['image'] ) ? $item['image'] : '',
+			],
+		];
+
+		if ( isset( $item['price'] ) && is_string( $item['price'] ) && '' !== trim( $item['price'] ) ) {
+			$variables[] = [
+				'id' => 'loop-item-price',
+				'scope' => 'loop-item',
+				'type' => 'string',
+				'name' => 'Item Price',
+				'category' => 'Loop Item',
+				'value' => $item['price'],
+			];
+		}
+
+		return $variables;
+	}
+
+	private function build_loop_runtime_item_attrs( array $item, int $index ): string {
+		$attrs = ' data-fb-loop-item-index="' . esc_attr( (string) $index ) . '"';
+		$attr_map = [
+			'title' => 'data-fb-loop-item-title',
+			'url' => 'data-fb-loop-item-url',
+			'excerpt' => 'data-fb-loop-item-excerpt',
+			'date' => 'data-fb-loop-item-date',
+			'image' => 'data-fb-loop-item-image',
+			'price' => 'data-fb-loop-item-price',
+		];
+
+		foreach ( $attr_map as $key => $attr_name ) {
+			$value = $item[ $key ] ?? '';
+			if ( ! is_string( $value ) || '' === $value ) {
+				continue;
+			}
+			$attrs .= ' ' . $attr_name . '="' . esc_attr( $value ) . '"';
+		}
+
+		return $attrs;
+	}
+
+	private function set_dom_element_style_property( DOMElement $element, string $property, string $value ): void {
+		$style_text = (string) $element->getAttribute( 'style' );
+		$style_map = [];
+		foreach ( explode( ';', $style_text ) as $declaration ) {
+			$parts = explode( ':', $declaration, 2 );
+			if ( 2 !== count( $parts ) ) {
+				continue;
+			}
+			$name = strtolower( trim( $parts[0] ) );
+			if ( '' === $name ) {
+				continue;
+			}
+			$style_map[ $name ] = trim( $parts[1] );
+		}
+		$style_map[ strtolower( $property ) ] = $value;
+		$serialized = [];
+		foreach ( $style_map as $name => $entry ) {
+			$serialized[] = $name . ':' . $entry;
+		}
+		$element->setAttribute( 'style', implode( ';', $serialized ) . ( ! empty( $serialized ) ? ';' : '' ) );
+	}
+
+	private function get_first_descendant_with_class( DOMNode $root, DOMXPath $xpath, string $class_name ): ?DOMElement {
+		$nodes = $xpath->query( './/*[contains(concat(" ", normalize-space(@class), " "), " ' . $class_name . ' ")]', $root );
+		if ( ! $nodes instanceof DOMNodeList || 0 === $nodes->length ) {
+			return null;
+		}
+		$node = $nodes->item( 0 );
+		return $node instanceof DOMElement ? $node : null;
+	}
+
+	private function replace_dom_element_inner_html( DOMElement $element, string $html ): void {
+		$document = $element->ownerDocument;
+		if ( ! $document instanceof DOMDocument ) {
+			$element->textContent = wp_strip_all_tags( $html );
+			return;
+		}
+		while ( $element->firstChild ) {
+			$element->removeChild( $element->firstChild );
+		}
+		if ( '' === $html ) {
+			return;
+		}
+		$fragment = $document->createDocumentFragment();
+		if ( ! @$fragment->appendXML( $html ) ) {
+			$element->appendChild( $document->createTextNode( wp_strip_all_tags( $html ) ) );
+			return;
+		}
+		$element->appendChild( $fragment );
+	}
+
+	private function apply_loop_item_binding_to_dom_node( DOMElement $node, string $property_key, array $variable, DOMXPath $xpath ): void {
+		$value = $variable['value'] ?? null;
+		$text_node = $this->get_first_descendant_with_class( $node, $xpath, 'fb-text-content' );
+		if ( 'text' === $property_key ) {
+			if ( $text_node instanceof DOMElement ) {
+				$this->replace_dom_element_inner_html( $text_node, $this->plain_text_to_rich_text_html( $value === null ? '' : (string) $value ) );
+			}
+			return;
+		}
+		if ( 'hidden' === $property_key ) {
+			if ( ! empty( $value ) ) {
+				return;
+			}
+			$this->set_dom_element_style_property( $node, 'display', 'none' );
+			return;
+		}
+		if ( 'linkUrl' === $property_key ) {
+			$link_url = $this->sanitize_navigation_url( $this->normalize_link_url_value( $value ) );
+			if ( '' !== $link_url ) {
+				$node->setAttribute( 'data-fb-link-url', $link_url );
+			} else {
+				$node->removeAttribute( 'data-fb-link-url' );
+			}
+			return;
+		}
+		if ( 'styles.color' === $property_key ) {
+			$target = $text_node instanceof DOMElement ? $text_node : $node;
+			$this->set_dom_element_style_property( $target, 'color', is_string( $value ) ? $value : '#000000' );
+			return;
+		}
+		if ( 'styles.fontFamily' === $property_key ) {
+			$target = $text_node instanceof DOMElement ? $text_node : $node;
+			$this->set_dom_element_style_property( $target, 'font-family', is_string( $value ) ? $value : (string) ( $value ?? '' ) );
+			return;
+		}
+		if ( 'styles.backgroundColor' === $property_key ) {
+			$this->set_dom_element_style_property( $node, 'background-color', is_string( $value ) ? $value : '#000000' );
+			return;
+		}
+		if ( 'styles.backgroundImage' === $property_key ) {
+			$url = $this->normalize_media_url( $value );
+			$this->set_dom_element_style_property( $node, 'background-image', '' !== $url ? 'url(' . $url . ')' : 'none' );
+			return;
+		}
+		if ( 'styles.zIndex' === $property_key ) {
+			$this->set_dom_element_style_property( $node, 'z-index', is_numeric( $value ) ? (string) (float) $value : '0' );
+			return;
+		}
+		if ( 'src' === $property_key ) {
+			$image_url = $this->normalize_media_url( $value );
+			$target = null;
+			if ( in_array( strtolower( $node->tagName ), [ 'img', 'video' ], true ) ) {
+				$target = $node;
+			} else {
+				$asset_nodes = $xpath->query( './/img|.//video', $node );
+				if ( $asset_nodes instanceof DOMNodeList && $asset_nodes->length > 0 ) {
+					$candidate = $asset_nodes->item( 0 );
+					$target = $candidate instanceof DOMElement ? $candidate : null;
+				}
+			}
+			if ( $target instanceof DOMElement ) {
+				if ( '' !== $image_url ) {
+					$target->setAttribute( 'src', $image_url );
+				} else {
+					$target->removeAttribute( 'src' );
+				}
+			}
+		}
+	}
+
+	private function apply_loop_item_bindings_to_rendered_html( string $html, array $loop_item_variables, string $bp_id ): string {
+		if ( '' === trim( $html ) ) {
+			return $html;
+		}
+		$variable_map = $this->get_variable_map_for_loop_item( $loop_item_variables );
+		$loop_item_map = $variable_map['loop-item'] ?? [];
+		if ( empty( $loop_item_map ) ) {
+			return $html;
+		}
+
+		$document = new DOMDocument( '1.0', 'UTF-8' );
+		libxml_use_internal_errors( true );
+		$loaded = $document->loadHTML( '<?xml encoding="utf-8" ?><div id="fb-loop-bind-root">' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+		if ( ! $loaded ) {
+			libxml_clear_errors();
+			libxml_use_internal_errors( false );
+			return $html;
+		}
+		$xpath = new DOMXPath( $document );
+		$nodes = $xpath->query( '//*[@data-fb-bindings]' );
+		if ( $nodes instanceof DOMNodeList ) {
+			foreach ( $nodes as $node ) {
+				if ( ! $node instanceof DOMElement ) {
+					continue;
+				}
+				$bindings_json = html_entity_decode( (string) $node->getAttribute( 'data-fb-bindings' ), ENT_QUOTES, 'UTF-8' );
+				$bindings = json_decode( $bindings_json, true );
+				if ( ! is_array( $bindings ) ) {
+					continue;
+				}
+				$bindings = $this->normalize_bindings( $bindings );
+				$property_keys = array_values( array_unique( array_merge(
+					array_keys( $bindings['desktop'] ?? [] ),
+					array_keys( $bindings['tablet'] ?? [] ),
+					array_keys( $bindings['mobile'] ?? [] )
+				) ) );
+				foreach ( $property_keys as $property_key ) {
+					$binding = $this->resolve_binding( $bindings, $bp_id, $property_key );
+					if ( ! is_array( $binding ) || 'loop-item' !== ( $binding['scope'] ?? '' ) ) {
+						continue;
+					}
+					$variable_id = $binding['variableId'] ?? '';
+					$variable = $loop_item_map[ $variable_id ] ?? null;
+					if ( ! is_array( $variable ) ) {
+						continue;
+					}
+					$this->apply_loop_item_binding_to_dom_node( $node, $property_key, $variable, $xpath );
+				}
+			}
+		}
+
+		$root = $document->getElementById( 'fb-loop-bind-root' );
+		if ( ! $root instanceof DOMElement ) {
+			libxml_clear_errors();
+			libxml_use_internal_errors( false );
+			return $html;
+		}
+		$output = '';
+		foreach ( $root->childNodes as $child ) {
+			$output .= $document->saveHTML( $child );
+		}
+		libxml_clear_errors();
+		libxml_use_internal_errors( false );
+		return $output;
+	}
+
+	private function render_loop_children( array $el, string $bpId, float $child_cw, float $child_ch, bool $child_layout_on, string $child_flex_dir, string $child_align_items ): string {
+		$resolved = $this->resolve( $el, $bpId );
+		$loop_config = $this->normalize_loop_config( $resolved['loop'] ?? ( $el['base']['loop'] ?? [] ) );
+		$template_root_id = $loop_config['templateRootId'] ?: ( $el['children'][0] ?? '' );
+		if ( '' === $template_root_id ) {
+			return '';
+		}
+		$template = $this->el_index[ $template_root_id ] ?? null;
+		if ( ! is_array( $template ) ) {
+			return '';
+		}
+
+		$items = $this->get_loop_collection_items( $loop_config );
+		if ( empty( $items ) ) {
+			return '';
+		}
+
+		$html = '';
+		foreach ( $items as $index => $item ) {
+			$loop_item_variables = $this->build_loop_item_variables( is_array( $item ) ? $item : [] );
+			$html .= '<div class="fb-loop-runtime-item" style="display:contents;"' . $this->build_loop_runtime_item_attrs( is_array( $item ) ? $item : [], (int) $index ) . '>';
+			$html .= $this->apply_loop_item_bindings_to_rendered_html(
+				$this->render_element( $template, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items, $loop_item_variables ),
+				$loop_item_variables,
+				$bpId
+			);
+			$html .= '</div>';
+		}
+
+		return $html;
+	}
+
 	private function apply_variable_binding_value( array $resolved, string $property_key, array $variable ): array {
 		$next = $resolved;
 		$next['styles'] = is_array( $resolved['styles'] ?? null ) ? $resolved['styles'] : [];
@@ -2401,9 +2966,13 @@ class FrameBuilder_Exporter {
 		switch ( $property_key ) {
 			case 'text':
 				$next['text'] = $value === null ? '' : (string) $value;
+				$next['richTextHtml'] = $this->plain_text_to_rich_text_html( $next['text'] );
 				break;
 			case 'hidden':
 				$next['hidden'] = empty( $value );
+				break;
+			case 'linkUrl':
+				$next['linkUrl'] = $this->normalize_link_url_value( $value );
 				break;
 			case 'styles.backgroundImage':
 				$next['styles']['backgroundImage'] = $this->normalize_media_url( $value );
@@ -2428,10 +2997,10 @@ class FrameBuilder_Exporter {
 		return $next;
 	}
 
-	private function resolve_element_with_variables( array $el, string $bp_id ): array {
+	private function resolve_element_with_variables( array $el, string $bp_id, array $loop_item_variables = [] ): array {
 		$resolved = $this->resolve( $el, $bp_id );
 		$bindings = $this->normalize_bindings( $el['bindings'] ?? [] );
-		$variable_map = $this->get_variable_map();
+		$variable_map = $this->get_variable_map_for_loop_item( $loop_item_variables );
 		$property_keys = array_values( array_unique( array_merge(
 			array_keys( $bindings['desktop'] ?? [] ),
 			array_keys( $bindings['tablet'] ?? [] ),
@@ -3017,6 +3586,38 @@ class FrameBuilder_Exporter {
 		var map = variableState[scopeName === 'global' ? 'global' : 'page'];
 		return map ? (map.get(variableId) || null) : null;
 	};
+	var getLoopItemRuntimeValue = function(runtimeOptions, variableId) {
+		var sourceNode = runtimeOptions && runtimeOptions.event && runtimeOptions.event.target ? runtimeOptions.event.target : null;
+		if (!sourceNode && runtimeOptions && runtimeOptions.triggerNode) sourceNode = runtimeOptions.triggerNode;
+		if (!sourceNode || !sourceNode.closest) return null;
+		var loopItemNode = sourceNode.closest('.fb-loop-runtime-item');
+		if (!loopItemNode || !loopItemNode.dataset) return null;
+		var keyMap = {
+			'loop-item-title': 'fbLoopItemTitle',
+			'loop-item-url': 'fbLoopItemUrl',
+			'loop-item-excerpt': 'fbLoopItemExcerpt',
+			'loop-item-date': 'fbLoopItemDate',
+			'loop-item-image': 'fbLoopItemImage',
+			'loop-item-price': 'fbLoopItemPrice'
+		};
+		var datasetKey = keyMap[variableId] || '';
+		if (!datasetKey) return null;
+		var value = loopItemNode.dataset[datasetKey];
+		return typeof value === 'string' ? value : null;
+	};
+	var resolveRuntimeVariable = function(scopeName, variableId, runtimeOptions) {
+		if (scopeName === 'loop-item') {
+			var loopValue = getLoopItemRuntimeValue(runtimeOptions, variableId);
+			if (loopValue == null) return null;
+			return {
+				id: variableId,
+				scope: 'loop-item',
+				type: variableId === 'loop-item-image' ? 'image' : 'string',
+				value: loopValue
+			};
+		}
+		return getVariable(scopeName, variableId);
+	};
 	var setVariableValue = function(scopeName, variableId, nextValue) {
 		var variable = getVariable(scopeName, variableId);
 		if (!variable) return;
@@ -3038,6 +3639,64 @@ class FrameBuilder_Exporter {
 			.replace(/"/g, '&quot;')
 			.replace(/'/g, '&#39;')
 			.replace(/\n/g, '<br>');
+	};
+	var sanitizeNavigationUrl = function(value) {
+		var raw = bindingToText(value).trim();
+		if (!raw) return '';
+		if (/^\/{2}/.test(raw)) return '';
+		if (/^(#|\?|\/(?!\/))/.test(raw)) return raw;
+		if (/^(mailto:|tel:)/i.test(raw)) return raw;
+		try {
+			var parsed = new URL(raw, window.location.href);
+			var protocol = (parsed.protocol || '').toLowerCase();
+			if (protocol === 'http:' || protocol === 'https:') return parsed.href;
+		} catch (error) {
+			return '';
+		}
+		return '';
+	};
+	var getNodeLinkUrl = function(node) {
+		if (!node || !node.dataset) return '';
+		return sanitizeNavigationUrl(node.dataset.fbLinkUrl || '');
+	};
+	var syncLinkNodeState = function(node) {
+		if (!node) return '';
+		var url = getNodeLinkUrl(node);
+		var handledByFlow = !!node.dataset.fbFlow;
+		var handledByInteractions = !!node.dataset.fbInteractions;
+		var enabled = !!url && !handledByFlow && !handledByInteractions;
+		if (enabled) {
+			node.style.cursor = 'pointer';
+			if (!node.hasAttribute('tabindex')) {
+				node.dataset.fbLinkAddedTabindex = '1';
+				node.setAttribute('tabindex', '0');
+			}
+			if (!node.hasAttribute('role')) node.setAttribute('role', 'link');
+		} else {
+			if (node.dataset.fbLinkAddedTabindex === '1') {
+				node.removeAttribute('tabindex');
+				delete node.dataset.fbLinkAddedTabindex;
+			}
+			if (node.getAttribute('role') === 'link') node.removeAttribute('role');
+			if (!handledByFlow && !handledByInteractions && node.dataset.fbLinkBound === '1') node.style.cursor = '';
+		}
+		return enabled ? url : '';
+	};
+	var shouldIgnoreLinkActivation = function(node, event) {
+		if (!event) return false;
+		if (event.defaultPrevented) return true;
+		var target = event.target;
+		if (!target || !target.closest) return false;
+		var interactiveAncestor = target.closest('a,button,input,select,textarea,label,summary,[contenteditable=""],[contenteditable="true"]');
+		return !!interactiveAncestor && interactiveAncestor !== node;
+	};
+	var navigateToUrl = function(url, event) {
+		if (!url) return;
+		if (event && (event.metaKey || event.ctrlKey)) {
+			window.open(url, '_blank', 'noopener');
+			return;
+		}
+		window.location.href = url;
 	};
 	var inferRuntimeValueType = function(value) {
 		if (typeof value === 'boolean') return 'boolean';
@@ -3078,6 +3737,13 @@ class FrameBuilder_Exporter {
 		}
 		return cloneValue(config ? config.value : null);
 	};
+	var resolveConfiguredNavigationUrl = function(config, runtimeOptions) {
+		if (config && config.destinationSource === 'variable') {
+			var runtimeVariable = resolveRuntimeVariable(config.variableScope || 'page', config.variableId || '', runtimeOptions);
+			return sanitizeNavigationUrl(runtimeVariable ? runtimeVariable.value : '');
+		}
+		return sanitizeNavigationUrl(config && config.pageUrl ? config.pageUrl : '');
+	};
 	var resolveConditionSubject = function(config, runtimeOptions) {
 		var subjectSource = config && typeof config.subjectSource === 'string' ? config.subjectSource : 'variable';
 		if (subjectSource === 'submitted-field') {
@@ -3094,7 +3760,7 @@ class FrameBuilder_Exporter {
 				type: inferRuntimeValueType(responseValue)
 			};
 		}
-		var variable = getVariable(config.variableScope || 'page', config.variableId || '');
+		var variable = resolveRuntimeVariable(config.variableScope || 'page', config.variableId || '', runtimeOptions);
 		return {
 			value: variable ? variable.value : null,
 			type: variable ? variable.type : 'string'
@@ -3124,6 +3790,13 @@ class FrameBuilder_Exporter {
 		}
 		if (propertyKey === 'hidden') {
 			node.style.display = value ? '' : 'none';
+			return;
+		}
+		if (propertyKey === 'linkUrl') {
+			var linkUrl = sanitizeNavigationUrl(value);
+			if (linkUrl) node.dataset.fbLinkUrl = linkUrl;
+			else delete node.dataset.fbLinkUrl;
+			syncLinkNodeState(node);
 			return;
 		}
 		if (propertyKey === 'styles.backgroundImage') {
@@ -3186,11 +3859,12 @@ class FrameBuilder_Exporter {
 	var executeInteraction = function(interaction, runtimeOptions) {
 		if (!interaction || typeof interaction !== 'object') return;
 		if (interaction.type === 'navigate') {
-			if (interaction.pageUrl) window.location.href = interaction.pageUrl;
+			var interactionUrl = resolveConfiguredNavigationUrl(interaction, runtimeOptions);
+			if (interactionUrl) navigateToUrl(interactionUrl, runtimeOptions && runtimeOptions.event ? runtimeOptions.event : null);
 			return;
 		}
 		if (interaction.type !== 'set-variable' || !interaction.variableId) return;
-		var variable = getVariable(interaction.variableScope || 'page', interaction.variableId);
+		var variable = resolveRuntimeVariable(interaction.variableScope || 'page', interaction.variableId, runtimeOptions);
 		if (!variable) return;
 		var operation = interaction.operation || 'set';
 		var nextValue = cloneValue(variable.value);
@@ -3471,7 +4145,8 @@ class FrameBuilder_Exporter {
 				return;
 			}
 			if (node.type === 'navigate') {
-				if (node.config && node.config.pageUrl) window.location.href = node.config.pageUrl;
+				var destinationUrl = resolveConfiguredNavigationUrl(node.config || {}, options);
+				if (destinationUrl) navigateToUrl(destinationUrl, options && options.event ? options.event : null);
 				return;
 			}
 			if (node.type === 'set-variable') {
@@ -3568,7 +4243,7 @@ class FrameBuilder_Exporter {
 		node.style.cursor = 'pointer';
 		node.addEventListener('click', function(event) {
 			event.stopPropagation();
-			executeFlow(flow);
+			executeFlow(flow, { event: event, triggerNode: node });
 		});
 	};
 	var bindInteractions = function(node) {
@@ -3581,8 +4256,29 @@ class FrameBuilder_Exporter {
 		node.addEventListener('click', function(event) {
 			event.stopPropagation();
 			interactions.forEach(function(interaction) {
-				executeInteraction(interaction, {});
+					executeInteraction(interaction, { event: event });
 			});
+		});
+	};
+	var bindLinkNode = function(node) {
+		if (!node) return;
+		syncLinkNodeState(node);
+		if (node.dataset.fbLinkBound === '1') return;
+		node.dataset.fbLinkBound = '1';
+		node.addEventListener('click', function(event) {
+			var url = syncLinkNodeState(node);
+			if (!url || shouldIgnoreLinkActivation(node, event)) return;
+			event.preventDefault();
+			event.stopPropagation();
+			navigateToUrl(url, event);
+		});
+		node.addEventListener('keydown', function(event) {
+			if (event.key !== 'Enter' && event.key !== ' ') return;
+			var url = syncLinkNodeState(node);
+			if (!url || shouldIgnoreLinkActivation(node, event)) return;
+			event.preventDefault();
+			event.stopPropagation();
+			navigateToUrl(url, event);
 		});
 	};
 	restorePersistentVariables('page');
@@ -3594,6 +4290,7 @@ class FrameBuilder_Exporter {
 	scope.querySelectorAll('[data-fb-file-upload="true"]').forEach(bindFileUploadField);
 	scope.querySelectorAll('[data-fb-flow]').forEach(bindFlow);
 	scope.querySelectorAll('[data-fb-interactions]').forEach(bindInteractions);
+	scope.querySelectorAll('[data-fb-link-url]').forEach(bindLinkNode);
 	scope.querySelectorAll('form[data-fb-form-id]').forEach(function(formNode) {
 		if (!formNode || formNode.dataset.fbFormShellBound === '1') return;
 		formNode.dataset.fbFormShellBound = '1';

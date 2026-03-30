@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ASSET_STORAGE_COMPONENT_ID, useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, resolvePageSmoothScroll, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup } from '../store/editorStore';
+import { ASSET_STORAGE_COMPONENT_ID, useEditorStore, resolveElement, resolveElementWithVariables, resolveBackground, resolvePagePadding, resolvePageLayout, resolvePageSmoothScroll, getSelectionElementIds, resolveElementAnimations, buildPolygonSvgMarkup, getShapePresetKind, getVectorShapeData, setVectorAnchorMode, removeVectorAnchor, reframeVectorShapeData, buildVectorShapeSvgMarkup, getLoopItemPreviewVariables, getLoopTemplateRootForElement } from '../store/editorStore';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
 import CustomSelect from '../components/CustomSelect';
@@ -13,6 +13,7 @@ import ElementAnimationModal from '../components/ElementAnimationModal';
 import { toViewportRect } from '../utils/rect';
 import { hasElement3DRotation } from '../utils/elementTransform';
 import { isFormContainerType, isFormFieldType, isFormSubmitButtonType, normalizeFormConfig } from '../domain/formModel';
+import { isLoopElementType, normalizeLoopConfig } from '../domain/loopModel';
 import { FORM_STYLE_DEFAULTS } from '../domain/formStyleModel';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -1944,26 +1945,28 @@ export default function PropertiesPanel() {
   const normalizedSelectedVariantId = selectedComponentVariants.some((variant) => variant.id === element?.componentInstance?.variantId)
     ? element?.componentInstance?.variantId
     : selectedComponentMeta?.defaultVariantId ?? selectedComponentVariants[0]?.id ?? '';
+  const getLoopVariablesForElement = (targetElement) => getLoopItemPreviewVariables(targetElement, allEls, variableSources, pageVariables, globalVariables);
   const hasMultiSelection = selectionIds.length > 1;
   const multiSelectionHas3DRotation = useMemo(() => (
     hasMultiSelection
       ? selectedElements.some((selected) => {
-          const resolvedSelected = resolveElementWithVariables(selected, currentSelectionBpId, pageVariables, globalVariables);
+          const resolvedSelected = resolveElementWithVariables(selected, currentSelectionBpId, pageVariables, globalVariables, getLoopVariablesForElement(selected));
           return getTransformMode(resolvedSelected.rotationX ?? 0, resolvedSelected.rotationY ?? 0) === '3d';
         })
       : false
-  ), [currentSelectionBpId, globalVariables, hasMultiSelection, pageVariables, selectedElements]);
+  ), [currentSelectionBpId, globalVariables, hasMultiSelection, pageVariables, selectedElements, allEls, variableSources]);
   const singleSelectionHas3DRotation = useMemo(() => (
     !hasMultiSelection && element
       ? getTransformMode(
-          resolveElementWithVariables(element, currentSelectionBpId, pageVariables, globalVariables).rotationX ?? 0,
-          resolveElementWithVariables(element, currentSelectionBpId, pageVariables, globalVariables).rotationY ?? 0,
+          resolveElementWithVariables(element, currentSelectionBpId, pageVariables, globalVariables, getLoopVariablesForElement(element)).rotationX ?? 0,
+          resolveElementWithVariables(element, currentSelectionBpId, pageVariables, globalVariables, getLoopVariablesForElement(element)).rotationY ?? 0,
         ) === '3d'
       : false
-  ), [currentSelectionBpId, element, globalVariables, hasMultiSelection, pageVariables]);
+  ), [currentSelectionBpId, element, globalVariables, hasMultiSelection, pageVariables, allEls, variableSources]);
   const [multiTransformMode, setMultiTransformMode] = useState(multiSelectionHas3DRotation ? '3d' : '2d');
   const [singleTransformMode, setSingleTransformMode] = useState(singleSelectionHas3DRotation ? '3d' : '2d');
-  const allVariables = [...pageVariables, ...globalVariables];
+  const loopItemVariables = element ? getLoopVariablesForElement(element) : [];
+  const allVariables = [...pageVariables, ...globalVariables, ...loopItemVariables];
   const variableLookup = new Map(allVariables.map((variable) => [`${variable.scope}:${variable.id}`, variable]));
   const componentSourceLabelMap = useMemo(() => {
     const map = new Map();
@@ -2043,7 +2046,13 @@ export default function PropertiesPanel() {
 
   const resolveBoundVariable = (binding) => binding ? (variableLookup.get(`${binding.scope}:${binding.variableId}`) ?? null) : null;
   const getBindingForProperty = (propertyKey) => element ? getElementPropertyBinding(element.id, selection?.bpId || 'desktop', propertyKey) : null;
-  const getCompatibleBindingVariables = (propertyKey) => getCompatibleVariables(propertyKey);
+  const getCompatibleBindingVariables = (propertyKey) => {
+    const compatible = getCompatibleVariables(propertyKey, loopItemVariables);
+    if (propertyKey === 'styles.backgroundImage') {
+      return compatible.filter((variable) => variable.scope !== 'loop-item');
+    }
+    return compatible;
+  };
   const commitBinding = (propertyKey, binding, applyValue) => {
     if (!element || !selection) return;
     setElementPropertyBinding(element.id, selection.bpId || 'desktop', propertyKey, binding);
@@ -2090,9 +2099,10 @@ export default function PropertiesPanel() {
       return null;
     })()
     : null;
+  const loopTemplateFlowTarget = element ? getLoopTemplateRootForElement(element, allEls) : null;
   const flowTargetElement = isFormContainerType(element?.type)
     ? element
-    : (parentFormElement ?? element);
+    : (parentFormElement ?? loopTemplateFlowTarget ?? element);
   const selectedElementTriggerType = isFormContainerType(flowTargetElement?.type) ? 'form-submit' : 'element-click';
   const selectedElementFlow = flowTargetElement
     ? (pageFlows.find((flow) => (
@@ -2396,7 +2406,7 @@ export default function PropertiesPanel() {
       const positionMode = getResolvedSelectionPositionMode(selected, resolved, pageLayout);
       return positionMode === 'relative' || positionMode === 'sticky';
     });
-    const allFrames = selectedElements.every((selected) => (selected.type === 'frame' || isFormContainerType(selected.type)) && !selected.componentInstance && !selected.componentRoot);
+    const allFrames = selectedElements.every((selected) => (selected.type === 'frame' || isLoopElementType(selected.type) || isFormContainerType(selected.type)) && !selected.componentInstance && !selected.componentRoot);
     const allTexts = selectedElements.every((selected) => selected.type === 'text');
     const frameFillValue = allFrames ? getSharedValue(({ resolved }) => resolved.styles?.backgroundColor ?? 'rgba(180,180,200,0.18)') : null;
     const frameFillDisplayValue = allFrames
@@ -2909,7 +2919,10 @@ export default function PropertiesPanel() {
   const isAssetStorageSurface = activeSurface === 'component' && componentEditor.componentId === ASSET_STORAGE_COMPONENT_ID;
   const isComponentRoot = activeSurface === 'component' && !isAssetStorageSurface && !element.parentId;
   const isComponentInstanceOnPage = activeSurface === 'page' && !!element.componentInstance;
+  const isLoopElement = isLoopElementType(element.type);
+  const supportsDirectLink = !isComponentInstanceOnPage && !isFormField && !isFormSubmitButton && !isFormContainerType(element.type);
   const formConfig = normalizeFormConfig(resolved?.formConfig);
+  const loopConfig = normalizeLoopConfig(resolved?.loop);
   const formFieldOptions = ensureFormOptions(resolved?.fieldOptions);
   const allowVariableBindings = activeSurface === 'page';
   const componentMeta = isComponentInstanceOnPage ? selectedComponentMeta : null;
@@ -3455,6 +3468,7 @@ export default function PropertiesPanel() {
   const textColorBinding = getBindingForProperty('styles.color');
   const iconColorBinding = getBindingForProperty('styles.color');
   const hiddenBinding = getBindingForProperty('hidden');
+  const linkUrlBinding = getBindingForProperty('linkUrl');
   const fillBinding = getBindingForProperty('styles.backgroundColor');
   const backgroundImageBinding = getBindingForProperty('styles.backgroundImage');
   const sourceBinding = getBindingForProperty('src');
@@ -3464,6 +3478,7 @@ export default function PropertiesPanel() {
   const textColorBindingVariable = resolveBoundVariable(textColorBinding);
   const iconColorBindingVariable = resolveBoundVariable(iconColorBinding);
   const hiddenBindingVariable = resolveBoundVariable(hiddenBinding);
+  const linkUrlBindingVariable = resolveBoundVariable(linkUrlBinding);
   const fillBindingVariable = resolveBoundVariable(fillBinding);
   const backgroundImageBindingVariable = resolveBoundVariable(backgroundImageBinding);
   const sourceBindingVariable = resolveBoundVariable(sourceBinding);
@@ -4840,9 +4855,9 @@ export default function PropertiesPanel() {
         ) : null}
 
         {/* ── Layout / Spacing ────────────────────────── */}
-        {(element.type === 'frame' || isFormContainerType(element.type) || isFormSubmitButton) ? (() => {
+        {(element.type === 'frame' || isLoopElement || isFormContainerType(element.type) || isFormSubmitButton) ? (() => {
           if (isComponentInstanceOnPage) return null;
-          const supportsAutoLayout = element.type === 'frame' || isFormContainerType(element.type);
+          const supportsAutoLayout = element.type === 'frame' || isLoopElement || isFormContainerType(element.type);
           const supportsGap = supportsAutoLayout || isFormField || isFormSubmitButton;
           const frameLayoutOn = s.display === 'flex';
           return (
@@ -4952,6 +4967,160 @@ export default function PropertiesPanel() {
             </Section>
           );
         })() : null}
+
+        {isLoopElement && !isComponentInstanceOnPage ? (
+          <Section title="Loop" action={<ResetBtn show={isOv('loop')} onReset={() => { upd('loop', normalizeLoopConfig(null)); commit(); }} />}>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Pattern</span>
+              <ChoiceGroup
+                value={loopConfig.layout}
+                onChange={(value) => {
+                  const nextLoop = normalizeLoopConfig({ ...loopConfig, layout: value });
+                  const styleUpdates = value === 'grid'
+                    ? { display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: nextLoop.gap }
+                    : { display: 'flex', flexDirection: value === 'horizontal' ? 'row' : 'column', flexWrap: 'nowrap', gap: nextLoop.gap };
+                  upd('loop', nextLoop);
+                  updateStyles(element.id, bpId, styleUpdates);
+                  commit();
+                }}
+                options={[
+                  { value: 'vertical', label: 'Vertical' },
+                  { value: 'horizontal', label: 'Horizontal' },
+                  { value: 'grid', label: 'Grid' },
+                ]}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Item Gap</span>
+              <NumberInput
+                value={loopConfig.gap}
+                min={0}
+                onChange={(value) => {
+                  const nextLoop = normalizeLoopConfig({ ...loopConfig, gap: value });
+                  upd('loop', nextLoop);
+                  updS('gap', nextLoop.gap);
+                  commit();
+                }}
+              />
+            </div>
+            {loopConfig.layout === 'grid' ? (
+              <>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Columns</span>
+                  <NumberInput value={loopConfig.columns} min={1} step={1} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, columns: value })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Min Item Width</span>
+                  <NumberInput value={loopConfig.minItemWidth} min={40} step={1} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, minItemWidth: value })); commit(); }} />
+                </div>
+              </>
+            ) : null}
+          </Section>
+        ) : null}
+
+        {isLoopElement && !isComponentInstanceOnPage ? (
+          <Section title="Query" defaultOpen={false}>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Collection</span>
+              <ChoiceGroup
+                value={loopConfig.query?.collection ?? 'posts'}
+                onChange={(value) => {
+                  upd('loop', normalizeLoopConfig({
+                    ...loopConfig,
+                    query: {
+                      ...(loopConfig.query ?? {}),
+                      source: 'collection',
+                      collection: value,
+                      categoryIds: [],
+                      selectedIds: [],
+                      variable: null,
+                    },
+                  }));
+                  commit();
+                }}
+                options={[
+                  { value: 'posts', label: 'Posts' },
+                  { value: 'pages', label: 'Pages' },
+                  { value: 'products', label: 'Products' },
+                ]}
+              />
+            </div>
+            {(loopConfig.query?.collection ?? 'posts') === 'posts' || (loopConfig.query?.collection ?? 'posts') === 'products' ? (
+              <>
+                <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+                  <span className="fb-prop-label">Categories</span>
+                  <select
+                    className="fb-prop-input"
+                    multiple
+                    size={Math.min(8, Math.max(4, (((loopConfig.query?.collection ?? 'posts') === 'products' ? variableSources?.productCategories : variableSources?.postCategories) ?? []).length || 4))}
+                    value={(loopConfig.query?.categoryIds ?? []).map((entry) => String(entry))}
+                    onChange={(event) => {
+                      const categoryIds = Array.from(event.target.selectedOptions)
+                        .map((option) => parseInt(option.value, 10))
+                        .filter((entry) => Number.isInteger(entry) && entry > 0);
+                      upd('loop', normalizeLoopConfig({
+                        ...loopConfig,
+                        query: {
+                          ...(loopConfig.query ?? {}),
+                          source: 'collection',
+                          categoryIds,
+                        },
+                      }));
+                      commit();
+                    }}
+                    style={{ minHeight: 124 }}
+                  >
+                    {(((loopConfig.query?.collection ?? 'posts') === 'products' ? variableSources?.productCategories : variableSources?.postCategories) ?? []).map((entry) => (
+                      <option key={entry.id} value={entry.id}>{entry.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="fb-artboard-bp-note">Leave empty to include all categories. Hold Command to pick multiple categories.</div>
+              </>
+            ) : null}
+
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Limit</span>
+              <NumberInput
+                value={loopConfig.query?.limit ?? 6}
+                min={1}
+                step={1}
+                onChange={(value) => {
+                  upd('loop', normalizeLoopConfig({
+                    ...loopConfig,
+                    query: {
+                      ...(loopConfig.query ?? {}),
+                      source: 'collection',
+                      limit: value,
+                    },
+                  }));
+                  commit();
+                }}
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Order</span>
+              <ChoiceGroup
+                value={loopConfig.query?.order ?? 'desc'}
+                onChange={(value) => {
+                  upd('loop', normalizeLoopConfig({
+                    ...loopConfig,
+                    query: {
+                      ...(loopConfig.query ?? {}),
+                      source: 'collection',
+                      order: value,
+                    },
+                  }));
+                  commit();
+                }}
+                options={[
+                  { value: 'desc', label: 'Newest' },
+                  { value: 'asc', label: 'Oldest' },
+                ]}
+              />
+            </div>
+          </Section>
+        ) : null}
 
         <Section title="Overlays" defaultOpen={false} />
 
@@ -5167,7 +5336,7 @@ export default function PropertiesPanel() {
           </div>
           )}
 
-          {!isComponentInstanceOnPage && ((element.type === 'frame' || isFormContainerType(element.type)) || element.type === 'icon') ? (
+          {!isComponentInstanceOnPage && ((element.type === 'frame' || isLoopElement || isFormContainerType(element.type)) || element.type === 'icon') ? (
             <div className="fb-prop-row">
               <span className="fb-prop-label">Background Blur</span>
               <div className="fb-slider-field">
@@ -5220,6 +5389,38 @@ export default function PropertiesPanel() {
             )}
           </div>
 
+          {supportsDirectLink ? (
+            <>
+              <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+                <VariableBindingLabel label="URL">
+                  {allowVariableBindings ? (
+                    <VariableBindingButton
+                      variables={getCompatibleBindingVariables('linkUrl')}
+                      binding={linkUrlBinding}
+                      onSelect={(binding) => commitBinding('linkUrl', binding, (value) => updateElementLayout(element.id, bpId, { linkUrl: `${value ?? ''}` }))}
+                      onRemove={() => commitBinding('linkUrl', null)}
+                    />
+                  ) : null}
+                </VariableBindingLabel>
+                <div style={{ width: '100%' }}>
+                  {linkUrlBindingVariable ? (
+                    <BoundVariableCta variable={linkUrlBindingVariable} fallbackLabel="Link variable" />
+                  ) : (
+                    <input
+                      className="fb-prop-input"
+                      type="text"
+                      value={resolved.linkUrl ?? ''}
+                      placeholder="https://example.com or /page"
+                      onChange={(event) => { upd('linkUrl', event.target.value); }}
+                      onBlur={commit}
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="fb-artboard-bp-note">Published pages use this URL for click and keyboard navigation. Flow interactions take priority if both are configured.</div>
+            </>
+          ) : null}
+
           {!isComponentInstanceOnPage && (
           <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
             <VariableBindingLabel label="Fill">
@@ -5244,7 +5445,7 @@ export default function PropertiesPanel() {
           </div>
           )}
 
-          {!isComponentInstanceOnPage && (element.type === 'frame' || isFormContainerType(element.type)) && (
+          {!isComponentInstanceOnPage && (element.type === 'frame' || isLoopElement || isFormContainerType(element.type)) && (
             <div className="fb-prop-row">
               <VariableBindingLabel label="Image">
                 {allowVariableBindings ? (
@@ -5574,7 +5775,7 @@ export default function PropertiesPanel() {
             </div>
           )}
 
-          {!isComponentInstanceOnPage && ((element.type === 'image') || ((element.type === 'frame' || isFormContainerType(element.type)) && s.backgroundImage)) && (
+          {!isComponentInstanceOnPage && ((element.type === 'image') || ((element.type === 'frame' || isLoopElement || isFormContainerType(element.type)) && s.backgroundImage)) && (
             <div className="fb-prop-row">
               <span className="fb-prop-label">Fit</span>
               <IconGroup
