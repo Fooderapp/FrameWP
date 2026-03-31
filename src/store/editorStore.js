@@ -1,3 +1,4 @@
+import { gzip as gzipBytes } from 'pako';
 import { create } from 'zustand';
 import {
   getDefaultPackedIcon,
@@ -28,6 +29,121 @@ function getMediaUrl(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+// ── Pending asset upload tracking ────────────────────────────
+let _pendingAssetUploads = [];
+
+export function registerPendingAssetUpload(promise) {
+  _pendingAssetUploads.push(promise);
+  promise.finally(() => {
+    _pendingAssetUploads = _pendingAssetUploads.filter(p => p !== promise);
+  });
+}
+
+async function awaitPendingAssetUploads(timeoutMs = 15000) {
+  if (!_pendingAssetUploads.length) return;
+  const deadline = new Promise(resolve => setTimeout(resolve, timeoutMs));
+  await Promise.race([Promise.allSettled([..._pendingAssetUploads]), deadline]);
+}
+
+function isDataUri(value) {
+  return typeof value === 'string' && value.startsWith('data:');
+}
+
+function stripEmbeddedDataUris(value) {
+  if (typeof value !== 'string') return value;
+  if (isDataUri(value)) return '';
+
+  let next = value;
+  next = next.replace(/url\((['"]?)data:[^)\s'"]+\1\)/gi, '');
+  next = next.replace(/(['"])data:[^'"\s<>]+\1/gi, '$1$1');
+  next = next.replace(/\b(?:href|xlink:href|src)=(["'])data:[^"']*\1/gi, '');
+  next = next.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[a-zA-Z0-9+/=\s_-]+/gi, '');
+  return next;
+}
+
+function deepStripDataUris(value) {
+  if (Array.isArray(value)) return value.map(deepStripDataUris);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entryValue]) => [key, deepStripDataUris(entryValue)])
+    );
+  }
+  return stripEmbeddedDataUris(value);
+}
+
+function stripDataUrisFromElement(element) {
+  if (!element || typeof element !== 'object') return element;
+  let next = element;
+  let changed = false;
+
+  if (isDataUri(next.base?.src)) {
+    next = { ...next, base: { ...next.base, src: '' } };
+    changed = true;
+  }
+  if (isDataUri(next.base?.styles?.backgroundImage)) {
+    if (!changed) next = { ...next };
+    next.base = { ...next.base, styles: { ...next.base.styles, backgroundImage: '' } };
+    changed = true;
+  }
+
+  if (next.overrides && typeof next.overrides === 'object') {
+    let ovChanged = false;
+    const nextOv = { ...next.overrides };
+    for (const bp of Object.keys(nextOv)) {
+      const ov = nextOv[bp];
+      if (isDataUri(ov?.styles?.backgroundImage)) {
+        nextOv[bp] = { ...ov, styles: { ...ov.styles, backgroundImage: '' } };
+        ovChanged = true;
+      }
+      if (isDataUri(ov?.src)) {
+        nextOv[bp] = { ...(nextOv[bp] || ov), src: '' };
+        ovChanged = true;
+      }
+    }
+    if (ovChanged) {
+      if (!changed) next = { ...next };
+      next.overrides = nextOv;
+    }
+  }
+  return next;
+}
+
+function stripDataUrisFromElements(elements) {
+  if (!Array.isArray(elements)) return elements;
+  return elements.map((element) => deepStripDataUris(stripDataUrisFromElement(element)));
+}
+
+function uint8ArrayToBase64(bytes) {
+  if (!(bytes instanceof Uint8Array) || !bytes.length) return Promise.resolve('');
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      resolve(result.split(',')[1] || '');
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(new Blob([bytes], { type: 'application/gzip' }));
+  });
+}
+
+function gzipJsonPayload(data) {
+  try {
+    return gzipBytes(JSON.stringify(data));
+  } catch {
+    return null;
+  }
+}
+
+async function compressJsonPayload(data) {
+  try {
+    const compressedBytes = gzipJsonPayload(data);
+    if (!compressedBytes) return null;
+    return await uint8ArrayToBase64(compressedBytes);
+  } catch {
+    return null;
+  }
+}
+
 export const ASSET_STORAGE_COMPONENT_ID = '__fb_asset_storage__';
 
 export function isAssetStorageComponentId(componentId) {
@@ -39,6 +155,7 @@ function deepClone(value) {
 }
 
 const ELEMENT_STYLE_CLIPBOARD_KEY = 'fb:element-style-clipboard';
+const ELEMENT_CLIPBOARD_KEY = 'fb:element-clipboard';
 
 function pick(obj, keys) {
   return keys.reduce((acc, key) => {
@@ -60,10 +177,36 @@ export function readStoredElementStyleClipboard() {
   }
 }
 
+export function readStoredElementClipboard() {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(ELEMENT_CLIPBOARD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.subtree) || !parsed.rootId) return null;
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
 export function writeStoredElementStyleClipboard(payload) {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     window.localStorage.setItem(ELEMENT_STYLE_CLIPBOARD_KEY, JSON.stringify(payload));
+  } catch (error) {
+    return;
+  }
+}
+
+export function writeStoredElementClipboard(payload) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    if (!payload || !Array.isArray(payload.subtree) || !payload.rootId) {
+      window.localStorage.removeItem(ELEMENT_CLIPBOARD_KEY);
+      return;
+    }
+    window.localStorage.setItem(ELEMENT_CLIPBOARD_KEY, JSON.stringify(payload));
   } catch (error) {
     return;
   }
@@ -134,6 +277,29 @@ function appendAjaxField(formData, key, value) {
     return;
   }
   formData.append(key, `${value}`);
+}
+
+function isLikelySafariBrowser() {
+  if (typeof navigator === 'undefined') return false;
+  const userAgent = `${navigator.userAgent || ''}`;
+  return /Safari/i.test(userAgent) && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(userAgent);
+}
+
+async function postMultipartAjaxAction(ajaxAction, fields = {}, files = {}) {
+  const formData = new FormData();
+  formData.append('action', ajaxAction);
+
+  Object.entries(fields).forEach(([key, value]) => appendAjaxField(formData, key, value));
+  Object.entries(files).forEach(([key, fileSpec]) => {
+    if (!fileSpec?.blob) return;
+    formData.append(key, fileSpec.blob, fileSpec.filename || 'upload.bin');
+  });
+
+  return requestJson(getAjaxUrl(), {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: formData,
+  });
 }
 
 async function requestWordPressEndpoint(restPath, ajaxAction, options = {}) {
@@ -1787,18 +1953,19 @@ function buildComponentEditorResetState(componentEditor, fallbackBreakpointDefs 
 
 function buildPersistableLayoutPayload(state) {
   const page = state.pages.find((item) => item.id === state.currentPageId);
-  const components = buildComponentLibraryForPersistence(state);
+  const components = deepStripDataUris(buildComponentLibraryForPersistence(state));
   const persistedBreakpointDefs = state.activeSurface === 'component' && state.componentEditor?.isOpen
     ? normalizePageBreakpointDefs(state.componentEditor?.uiRestore?.breakpointDefs)
     : normalizePageBreakpointDefs(state.breakpointDefs);
 
-  return {
+  return deepStripDataUris({
     ...page,
+    elements: stripDataUrisFromElements(page?.elements),
     variables: normalizeVariableList(page?.variables, 'page'),
     flows: normalizePageFlowList(page?.flows),
     _breakpointDefs: persistedBreakpointDefs,
     _componentLibrary: components,
-  };
+  });
 }
 
 function normalizePageData(page) {
@@ -2264,6 +2431,9 @@ function resolveLoopInsertionParentId(elements, parentId = null) {
   if (!parentId) return null;
   const parentElement = elements.find((candidate) => candidate.id === parentId) ?? null;
   if (!parentElement || !isLoopElementType(parentElement.type)) return parentId;
+  // Manual source: children are direct items, no template redirect
+  const loopSource = normalizeLoopConfig(parentElement?.base?.loop)?.source ?? 'query';
+  if (loopSource === 'manual') return parentId;
   const templateRootId = getLoopTemplateRootId(parentElement, elements);
   const templateRoot = templateRootId
     ? (elements.find((candidate) => candidate.id === templateRootId) ?? null)
@@ -2287,6 +2457,10 @@ function ensureLoopTemplateStructure(elements, bpId = 'desktop') {
   nextElements
     .filter((element) => isLoopElementType(element?.type))
     .forEach((loopElement) => {
+      // Skip template auto-creation for manual/component source modes
+      const loopSource = normalizeLoopConfig(loopElement?.base?.loop)?.source ?? 'query';
+      if (loopSource !== 'query') return;
+
       const currentLoop = nextElements.find((candidate) => candidate.id === loopElement.id) ?? loopElement;
       const directChildIds = Array.isArray(currentLoop.children) ? [...currentLoop.children] : [];
       let templateId = getLoopTemplateRootId(currentLoop, nextElements);
@@ -3880,6 +4054,21 @@ export const useEditorStore = create((set, get) => {
     return s.pages.find(p => p.id === s.currentPageId) ?? s.pages[0];
   };
 
+  // ── Cached element-by-ID lookup ─────────────────────────
+  let _cachedEls = null;
+  let _cachedElsById = {};
+
+  const getElsById = () => {
+    const els = getEls();
+    if (els !== _cachedEls) {
+      _cachedEls = els;
+      const map = {};
+      for (let i = 0; i < els.length; i++) map[els[i].id] = els[i];
+      _cachedElsById = map;
+    }
+    return _cachedElsById;
+  };
+
   return {
     // ── Viewport ───────────────────────────────────────────
     viewport: { x: 80, y: 80, scale: 0.55 },
@@ -5054,6 +5243,8 @@ export const useEditorStore = create((set, get) => {
     setHoveredId: (id) => set({ hoveredId: id }),
     layerHoveredId: null,
     setLayerHoveredId: (id) => set({ layerHoveredId: id }),
+    loopActiveChildIndex: {},
+    setLoopActiveChildIndex: (loopId, index) => set((state) => ({ loopActiveChildIndex: { ...state.loopActiveChildIndex, [loopId]: index } })),
     drilledContainerId: null, // element whose direct children are single-click selectable (null = artboard root)
     setDrilledContainerId: (id) => set({ drilledContainerId: id }),
     artboardSel: null, // bpId of the currently selected artboard
@@ -5291,6 +5482,8 @@ export const useEditorStore = create((set, get) => {
       return (getActivePage()?.comments ?? []).find((comment) => comment.id === activeCommentId) ?? null;
     },
     getAllElements() { return getEls(); },
+    getElementsById() { return getElsById(); },
+    getElementById(id) { return getElsById()[id] ?? null; },
     getRootElements() { return getRootElements(getEls()); },
     getChildElements(parentId) { return getChildEls(getEls(), parentId); },
     getSelectedElement() {
@@ -6065,18 +6258,23 @@ export const useEditorStore = create((set, get) => {
 
     // ── Persist / Load / Publish ───────────────────────────
 
-    async saveLayout() {
-      const state = get();
+    async saveLayout(options = {}) {
+      const { setStatus = true } = options || {};
+      let state = get();
       if (state.documentLock.isLockedByOther) {
-        get().setSaveStatus('error');
-        setTimeout(() => get().setSaveStatus(null), 2500);
+        if (setStatus) {
+          get().setSaveStatus('error');
+          setTimeout(() => get().setSaveStatus(null), 2500);
+        }
         return { success: false, locked: true };
       }
-      get().setSaveStatus('saving');
+      if (setStatus) get().setSaveStatus('saving');
+      await awaitPendingAssetUploads();
+      state = get();
       // wp_localize_script converts everything to strings, so postId is "0" not 0
       const postId = parseInt(window.fbData?.postId, 10);
       try {
-        const components = buildComponentLibraryForPersistence(state).map(normalizeStoredComponent);
+        const components = deepStripDataUris(buildComponentLibraryForPersistence(state).map(normalizeStoredComponent));
         if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
           await get().saveComponents(components, { throwOnError: true });
         }
@@ -6085,25 +6283,45 @@ export const useEditorStore = create((set, get) => {
             ...buildPersistableLayoutPayload(state),
             _componentLibrary: components,
           };
-          const data = await postWordPressAction('save-layout', 'framebuilder_save_layout', {
-            post_id: postId,
-            layout: payload,
-          });
-          get().setSaveStatus(data.success ? 'ok' : 'error');
+          const compressed = await compressJsonPayload(payload);
+          const compressedBytes = gzipJsonPayload(payload);
+          const data = isLikelySafariBrowser() && compressedBytes
+            ? await postMultipartAjaxAction('framebuilder_save_layout', {
+                _wpnonce: window.fbData?.nonce || '',
+                post_id: postId,
+              }, {
+                layout_gz_file: {
+                  blob: new Blob([compressedBytes], { type: 'application/gzip' }),
+                  filename: `framebuilder-layout-${postId}.json.gz`,
+                },
+              })
+            : await postWordPressAction('save-layout', 'framebuilder_save_layout',
+                compressed
+                  ? { post_id: postId, layout_gz: compressed }
+                  : { post_id: postId, layout: payload },
+              );
+          if (setStatus) get().setSaveStatus(data.success ? 'ok' : 'error');
+          if (!data.success) {
+            if (setStatus) setTimeout(() => get().setSaveStatus(null), 2500);
+            return { success: false };
+          }
         } else {
           const payload = {
             ...buildPersistableLayoutPayload(state),
             _componentLibrary: components,
           };
-          localStorage.setItem('fb_layout_' + state.currentPageId, JSON.stringify(payload));
-          localStorage.setItem('fb_component_library', JSON.stringify(components));
-          get().setSaveStatus('ok');
+          try { localStorage.setItem('fb_layout_' + state.currentPageId, JSON.stringify(payload)); } catch {}
+          try { localStorage.setItem('fb_component_library', JSON.stringify(components)); } catch {}
+          if (setStatus) get().setSaveStatus('ok');
         }
       } catch (err) {
         console.error('[FrameBuilder] save failed', err);
-        get().setSaveStatus('error');
+        if (setStatus) get().setSaveStatus('error');
+        if (setStatus) setTimeout(() => get().setSaveStatus(null), 2500);
+        return { success: false, error: err };
       }
-      setTimeout(() => get().setSaveStatus(null), 2500);
+      if (setStatus) setTimeout(() => get().setSaveStatus(null), 2500);
+      return { success: true };
     },
 
     async loadLayout() {
@@ -6147,31 +6365,30 @@ export const useEditorStore = create((set, get) => {
     },
 
     async publishLayout() {
-      const state = get();
+      let state = get();
       if (state.documentLock.isLockedByOther) {
         get().setSaveStatus('error');
         setTimeout(() => get().setSaveStatus(null), 3000);
         return { success: false, locked: true };
       }
       get().setSaveStatus('saving');
+      const saveResult = await get().saveLayout({ setStatus: false });
+      if (!saveResult?.success) {
+        get().setSaveStatus('error');
+        setTimeout(() => get().setSaveStatus(null), 3000);
+        return saveResult;
+      }
+      state = get();
       const postId = parseInt(window.fbData?.postId, 10);
       try {
-        const components = buildComponentLibraryForPersistence(state).map(normalizeStoredComponent);
-        if (state.activeSurface === 'component' && state.componentEditor?.isOpen) {
-          await get().saveComponents(components, { throwOnError: true });
-        }
         if (window.fbData && postId > 0) {
-          const publishPayload = {
-            ...buildPersistableLayoutPayload(state),
-            _componentLibrary: components,
-          };
           const data = await postWordPressAction('publish', 'framebuilder_publish_layout', {
             post_id: postId,
-            layout: publishPayload,
           });
           get().setSaveStatus(data.success ? 'ok' : 'error');
           if (data.success && data.permalink) window.open(data.permalink, '_blank');
         } else {
+          const components = buildComponentLibraryForPersistence(state).map(normalizeStoredComponent);
           localStorage.setItem('fb_component_library', JSON.stringify(components));
           get().setSaveStatus('ok');
         }

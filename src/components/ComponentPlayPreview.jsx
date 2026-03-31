@@ -892,7 +892,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     ...(activeAnimationStyle ?? {}),
   };
 
-  const textHasGradientFill = typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(');
+  const textHasGradientFill = (typeof styles?.color === 'string' && styles.color.includes('gradient(')) || (typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient('));
   const textStyle = element.type === 'text' ? {
     fontFamily: familyToFontStack(styles?.fontFamily ?? 'Inter'),
     fontWeight: styles?.fontWeight ?? 400,
@@ -907,7 +907,9 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
     wordBreak: 'break-word',
     width: '100%',
     display: 'block',
-    backgroundImage: textHasGradientFill ? styles.backgroundColor : undefined,
+    backgroundImage: textHasGradientFill
+      ? ((typeof styles?.color === 'string' && styles.color.includes('gradient(')) ? styles.color : styles.backgroundColor)
+      : undefined,
     backgroundClip: textHasGradientFill ? 'text' : undefined,
     WebkitBackgroundClip: textHasGradientFill ? 'text' : undefined,
     WebkitTextFillColor: textHasGradientFill ? 'transparent' : undefined,

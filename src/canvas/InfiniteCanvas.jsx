@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { useEditorStore, createFrame, createLoop, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
+import { useEditorStore, createFrame, createLoop, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementClipboard, writeStoredElementClipboard, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
 import { getAssetStyleUpdatesForElement, parseAssetDragPayload } from '../store/assetStyles';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
@@ -16,6 +16,7 @@ const SNAP_THRESHOLD_PX = 6;
 const COMMENT_CURSOR = "url(\"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M6 4h10a4 4 0 0 1 4 4v8H6a2 2 0 0 0-2 2V6a2 2 0 0 1 2-2Z%27 fill=%27%237BE300%27/%3E%3Cpath d=%27M4 18V8%27 stroke=%27%237BE300%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3C/svg%3E\") 6 6, crosshair";
 const PEN_CLOSE_SNAP_PX = 16;
 const TELEPORT_MARKER = 'FRAMEWP_TELEPORT';
+const EDITOR_CLIPBOARD_MARKER = 'FRAMEWP_CLIPBOARD';
 
 const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
 
@@ -92,6 +93,10 @@ function cloneSubtree(subtree, rootId) {
   }));
 }
 
+function getEditorClipboardPayload(ref) {
+  return ref?.current ?? readStoredElementClipboard();
+}
+
 function clampTeleportNumber(value, fallback = 0, min = -100000, max = 100000) {
   const nextValue = typeof value === 'number' ? value : parseFloat(value);
   if (!Number.isFinite(nextValue)) return fallback;
@@ -106,6 +111,39 @@ function parseTeleportClipboardPayload(text) {
     return parsed;
   } catch (error) {
     return null;
+  }
+}
+
+function serializeEditorClipboardPayload(payload) {
+  if (!payload || !Array.isArray(payload.subtree) || !payload.rootId) return '';
+  try {
+    return JSON.stringify({ marker: EDITOR_CLIPBOARD_MARKER, payload });
+  } catch {
+    return '';
+  }
+}
+
+function parseEditorClipboardPayload(text) {
+  if (typeof text !== 'string' || !text.trim().startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(text);
+    const payload = parsed?.marker === EDITOR_CLIPBOARD_MARKER ? parsed.payload : null;
+    if (!payload || !Array.isArray(payload.subtree) || !payload.rootId) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function syncClipboardPayloadToNative(payload) {
+  const serialized = serializeEditorClipboardPayload(payload);
+  if (!serialized) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(serialized);
+    }
+  } catch {
+    // Keep the in-memory clipboard path as fallback.
   }
 }
 
@@ -161,11 +199,107 @@ function isTeleportImportAssetUrl(value) {
   return source.startsWith('data:') || /^https?:\/\//i.test(source);
 }
 
+const TELEPORT_IMPORT_MAX_DIMENSION = 2400;
+const TELEPORT_IMPORT_WEBP_QUALITY = 0.82;
+
+function sanitizeTeleportImportAssetName(assetName = '', fallback = 'figma-import') {
+  const raw = typeof assetName === 'string' ? assetName.trim() : '';
+  const stem = raw.replace(/\.[^.]+$/, '').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '');
+  return stem || fallback;
+}
+
+function getTeleportImportExtension(mimeType = '') {
+  switch ((mimeType || '').toLowerCase()) {
+    case 'image/jpeg':
+    case 'image/jpg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/gif':
+      return 'gif';
+    case 'image/webp':
+      return 'webp';
+    case 'image/svg+xml':
+      return 'svg';
+    default:
+      return 'bin';
+  }
+}
+
+function isTeleportConvertibleRasterMimeType(mimeType = '') {
+  const normalized = String(mimeType || '').toLowerCase();
+  return normalized === 'image/png' || normalized === 'image/jpeg' || normalized === 'image/jpg' || normalized === 'image/webp';
+}
+
+function loadTeleportImportImage(blob) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not decode imported image'));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), type, quality);
+  });
+}
+
+async function normalizeTeleportImportBlob(blob, assetName = '') {
+  if (!(blob instanceof Blob) || !isTeleportConvertibleRasterMimeType(blob.type)) {
+    const filename = `${sanitizeTeleportImportAssetName(assetName)}.${getTeleportImportExtension(blob?.type || '')}`;
+    return { blob, filename };
+  }
+
+  try {
+    const image = await loadTeleportImportImage(blob);
+    const scale = Math.min(1, TELEPORT_IMPORT_MAX_DIMENSION / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+    const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
+    const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas is not available');
+    context.drawImage(image, 0, 0, width, height);
+    const webpBlob = await canvasToBlob(canvas, 'image/webp', TELEPORT_IMPORT_WEBP_QUALITY);
+    if (!webpBlob) throw new Error('Could not encode imported image');
+    const preferredBlob = webpBlob.size > 0 && webpBlob.size < blob.size ? webpBlob : blob;
+    const preferredType = preferredBlob === webpBlob ? 'image/webp' : (blob.type || 'image/png');
+    const filename = `${sanitizeTeleportImportAssetName(assetName)}.${getTeleportImportExtension(preferredType)}`;
+    return { blob: preferredBlob, filename };
+  } catch (error) {
+    const filename = `${sanitizeTeleportImportAssetName(assetName)}.${getTeleportImportExtension(blob.type || '')}`;
+    return { blob, filename };
+  }
+}
+
+async function appendTeleportImportSource(formData, source, assetName = '') {
+  if (typeof source !== 'string' || !source.trim()) return;
+  if (!source.startsWith('data:')) {
+    formData.append('source', source);
+    return;
+  }
+
+  const response = await fetch(source);
+  const blob = await response.blob();
+  const normalized = await normalizeTeleportImportBlob(blob, assetName);
+  formData.append('file', normalized.blob, normalized.filename);
+}
+
 async function importTeleportMediaAsset(source, postId = 0, assetName = '') {
   const formData = new FormData();
   formData.append('action', 'framebuilder_import_media_asset');
   formData.append('_wpnonce', window.fbData?.nonce || '');
-  formData.append('source', source);
+  await appendTeleportImportSource(formData, source, assetName);
   if (postId) formData.append('post_id', `${postId}`);
   if (assetName) formData.append('asset_name', assetName);
 
@@ -204,7 +338,6 @@ function getTeleportAlignSelf(node) {
 async function uploadImportedTeleportAssets(importedElements, options = {}) {
   if (!Array.isArray(importedElements) || !importedElements.length) return;
   const showReusedAssetAlert = options.showReusedAssetAlert !== false;
-  const state = useEditorStore.getState();
   const uploadCache = new Map();
   const pending = [];
   const reusedAssetNames = new Set();
@@ -212,7 +345,9 @@ async function uploadImportedTeleportAssets(importedElements, options = {}) {
   const getUploadedAsset = async (source, assetName = '') => {
     if (!isTeleportImportAssetUrl(source)) return source;
     if (!uploadCache.has(source)) {
-      uploadCache.set(source, importTeleportMediaAsset(source, Number(window.fbData?.postId) || 0, assetName).catch(() => ({ url: source, alreadyExists: false, assetName })));
+      uploadCache.set(source, importTeleportMediaAsset(source, Number(window.fbData?.postId) || 0, assetName).catch((error) => {
+        throw new Error(error?.message ? `Failed to import ${assetName || 'image'}: ${error.message}` : `Failed to import ${assetName || 'image'}`);
+      }));
     }
     return uploadCache.get(source);
   };
@@ -226,7 +361,10 @@ async function uploadImportedTeleportAssets(importedElements, options = {}) {
           const nextUrl = result?.url;
           if (!nextUrl || nextUrl === imageSource) return;
           if (result?.alreadyExists) reusedAssetNames.add(result.assetName || assetName || element.name || 'Imported image');
-          state.updateElementBase(element.id, { src: nextUrl });
+          element.base = {
+            ...element.base,
+            src: nextUrl,
+          };
         })
       );
     }
@@ -238,7 +376,13 @@ async function uploadImportedTeleportAssets(importedElements, options = {}) {
           const nextUrl = result?.url;
           if (!nextUrl || nextUrl === backgroundImage) return;
           if (result?.alreadyExists) reusedAssetNames.add(result.assetName || assetName || element.name || 'Imported image');
-          state.updateElementStyles(element.id, 'desktop', { backgroundImage: nextUrl });
+          element.base = {
+            ...element.base,
+            styles: {
+              ...(element.base?.styles ?? {}),
+              backgroundImage: nextUrl,
+            },
+          };
         })
       );
     }
@@ -1173,6 +1317,11 @@ function shouldUseDirectRotatedMove(session) {
   return true;
 }
 
+function isEditableEventTarget(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.matches('input,textarea,select,[contenteditable],[contenteditable="true"]') || target.isContentEditable;
+}
+
 function isFlowDragContext({ element, resolved, bp, pageLayout, computedPosition, ghostW, ghostH }) {
   const isGeomOffCanvas = !element?.parentId && bp
     ? ((resolved?.x ?? 0) + ghostW <= 0
@@ -1448,7 +1597,7 @@ function CommentOverlay({ commentDraft, onStartCommentDrag }) {
   );
 }
 
-function CommentCanvasCard({ containerRef, viewport, commentDraft, onSubmitDraft, onDiscardDraft }) {
+function CommentCanvasCard({ containerRef, commentDraft, onSubmitDraft, onDiscardDraft }) {
   const activeSurface = useEditorStore((state) => state.activeSurface);
   const activeComment = useEditorStore((state) => state.getActiveComment());
   const breakpointDefs = useEditorStore((state) => state.breakpointDefs);
@@ -1456,6 +1605,7 @@ function CommentCanvasCard({ containerRef, viewport, commentDraft, onSubmitDraft
   const addCommentReply = useEditorStore((state) => state.addCommentReply);
   const setCommentResolved = useEditorStore((state) => state.setCommentResolved);
   const clearActiveComment = useEditorStore((state) => state.clearActiveComment);
+  const viewport = useEditorStore((state) => state.viewport);
   const [replyText, setReplyText] = useState('');
 
   useEffect(() => {
@@ -1589,7 +1739,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
   const openComponentEditor    = useEditorStore(s => s.openComponentEditor);
   const setDrilledContainerId  = useEditorStore(s => s.setDrilledContainerId);
   const setSelection           = useEditorStore(s => s.setSelection);
-  const viewport               = useEditorStore(s => s.viewport);
+  const viewportScale            = useEditorStore(s => s.viewport.scale);
   const activeVectorPoint      = useEditorStore(s => s.activeVectorPoint);
   const [measuredRect, setMeasuredRect] = useState(null);
   const selectionIds = getSelectionElementIds(selection);
@@ -1629,7 +1779,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
 
     frame = window.requestAnimationFrame(measure);
     return () => window.cancelAnimationFrame(frame);
-  }, [selectedBpId, selectedEl, viewport.scale, viewport.x, viewport.y]);
+  }, [selectedBpId, selectedEl, viewportScale]);
 
   if (!selection) return null;
   const el = selectedEl;
@@ -1637,7 +1787,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
 
   const bp = bpDefs[selection.bpId];
   if (!bp) return null;
-  const scale = Math.max(MIN_SCALE, Number.isFinite(viewport.scale) ? viewport.scale : 1);
+  const scale = Math.max(MIN_SCALE, Number.isFinite(viewportScale) ? viewportScale : 1);
   const boardDom = document.querySelector(`.fb-artboard[data-bp="${bp.id}"]`);
   const selectedDomNode = boardDom?.querySelector(`[data-id="${el.id}"]`) ?? null;
   if (selectionIds.length > 1) {
@@ -1789,7 +1939,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
   const rotation = resolved.rotation;
   const constraints = { top: true, left: true, right: false, bottom: false, ...(resolved.constraints ?? {}) };
   const isDragging = dragOverlay?.elementId === el.id;
-  const canMoveOverlay = !el.locked && !isDragging && !['relative', 'sticky'].includes(resolved.positionType ?? 'absolute') && !isFlowInLayout;
+  const canMoveOverlay = !el.locked && !isDragging;
   const isActiveComponentVariantRoot = activeSurface === 'component'
     && !!el.componentRoot
     && !!el.componentEditorVariantId
@@ -2486,9 +2636,30 @@ export default function InfiniteCanvas() {
   const containerRef = useRef(null);
   const worldRef     = useRef(null);
   const lastPointerClientRef = useRef({ x: null, y: null });
+
+  // Direct DOM transform — bypasses React reconciliation for pan/zoom
+  useLayoutEffect(() => {
+    let prev = useEditorStore.getState().viewport;
+    const node = worldRef.current;
+    if (node) {
+      const s = Math.max(MIN_SCALE, Number.isFinite(prev.scale) ? prev.scale : 1);
+      node.style.transform = `translate(${prev.x}px, ${prev.y}px) scale(${s})`;
+      node.style.setProperty('--inv-scale', String(1 / s));
+    }
+    const unsub = useEditorStore.subscribe((state) => {
+      if (state.viewport === prev) return;
+      prev = state.viewport;
+      const n = worldRef.current;
+      if (!n) return;
+      const s = Math.max(MIN_SCALE, Number.isFinite(prev.scale) ? prev.scale : 1);
+      n.style.transform = `translate(${prev.x}px, ${prev.y}px) scale(${s})`;
+      n.style.setProperty('--inv-scale', String(1 / s));
+    });
+    return unsub;
+  }, []);
   const skipNextArtboardClickRef = useRef(false);
 
-  const viewport      = useEditorStore(s => s.viewport);
+  const canvasScale   = useEditorStore(s => s.viewport.scale);
   const setViewport   = useEditorStore(s => s.setViewport);
   const activeSurface = useEditorStore(s => s.activeSurface);
   const selection     = useEditorStore(s => s.selection);
@@ -2557,6 +2728,8 @@ export default function InfiniteCanvas() {
   const [contextMenu,      setContextMenu]      = useState(null);
   const [componentModal,   setComponentModal]   = useState(null);
   const clipboard = useRef(null);
+  const pasteKeyPendingRef = useRef(false);
+  const clipboardShortcutRef = useRef({ type: null, at: 0 });
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
@@ -2911,7 +3084,7 @@ export default function InfiniteCanvas() {
       height: thickness,
       axis,
     });
-  }, [reorderTarget, viewport.scale]);
+  }, [reorderTarget, canvasScale]);
 
   useLayoutEffect(() => {
     if (activeSurface !== 'component' || !componentEditor?.isOpen) {
@@ -2963,7 +3136,7 @@ export default function InfiniteCanvas() {
       };
     });
     setVariantRootLayout(nextLayout);
-  }, [activeSurface, componentEditor?.isOpen, componentEditor?.page?.elements, componentEditor?.variants, viewport.x, viewport.y, viewport.scale, componentEditor?.activeVariantId]);
+  }, [activeSurface, componentEditor?.isOpen, componentEditor?.page?.elements, componentEditor?.variants, canvasScale, componentEditor?.activeVariantId]);
 
   useEffect(() => {
     if (!variantConnectionDraft) return undefined;
@@ -2996,9 +3169,10 @@ export default function InfiniteCanvas() {
   }, [openVariantInteractionModal, resolveVariantRootAtClientPoint, variantConnectionDraft]);
 
   const canPasteIntoFrame = useCallback((bpId = null, elementId = null) => {
-    if (!clipboard.current) return false;
+    const payload = getEditorClipboardPayload(clipboard);
+    if (!payload) return false;
     const st = useEditorStore.getState();
-    const resolvedBpId = bpId || st.selection?.bpId || clipboard.current.bpId || 'desktop';
+    const resolvedBpId = bpId || st.selection?.bpId || st.artboardSel || payload.bpId || 'desktop';
     const candidateId = elementId ?? st.selection?.elementId ?? null;
     if (!candidateId) return false;
     const candidate = st.getAllElements().find((el) => el.id === candidateId) ?? null;
@@ -3021,6 +3195,7 @@ export default function InfiniteCanvas() {
     };
     collectSubtree(rootEl.id);
     clipboard.current = { subtree, rootId: rootEl.id, bpId };
+    writeStoredElementClipboard(clipboard.current);
     return true;
   }, []);
 
@@ -3030,6 +3205,25 @@ export default function InfiniteCanvas() {
     pushHistory();
     return true;
   }, [copyElementToClipboard, deleteElement, pushHistory]);
+
+  const copyElementToClipboardAndSync = useCallback(async (elementId, bpId) => {
+    if (!copyElementToClipboard(elementId, bpId)) return false;
+    await syncClipboardPayloadToNative(clipboard.current);
+    return true;
+  }, [copyElementToClipboard]);
+
+  const cutElementToClipboardAndSync = useCallback(async (elementId, bpId) => {
+    if (!cutElementToClipboard(elementId, bpId)) return false;
+    await syncClipboardPayloadToNative(clipboard.current);
+    return true;
+  }, [cutElementToClipboard]);
+
+  const writeEditorClipboardData = useCallback((clipboardData) => {
+    const serialized = serializeEditorClipboardPayload(clipboard.current);
+    if (!serialized) return false;
+    clipboardData?.setData('text/plain', serialized);
+    return true;
+  }, []);
 
   // ── Drag state ─────────────────────────────────────────────
   const drag = useRef(null);
@@ -3056,16 +3250,25 @@ export default function InfiniteCanvas() {
       worldX >= bp.x && worldX <= bp.x + bp.width &&
       worldY >= bp.y && worldY <= bp.y + bp.height
     )) ?? null;
-    const bp = containingBp ?? hintedBp ?? st.breakpointDefs[st.selection?.bpId ?? ''] ?? st.breakpointDefs.desktop ?? bpList[0] ?? null;
+    const activeBpId = st.selection?.bpId ?? st.artboardSel ?? '';
+    const bp = containingBp ?? hintedBp ?? st.breakpointDefs[activeBpId] ?? st.breakpointDefs.desktop ?? bpList[0] ?? null;
     if (!bp) return null;
     const page = st.getCurrentPage?.();
     const pad = resolvePagePadding(page?.padding, bp.id);
+    let localX = Math.round(worldX - bp.x - (pad?.left ?? 0));
+    let localY = Math.round(worldY - bp.y - (pad?.top ?? 0));
+    if (!containingBp) {
+      const contentW = bp.width - (pad?.left ?? 0) - (pad?.right ?? 0);
+      const contentH = bp.height - (pad?.top ?? 0) - (pad?.bottom ?? 0);
+      localX = Math.max(0, Math.min(localX, Math.max(0, contentW - 20)));
+      localY = Math.max(0, Math.min(localY, Math.max(0, contentH - 20)));
+    }
     return {
       bpId: bp.id,
       worldX,
       worldY,
-      x: Math.round(worldX - bp.x - (pad?.left ?? 0)),
-      y: Math.round(worldY - bp.y - (pad?.top ?? 0)),
+      x: localX,
+      y: localY,
     };
   }, [getProjectedWorldPoint]);
 
@@ -3083,10 +3286,12 @@ export default function InfiniteCanvas() {
   }, []);
 
   const pasteClipboardAt = useCallback(({ bpId = null, parentId = null, x = null, y = null, clientX = null, clientY = null }) => {
-    if (!clipboard.current) return false;
+    const payload = getEditorClipboardPayload(clipboard);
+    if (!payload) return false;
+    clipboard.current = payload;
     const st = useEditorStore.getState();
-    const { subtree, rootId, bpId: copiedBpId } = clipboard.current;
-    const targetBpId = bpId || st.selection?.bpId || copiedBpId || 'desktop';
+    const { subtree, rootId, bpId: copiedBpId } = payload;
+    const targetBpId = bpId || st.selection?.bpId || st.artboardSel || copiedBpId || 'desktop';
     const selectedEl = st.getSelectedElement?.() ?? null;
     const activeSelectedFrameId = selectedEl && isCanvasContainerElement(selectedEl) && st.selection?.bpId === targetBpId
       ? selectedEl.id
@@ -3184,10 +3389,10 @@ export default function InfiniteCanvas() {
     return true;
   }, [addElement, getPlacementFromClient, pushHistory, setArtboardSel]);
 
-  const importTeleportPayloadAt = useCallback(({ payload, clientX = null, clientY = null, showReusedAssetAlert = true }) => {
+  const importTeleportPayloadAt = useCallback(async ({ payload, clientX = null, clientY = null, showReusedAssetAlert = true }) => {
     if (!payload?.nodes?.length) return false;
     const state = useEditorStore.getState();
-    const fallbackBpId = state.selection?.bpId ?? 'desktop';
+    const fallbackBpId = state.selection?.bpId ?? state.artboardSel ?? 'desktop';
     const placement = getPlacementFromClient(
       clientX ?? lastPointerClientRef.current.x,
       clientY ?? lastPointerClientRef.current.y,
@@ -3236,12 +3441,20 @@ export default function InfiniteCanvas() {
       });
     }
 
+    try {
+      await uploadImportedTeleportAssets(importedElements, { showReusedAssetAlert });
+    } catch (error) {
+      console.error('[FrameBuilder] Figma import media upload failed', error);
+      if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+        window.alert(error?.message || 'Could not upload imported Figma images.');
+      }
+      return false;
+    }
     mergeTeleportStylesIntoAssets(payload);
     addElements(importedElements, placement.bpId);
     useEditorStore.getState().setSelection({ elementId: rootIds[0], bpId: placement.bpId });
     setArtboardSel(null);
     pushHistory();
-    void uploadImportedTeleportAssets(importedElements, { showReusedAssetAlert });
     return true;
   }, [addElements, getPlacementFromClient, pushHistory, setArtboardSel]);
 
@@ -3505,35 +3718,36 @@ export default function InfiniteCanvas() {
 
   useEffect(() => {
     const onKeyDown = (e) => {
-      const isEditableTarget = e.target.matches('input,textarea') || e.target.isContentEditable;
-      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'f') {
+      const isEditableTarget = isEditableEventTarget(e.target);
+      const lowerKey = String(e.key || '').toLowerCase();
+      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && lowerKey === 'f') {
         e.preventDefault();
         useEditorStore.getState().setPendingDraw('frame');
         return;
       }
-      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'h') {
+      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && lowerKey === 'h') {
         e.preventDefault();
         useEditorStore.getState().setActiveCanvasTool('pan');
         return;
       }
-      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'c') {
+      if (!isEditableTarget && !e.metaKey && !e.ctrlKey && !e.altKey && lowerKey === 'c') {
         e.preventDefault();
         useEditorStore.getState().setActiveCanvasTool('comment');
         return;
       }
-      if (!isEditableTarget && (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'g') {
+      if (!isEditableTarget && (e.metaKey || e.ctrlKey) && !e.altKey && lowerKey === 'g') {
         const didWrap = wrapSelectionInFrame(e.shiftKey ? 'auto' : 'free');
         if (didWrap) {
           e.preventDefault();
           return;
         }
       }
-      if (e.code === 'Space' && !e.target.matches('input,textarea')) {
+      if (e.code === 'Space' && !isEditableEventTarget(e.target)) {
         e.preventDefault();
         spaceDown.current = true;
         setSpacePanCursor(true);
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+      if ((e.metaKey || e.ctrlKey) && lowerKey === 'z') {
         e.preventDefault();
         if (e.shiftKey) useEditorStore.getState().redo();
         else useEditorStore.getState().undo();
@@ -3623,31 +3837,68 @@ export default function InfiniteCanvas() {
         });
         useEditorStore.getState().pushHistory();
       }
-      // Copy (Cmd/Ctrl+C)
-      if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !isEditableTarget) {
+      if ((e.metaKey || e.ctrlKey) && lowerKey === 'c' && !isEditableTarget) {
         const { selection } = useEditorStore.getState();
         if (!selection) return;
-        copyElementToClipboard(selection.elementId, selection.bpId);
+        e.preventDefault();
+        clipboardShortcutRef.current = { type: 'copy', at: Date.now() };
+        copyElementToClipboardAndSync(selection.elementId, selection.bpId);
+        return;
       }
-      // Cut (Cmd/Ctrl+X)
-      if ((e.metaKey || e.ctrlKey) && e.key === 'x' && !isEditableTarget) {
+      if ((e.metaKey || e.ctrlKey) && lowerKey === 'x' && !isEditableTarget) {
         const { selection } = useEditorStore.getState();
         if (!selection) return;
-        cutElementToClipboard(selection.elementId, selection.bpId);
+        e.preventDefault();
+        clipboardShortcutRef.current = { type: 'cut', at: Date.now() };
+        cutElementToClipboardAndSync(selection.elementId, selection.bpId);
+        return;
+      }
+      // Paste (Cmd/Ctrl+V) — Safari may not fire a paste event when the system
+      // clipboard is empty.  Use a short timeout: if a real `paste` event fires
+      // within 80 ms (Figma / SVG data), let it win; otherwise fall back to the
+      // internal React-ref clipboard.
+      if ((e.metaKey || e.ctrlKey) && lowerKey === 'v' && !isEditableTarget) {
+        if (clipboard.current) {
+          pasteKeyPendingRef.current = true;
+          setTimeout(() => {
+            if (!pasteKeyPendingRef.current) return;
+            pasteKeyPendingRef.current = false;
+            const currentState = useEditorStore.getState();
+            const currentBpId = currentState.selection?.bpId ?? currentState.artboardSel ?? clipboard.current?.bpId;
+            pasteClipboardAt({
+              bpId: currentBpId,
+              clientX: lastPointerClientRef.current.x,
+              clientY: lastPointerClientRef.current.y,
+            });
+          }, 80);
+        }
       }
     };
-    const onPaste = (e) => {
+    const onPaste = async (e) => {
+      pasteKeyPendingRef.current = false;
       const target = e.target;
-      const isEditablePasteTarget = target?.matches?.('input,textarea') || target?.isContentEditable;
+      const isEditablePasteTarget = isEditableEventTarget(target);
       if (isEditablePasteTarget) return;
 
       const clipboardData = e.clipboardData;
       const plainText = clipboardData?.getData('text/plain') ?? '';
+      const editorClipboardPayload = parseEditorClipboardPayload(plainText);
+      if (editorClipboardPayload) {
+        clipboard.current = editorClipboardPayload;
+        e.preventDefault();
+        const currentState = useEditorStore.getState();
+        const currentBpId = currentState.selection?.bpId ?? currentState.artboardSel ?? clipboard.current.bpId;
+        pasteClipboardAt({
+          bpId: currentBpId,
+          clientX: lastPointerClientRef.current.x,
+          clientY: lastPointerClientRef.current.y,
+        });
+        return;
+      }
       const teleportPayload = parseTeleportClipboardPayload(plainText);
       if (teleportPayload) {
-        if (importTeleportPayloadAt({ payload: teleportPayload, clientX: lastPointerClientRef.current.x, clientY: lastPointerClientRef.current.y, showReusedAssetAlert: false })) {
-          e.preventDefault();
-        }
+        e.preventDefault();
+        await importTeleportPayloadAt({ payload: teleportPayload, clientX: lastPointerClientRef.current.x, clientY: lastPointerClientRef.current.y, showReusedAssetAlert: false });
         return;
       }
 
@@ -3662,13 +3913,40 @@ export default function InfiniteCanvas() {
       }
 
       if (!clipboard.current) return;
-      const currentBpId = useEditorStore.getState().selection?.bpId ?? clipboard.current.bpId;
+      const currentState = useEditorStore.getState();
+      const currentBpId = currentState.selection?.bpId ?? currentState.artboardSel ?? clipboard.current.bpId;
       e.preventDefault();
       pasteClipboardAt({
         bpId: currentBpId,
         clientX: lastPointerClientRef.current.x,
         clientY: lastPointerClientRef.current.y,
       });
+    };
+    const onCopy = (e) => {
+      if (clipboardShortcutRef.current.type === 'copy' && Date.now() - clipboardShortcutRef.current.at < 250) {
+        clipboardShortcutRef.current = { type: null, at: 0 };
+        return;
+      }
+      const target = e.target;
+      if (isEditableEventTarget(target)) return;
+      const { selection } = useEditorStore.getState();
+      if (!selection) return;
+      if (!copyElementToClipboard(selection.elementId, selection.bpId)) return;
+      if (!writeEditorClipboardData(e.clipboardData)) return;
+      e.preventDefault();
+    };
+    const onCut = (e) => {
+      if (clipboardShortcutRef.current.type === 'cut' && Date.now() - clipboardShortcutRef.current.at < 250) {
+        clipboardShortcutRef.current = { type: null, at: 0 };
+        return;
+      }
+      const target = e.target;
+      if (isEditableEventTarget(target)) return;
+      const { selection } = useEditorStore.getState();
+      if (!selection) return;
+      if (!cutElementToClipboard(selection.elementId, selection.bpId)) return;
+      if (!writeEditorClipboardData(e.clipboardData)) return;
+      e.preventDefault();
     };
     const onKeyUp = (e) => {
       if (e.code === 'Space') {
@@ -3677,14 +3955,18 @@ export default function InfiniteCanvas() {
       }
     };
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('paste', onPaste);
+    document.addEventListener('copy', onCopy);
+    document.addEventListener('cut', onCut);
+    document.addEventListener('paste', onPaste);
     window.addEventListener('keyup', onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('paste', onPaste);
+      document.removeEventListener('copy', onCopy);
+      document.removeEventListener('cut', onCut);
+      document.removeEventListener('paste', onPaste);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [canPasteIntoFrame, commitPenDraft, copyElementToClipboard, cutElementToClipboard, deleteElement, importTeleportPayloadAt, pasteClipboardAt, pasteSvgMarkupAt, penDraft, pushHistory, wrapSelectionInFrame]);
+  }, [canPasteIntoFrame, commitPenDraft, copyElementToClipboard, cutElementToClipboard, deleteElement, importTeleportPayloadAt, pasteClipboardAt, pasteSvgMarkupAt, penDraft, pushHistory, wrapSelectionInFrame, writeEditorClipboardData]);
 
   // ── Initial fit-to-canvas ─────────────────────────────────
   useEffect(() => {
@@ -3754,7 +4036,8 @@ export default function InfiniteCanvas() {
       e.preventDefault();
       isPanning.current = true;
       panOrigin.current = { x: e.clientX, y: e.clientY };
-      panStart.current  = { x: viewport.x, y: viewport.y };
+      const vp = useEditorStore.getState().viewport;
+      panStart.current  = { x: vp.x, y: vp.y };
       return;
     }
     if (e.button === 0 && e.target === e.currentTarget) {
@@ -4233,7 +4516,7 @@ export default function InfiniteCanvas() {
       const gradient = gradEl ? parseGradient(resolveElement(gradEl, gradBp).styles?.backgroundColor ?? '') : null;
       if (!gradient || gradient.type !== 'radial') return;
       state.updateElementStyles(gradId, gradBp, { backgroundColor: buildGradient({ ...gradient, radius: nextRadius }) });
-      const nextRadiusWorld = Math.max(18 / Math.max(viewport.scale || 1, MIN_SCALE), Math.min(overlayW, overlayH) * (nextRadius / 100));
+      const nextRadiusWorld = Math.max(18 / Math.max(useEditorStore.getState().viewport.scale || 1, MIN_SCALE), Math.min(overlayW, overlayH) * (nextRadius / 100));
       const nextLineEnd = rotatePointAround({ x: unrotatedCenter.x + nextRadiusWorld, y: unrotatedCenter.y }, overlayCenter, selectionRotation);
       drag.current.radius = nextRadiusWorld;
       drag.current.lineEnd = nextLineEnd;
@@ -5434,7 +5717,7 @@ export default function InfiniteCanvas() {
     ? 'grabbing'
     : 'default';
 
-  const { x: panX, y: panY, scale } = viewport;
+  const scale = Math.max(MIN_SCALE, Number.isFinite(canvasScale) ? canvasScale : 1);
   const baseVariantId = activeSurface === 'component'
     ? getBaseVariantId(componentEditor.variants ?? [], componentEditor.activeVariantId)
     : null;
@@ -5513,7 +5796,7 @@ export default function InfiniteCanvas() {
     ? resolveVariantRootAtClientPoint(variantConnectionDraft.clientX, variantConnectionDraft.clientY, { excludeVariantId: variantConnectionDraft.sourceVariantId })
     : null;
   const draftEndpoint = draftHoverTarget?.to ?? (variantConnectionDraft
-    ? clientToWorldPoint(connectorContainerRect, viewport, { x: variantConnectionDraft.clientX, y: variantConnectionDraft.clientY })
+    ? clientToWorldPoint(connectorContainerRect, useEditorStore.getState().viewport, { x: variantConnectionDraft.clientX, y: variantConnectionDraft.clientY })
     : null);
   const variantDraftPath = variantConnectionDraft && variantRootLayout[variantConnectionDraft.sourceVariantId]
     ? buildConnectorPath(variantRootLayout[variantConnectionDraft.sourceVariantId].from, draftEndpoint)
@@ -5556,10 +5839,6 @@ export default function InfiniteCanvas() {
       <div
         ref={worldRef}
         className="fb-canvas-world"
-        style={{
-          transform: `translate(${panX}px, ${panY}px) scale(${scale})`,
-          '--inv-scale': 1 / scale,
-        }}
       >
         {Object.values(bpDefs).map(bp => (
           <Artboard
@@ -5799,7 +6078,6 @@ export default function InfiniteCanvas() {
       {(activeComment || commentDraft) ? (
         <CommentCanvasCard
           containerRef={containerRef}
-          viewport={viewport}
           commentDraft={commentDraft}
           onSubmitDraft={submitCommentDraft}
           onDiscardDraft={discardCommentDraft}
@@ -5889,9 +6167,9 @@ export default function InfiniteCanvas() {
         hasClipboard={!!clipboard.current}
         hasStyleClipboard={hasStoredStyleClipboard}
         onClose={closeContextMenu}
-        onCopy={() => contextMenu?.elementId && copyElementToClipboard(contextMenu.elementId, contextMenu.bpId)}
+        onCopy={() => { if (contextMenu?.elementId) copyElementToClipboardAndSync(contextMenu.elementId, contextMenu.bpId); }}
         onCopyStyle={() => contextMenu?.elementId && copyElementStylesToStoredClipboard(contextMenu.elementId, contextMenu.bpId)}
-        onCut={() => contextMenu?.elementId && cutElementToClipboard(contextMenu.elementId, contextMenu.bpId)}
+        onCut={() => { if (contextMenu?.elementId) cutElementToClipboardAndSync(contextMenu.elementId, contextMenu.bpId); }}
         onPaste={() => contextMenu?.canPasteIntoFrame && pasteClipboardAt({ bpId: contextMenu.bpId, parentId: contextMenu.elementId, clientX: contextMenu.clientX, clientY: contextMenu.clientY })}
         onPasteStyle={() => {
           if (!contextMenu?.elementId) return;

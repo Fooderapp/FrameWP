@@ -277,6 +277,16 @@ class FrameBuilder_API {
 		];
 	}
 
+	private static function get_saved_layout_for_post( int $post_id ) {
+		$raw = get_post_meta( $post_id, '_fb_layout', true );
+		if ( ! is_string( $raw ) || '' === $raw ) {
+			return null;
+		}
+
+		$layout = json_decode( $raw, true );
+		return is_array( $layout ) ? $layout : null;
+	}
+
 	private static function get_document_lock_window(): int {
 		return max( 30, (int) apply_filters( 'fb_document_lock_window', 150 ) );
 	}
@@ -370,7 +380,7 @@ class FrameBuilder_API {
 
 	public static function save_layout( WP_REST_Request $request ) {
 		$post_id = absint( $request->get_param( 'post_id' ) );
-		$layout  = $request->get_param( 'layout' );
+		$layout  = self::decode_compressed_layout( $request->get_param( 'layout_gz' ), $request->get_param( 'layout' ) );
 		$result = self::perform_save_layout( $post_id, $layout );
 		if ( is_wp_error( $result ) ) {
 			return $result;
@@ -421,7 +431,7 @@ class FrameBuilder_API {
 		return [ 'success' => true ];
 	}
 
-	private static function perform_publish_layout( int $post_id, $layout ) {
+	private static function perform_publish_layout( int $post_id, $layout = null ) {
 		if ( ! $post_id ) {
 			return new WP_Error( 'invalid_post_id', 'A valid post ID is required.', [ 'status' => 400 ] );
 		}
@@ -432,6 +442,14 @@ class FrameBuilder_API {
 		if ( is_wp_error( $lock_check ) ) {
 			return $lock_check;
 		}
+
+		if ( null === $layout ) {
+			$layout = self::get_saved_layout_for_post( $post_id );
+		}
+		if ( ! is_array( $layout ) ) {
+			return new WP_Error( 'invalid_layout', 'A saved layout is required before publishing.', [ 'status' => 400 ] );
+		}
+
 		update_post_meta( $post_id, '_fb_layout', wp_slash( wp_json_encode( $layout ) ) );
 		update_post_meta( $post_id, '_fb_published_layout', wp_slash( wp_json_encode( $layout ) ) );
 		$exporter = new FrameBuilder_Exporter( $layout, $post_id );
@@ -490,7 +508,11 @@ class FrameBuilder_API {
 		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
 			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
 		}
-		$result = self::perform_save_layout( absint( $_POST['post_id'] ?? 0 ), self::decode_ajax_layout( $_POST['layout'] ?? null ) );
+		$layout = self::decode_uploaded_compressed_layout( $_FILES['layout_gz_file'] ?? null );
+		if ( ! is_array( $layout ) ) {
+			$layout = self::decode_compressed_layout( $_POST['layout_gz'] ?? null, $_POST['layout'] ?? null );
+		}
+		$result = self::perform_save_layout( absint( $_POST['post_id'] ?? 0 ), $layout );
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
 		}
@@ -523,7 +545,8 @@ class FrameBuilder_API {
 		if ( ! check_ajax_referer( 'wp_rest', '_wpnonce', false ) ) {
 			wp_send_json_error( [ 'message' => 'Nonce verification failed.' ], 403 );
 		}
-		$result = self::perform_publish_layout( absint( $_POST['post_id'] ?? 0 ), self::decode_ajax_layout( $_POST['layout'] ?? null ) );
+		$layout = array_key_exists( 'layout', $_POST ) ? self::decode_ajax_layout( $_POST['layout'] ?? null ) : null;
+		$result = self::perform_publish_layout( absint( $_POST['post_id'] ?? 0 ), $layout );
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );
 		}
@@ -563,6 +586,43 @@ class FrameBuilder_API {
 			}
 		}
 		return [];
+	}
+
+	private static function decode_compressed_layout( $layout_gz, $layout_fallback ) {
+		if ( is_string( $layout_gz ) && '' !== $layout_gz ) {
+			$raw = base64_decode( $layout_gz, true );
+			if ( false !== $raw && function_exists( 'gzdecode' ) ) {
+				$json = gzdecode( $raw );
+				if ( false !== $json ) {
+					$decoded = json_decode( $json, true );
+					if ( is_array( $decoded ) ) {
+						return $decoded;
+					}
+				}
+			}
+		}
+		return self::decode_ajax_layout( $layout_fallback );
+	}
+
+	private static function decode_uploaded_compressed_layout( $layout_file ) {
+		if ( ! is_array( $layout_file ) ) {
+			return null;
+		}
+		$tmp_name = isset( $layout_file['tmp_name'] ) ? (string) $layout_file['tmp_name'] : '';
+		$error    = isset( $layout_file['error'] ) ? (int) $layout_file['error'] : UPLOAD_ERR_NO_FILE;
+		if ( '' === $tmp_name || UPLOAD_ERR_OK !== $error || ! is_uploaded_file( $tmp_name ) ) {
+			return null;
+		}
+		$raw = @file_get_contents( $tmp_name );
+		if ( false === $raw || ! function_exists( 'gzdecode' ) ) {
+			return null;
+		}
+		$json = gzdecode( $raw );
+		if ( false === $json ) {
+			return null;
+		}
+		$decoded = json_decode( $json, true );
+		return is_array( $decoded ) ? $decoded : null;
 	}
 
 	private static function is_form_container_type( string $type ): bool {
@@ -1960,6 +2020,10 @@ class FrameBuilder_API {
 			return new WP_Error( 'upload_failed', 'Could not resolve uploaded media URL.', [ 'status' => 500 ] );
 		}
 
+		if ( is_ssl() ) {
+			$url = set_url_scheme( $url, 'https' );
+		}
+
 		return [
 			'success'       => true,
 			'attachmentId'  => $attachment_id,
@@ -2003,14 +2067,14 @@ class FrameBuilder_API {
 		return [ $filename, $binary, $mime_type ];
 	}
 
-	private static function perform_import_media_asset( $source, int $post_id = 0, string $asset_name = '' ) {
+	private static function perform_import_media_asset( $source, int $post_id = 0, string $asset_name = '', ?array $uploaded_file = null ) {
 		if ( ! current_user_can( 'upload_files' ) ) {
 			return new WP_Error( 'forbidden', 'Not allowed.', [ 'status' => 403 ] );
 		}
 
 		$source = is_string( $source ) ? trim( $source ) : '';
 		$asset_name = is_string( $asset_name ) ? trim( sanitize_text_field( $asset_name ) ) : '';
-		if ( '' === $source ) {
+		if ( '' === $source && empty( $uploaded_file['tmp_name'] ) ) {
 			return new WP_Error( 'invalid_source', 'A valid media source is required.', [ 'status' => 400 ] );
 		}
 
@@ -2019,7 +2083,39 @@ class FrameBuilder_API {
 		require_once ABSPATH . 'wp-admin/includes/image.php';
 
 		$attachment_id = 0;
-		if ( 0 === strpos( $source, 'data:' ) ) {
+		if ( ! empty( $uploaded_file['tmp_name'] ) ) {
+			if ( ! empty( $uploaded_file['error'] ) ) {
+				return new WP_Error( 'upload_failed', 'Uploaded media file is invalid.', [ 'status' => 400 ] );
+			}
+
+			$tmp_name = (string) $uploaded_file['tmp_name'];
+			if ( '' === $tmp_name || ! is_readable( $tmp_name ) ) {
+				return new WP_Error( 'upload_failed', 'Uploaded media file is missing.', [ 'status' => 400 ] );
+			}
+
+			$source_hash = hash_file( 'sha1', $tmp_name ) ?: '';
+			$existing_attachment_id = self::get_import_attachment_by_source_hash( $source_hash );
+			if ( $existing_attachment_id > 0 ) {
+				@unlink( $tmp_name );
+				return self::build_import_media_result( $existing_attachment_id, true, $asset_name );
+			}
+
+			$original_name = isset( $uploaded_file['name'] ) && is_string( $uploaded_file['name'] ) ? $uploaded_file['name'] : '';
+			$extension = pathinfo( $original_name, PATHINFO_EXTENSION );
+			$filename = self::build_import_filename( $asset_name ?: $original_name, $extension ?: 'bin' );
+			$file_array = [
+				'name'     => $filename,
+				'tmp_name' => $tmp_name,
+			];
+
+			$attachment_id = media_handle_sideload( $file_array, $post_id > 0 ? $post_id : 0 );
+			if ( is_wp_error( $attachment_id ) ) {
+				@unlink( $tmp_name );
+				return $attachment_id;
+			}
+
+			self::persist_import_attachment_meta( (int) $attachment_id, $source_hash, $asset_name );
+		} elseif ( 0 === strpos( $source, 'data:' ) ) {
 			[ $filename, $binary, $mime_type ] = self::decode_data_url_to_file( $source, $asset_name );
 			if ( '' === $filename || '' === $binary ) {
 				return new WP_Error( 'invalid_source', 'Could not decode media data.', [ 'status' => 400 ] );
@@ -2504,7 +2600,8 @@ class FrameBuilder_API {
 		$result = self::perform_import_media_asset(
 			wp_unslash( $_POST['source'] ?? '' ),
 			absint( $_POST['post_id'] ?? 0 ),
-			wp_unslash( $_POST['asset_name'] ?? '' )
+			wp_unslash( $_POST['asset_name'] ?? '' ),
+			isset( $_FILES['file'] ) && is_array( $_FILES['file'] ) ? $_FILES['file'] : null
 		);
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( [ 'message' => $result->get_error_message() ], (int) ( $result->get_error_data()['status'] ?? 400 ) );

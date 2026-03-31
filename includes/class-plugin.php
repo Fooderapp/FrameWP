@@ -1144,6 +1144,9 @@ class FrameBuilder_Plugin {
 		if ( file_exists( $assets_dir . 'ScrollTrigger.min.js' ) ) {
 			wp_enqueue_script( 'framebuilder-gsap-scrolltrigger', $assets_url . 'ScrollTrigger.min.js', [ 'framebuilder-gsap' ], $scroll_trigger_version, false );
 		}
+		if ( file_exists( $assets_dir . 'fb-loop-runtime.js' ) ) {
+			wp_enqueue_script( 'framebuilder-loop-runtime', $assets_url . 'fb-loop-runtime.js', [], self::asset_version( $assets_dir . 'fb-loop-runtime.js' ), true );
+		}
 
 		// Register a dedicated handle so inline style is always output,
 		// regardless of whether the theme enqueues wp-block-library.

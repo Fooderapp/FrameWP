@@ -986,6 +986,18 @@ class FrameBuilder_Exporter {
 		$this->css[] = ".{$bid} .fb-form-file-upload__meta { opacity:.82; }";
 		$this->css[] = ".{$bid} .fb-form-file-upload__input { position:absolute !important; inset:0; opacity:0; width:100% !important; height:100% !important; cursor:pointer; }";
 
+		// Loop runtime styles (slideshow / ticker / carousel)
+		$this->css[] = ".{$bid} .fb-loop-interactive { position:relative; width:100%; min-width:0; flex:1 1 0%; overflow:hidden; }";
+		$this->css[] = ".{$bid} .fb-loop-track { width:100%; }";
+		$this->css[] = ".{$bid} .fb-loop-runtime-item[data-fb-loop-item-url] { cursor:pointer; }";
+		$this->css[] = ".{$bid} .fb-loop-arrow { position:absolute; top:50%; transform:translateY(-50%); z-index:5; display:flex; align-items:center; justify-content:center; width:36px; height:36px; border:0; border-radius:50%; background:rgba(0,0,0,.45); color:#fff; cursor:pointer; transition:background .2s; }";
+		$this->css[] = ".{$bid} .fb-loop-arrow:hover { background:rgba(0,0,0,.7); }";
+		$this->css[] = ".{$bid} .fb-loop-arrow--prev { left:8px; }";
+		$this->css[] = ".{$bid} .fb-loop-arrow--next { right:8px; }";
+		$this->css[] = ".{$bid} .fb-loop-dots { display:flex; justify-content:center; gap:6px; padding:10px 0; }";
+		$this->css[] = ".{$bid} .fb-loop-dot { width:8px; height:8px; border:0; border-radius:50%; background:rgba(0,0,0,.25); cursor:pointer; padding:0; transition:background .2s; }";
+		$this->css[] = ".{$bid} .fb-loop-dot--active, .{$bid} .fb-loop-dot:hover { background:rgba(0,0,0,.7); }";
+
 		$this->css[] = $this->responsive_visibility_css();
 
 		return implode( "\n", $this->css );
@@ -1456,9 +1468,13 @@ class FrameBuilder_Exporter {
 			$text_align  = $this->sanitize_css_value( $styles['textAlign'] ?? 'left' );
 			$text_decoration = $this->sanitize_css_value( $styles['textDecoration'] ?? 'none' );
 			$text_color  = $this->sanitize_css_value( $styles['color'] ?? '#000000' );
-			$text_gradient = is_string( $styles['backgroundColor'] ?? null ) && false !== strpos( $styles['backgroundColor'], 'gradient(' )
-				? $this->sanitize_css_value( $styles['backgroundColor'] )
+			$text_color_gradient = is_string( $styles['color'] ?? null ) && false !== strpos( $styles['color'], 'gradient(' )
+				? $this->sanitize_css_value( $styles['color'] )
 				: '';
+			$text_gradient = $text_color_gradient !== '' ? $text_color_gradient
+				: ( is_string( $styles['backgroundColor'] ?? null ) && false !== strpos( $styles['backgroundColor'], 'gradient(' )
+					? $this->sanitize_css_value( $styles['backgroundColor'] )
+					: '' );
 			$white_space = ( $width_mode === 'hug' && $height_mode === 'hug' ) ? 'pre' : 'pre-wrap';
 			$text_style  = 'width:100%;display:block;overflow:visible;';
 			$text_style .= 'font-family:' . $this->sanitize_css_value( $font_stack ) . ';';
@@ -2466,6 +2482,12 @@ class FrameBuilder_Exporter {
 	private function normalize_loop_config( $value ): array {
 		$source = is_array( $value ) ? $value : [];
 		$query = is_array( $source['query'] ?? null ) ? $source['query'] : [];
+
+		// Top-level mode & source
+		$mode = isset( $source['mode'] ) && in_array( $source['mode'], [ 'loop', 'slideshow', 'ticker', 'carousel' ], true ) ? $source['mode'] : 'loop';
+		$child_source = isset( $source['source'] ) && in_array( $source['source'], [ 'query', 'manual', 'component' ], true ) ? $source['source'] : 'query';
+		$component_id = isset( $source['componentId'] ) && is_string( $source['componentId'] ) && '' !== $source['componentId'] ? sanitize_text_field( $source['componentId'] ) : '';
+
 		$layout = isset( $source['layout'] ) && in_array( $source['layout'], [ 'vertical', 'horizontal', 'grid' ], true ) ? $source['layout'] : 'vertical';
 		$source_type = isset( $query['source'] ) && in_array( $query['source'], [ 'collection', 'selected', 'variable' ], true ) ? $query['source'] : 'collection';
 		$collection = isset( $query['collection'] ) && in_array( $query['collection'], [ 'posts', 'pages', 'products' ], true ) ? $query['collection'] : 'posts';
@@ -2501,7 +2523,47 @@ class FrameBuilder_Exporter {
 			}
 		}
 
+		// Slideshow settings
+		$ss = is_array( $source['slideshow'] ?? null ) ? $source['slideshow'] : [];
+		$slideshow = [
+			'autoplay'           => isset( $ss['autoplay'] ) ? (bool) $ss['autoplay'] : true,
+			'interval'           => isset( $ss['interval'] ) && is_numeric( $ss['interval'] ) ? max( 500, (int) $ss['interval'] ) : 4000,
+			'transition'         => isset( $ss['transition'] ) && in_array( $ss['transition'], [ 'slide', 'fade', 'none' ], true ) ? $ss['transition'] : 'slide',
+			'transitionDuration' => isset( $ss['transitionDuration'] ) && is_numeric( $ss['transitionDuration'] ) ? max( 0, (int) $ss['transitionDuration'] ) : 500,
+			'showArrows'         => isset( $ss['showArrows'] ) ? (bool) $ss['showArrows'] : true,
+			'showDots'           => isset( $ss['showDots'] ) ? (bool) $ss['showDots'] : true,
+			'pauseOnHover'       => isset( $ss['pauseOnHover'] ) ? (bool) $ss['pauseOnHover'] : true,
+			'loop'               => isset( $ss['loop'] ) ? (bool) $ss['loop'] : true,
+		];
+
+		// Ticker settings
+		$tk = is_array( $source['ticker'] ?? null ) ? $source['ticker'] : [];
+		$ticker = [
+			'speed'        => isset( $tk['speed'] ) && is_numeric( $tk['speed'] ) ? max( 1, (int) $tk['speed'] ) : 40,
+			'direction'    => isset( $tk['direction'] ) && in_array( $tk['direction'], [ 'left', 'right', 'up', 'down' ], true ) ? $tk['direction'] : 'left',
+			'pauseOnHover' => isset( $tk['pauseOnHover'] ) ? (bool) $tk['pauseOnHover'] : true,
+			'gap'          => isset( $tk['gap'] ) && is_numeric( $tk['gap'] ) ? max( 0, (int) $tk['gap'] ) : 24,
+		];
+
+		// Carousel settings
+		$cr = is_array( $source['carousel'] ?? null ) ? $source['carousel'] : [];
+		$carousel = [
+			'visibleItems'       => isset( $cr['visibleItems'] ) && is_numeric( $cr['visibleItems'] ) ? max( 1, (int) $cr['visibleItems'] ) : 3,
+			'scrollItems'        => isset( $cr['scrollItems'] ) && is_numeric( $cr['scrollItems'] ) ? max( 1, (int) $cr['scrollItems'] ) : 1,
+			'autoplay'           => isset( $cr['autoplay'] ) ? (bool) $cr['autoplay'] : false,
+			'interval'           => isset( $cr['interval'] ) && is_numeric( $cr['interval'] ) ? max( 500, (int) $cr['interval'] ) : 4000,
+			'showArrows'         => isset( $cr['showArrows'] ) ? (bool) $cr['showArrows'] : true,
+			'showDots'           => isset( $cr['showDots'] ) ? (bool) $cr['showDots'] : true,
+			'pauseOnHover'       => isset( $cr['pauseOnHover'] ) ? (bool) $cr['pauseOnHover'] : true,
+			'loop'               => isset( $cr['loop'] ) ? (bool) $cr['loop'] : true,
+			'transition'         => isset( $cr['transition'] ) && in_array( $cr['transition'], [ 'slide', 'fade', 'none' ], true ) ? $cr['transition'] : 'slide',
+			'transitionDuration' => isset( $cr['transitionDuration'] ) && is_numeric( $cr['transitionDuration'] ) ? max( 0, (int) $cr['transitionDuration'] ) : 500,
+		];
+
 		return [
+			'mode' => $mode,
+			'source' => $child_source,
+			'componentId' => $component_id,
 			'layout' => $layout,
 			'gap' => isset( $source['gap'] ) && is_numeric( $source['gap'] ) ? max( 0, (float) $source['gap'] ) : 16,
 			'columns' => isset( $source['columns'] ) && is_numeric( $source['columns'] ) ? max( 1, (int) $source['columns'] ) : 3,
@@ -2516,6 +2578,9 @@ class FrameBuilder_Exporter {
 				'selectedIds' => $selected_ids,
 				'variable' => $variable,
 			],
+			'slideshow' => $slideshow,
+			'ticker' => $ticker,
+			'carousel' => $carousel,
 		];
 	}
 
@@ -2929,31 +2994,112 @@ class FrameBuilder_Exporter {
 	private function render_loop_children( array $el, string $bpId, float $child_cw, float $child_ch, bool $child_layout_on, string $child_flex_dir, string $child_align_items ): string {
 		$resolved = $this->resolve( $el, $bpId );
 		$loop_config = $this->normalize_loop_config( $resolved['loop'] ?? ( $el['base']['loop'] ?? [] ) );
-		$template_root_id = $loop_config['templateRootId'] ?: ( $el['children'][0] ?? '' );
-		if ( '' === $template_root_id ) {
-			return '';
+		$mode = $loop_config['mode'];
+		$child_source = $loop_config['source'];
+		$is_interactive = in_array( $mode, [ 'slideshow', 'ticker', 'carousel' ], true );
+
+		// Interactive modes need real box items; plain loop uses display:contents
+		$item_style = $is_interactive ? '' : ' style="display:contents;"';
+
+		// ── Render items based on source ──────────────────────────────
+		$items_html = '';
+		$item_count = 0;
+
+		if ( 'manual' === $child_source ) {
+			// Manual children: render each direct child as an item
+			foreach ( $el['children'] ?? [] as $child_id ) {
+				$child = $this->el_index[ $child_id ] ?? null;
+				if ( ! $child ) continue;
+				$items_html .= '<div class="fb-loop-runtime-item"' . $item_style . ' data-fb-loop-item-index="' . $item_count . '">';
+				$items_html .= $this->render_element( $child, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items );
+				$items_html .= '</div>';
+				$item_count++;
+			}
+		} elseif ( 'component' === $child_source ) {
+			// Component children: render each direct child (component instances) as an item
+			foreach ( $el['children'] ?? [] as $child_id ) {
+				$child = $this->el_index[ $child_id ] ?? null;
+				if ( ! $child ) continue;
+				$items_html .= '<div class="fb-loop-runtime-item"' . $item_style . ' data-fb-loop-item-index="' . $item_count . '">';
+				$items_html .= $this->render_element( $child, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items );
+				$items_html .= '</div>';
+				$item_count++;
+			}
+		} else {
+			// Query source: existing behavior
+			$template_root_id = $loop_config['templateRootId'] ?: ( $el['children'][0] ?? '' );
+			if ( '' === $template_root_id ) {
+				return '';
+			}
+			$template = $this->el_index[ $template_root_id ] ?? null;
+			if ( ! is_array( $template ) ) {
+				return '';
+			}
+			$items = $this->get_loop_collection_items( $loop_config );
+			if ( empty( $items ) ) {
+				return '';
+			}
+			foreach ( $items as $index => $item ) {
+				$loop_item_variables = $this->build_loop_item_variables( is_array( $item ) ? $item : [] );
+				$items_html .= '<div class="fb-loop-runtime-item"' . $item_style . $this->build_loop_runtime_item_attrs( is_array( $item ) ? $item : [], (int) $index ) . '>';
+				$items_html .= $this->apply_loop_item_bindings_to_rendered_html(
+					$this->render_element( $template, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items, $loop_item_variables ),
+					$loop_item_variables,
+					$bpId
+				);
+				$items_html .= '</div>';
+				$item_count++;
+			}
 		}
-		$template = $this->el_index[ $template_root_id ] ?? null;
-		if ( ! is_array( $template ) ) {
+
+		if ( '' === $items_html ) {
 			return '';
 		}
 
-		$items = $this->get_loop_collection_items( $loop_config );
-		if ( empty( $items ) ) {
-			return '';
+		// ── Simple loop: no runtime wrapper needed ────────────────────
+		if ( 'loop' === $mode ) {
+			return $items_html;
 		}
 
-		$html = '';
-		foreach ( $items as $index => $item ) {
-			$loop_item_variables = $this->build_loop_item_variables( is_array( $item ) ? $item : [] );
-			$html .= '<div class="fb-loop-runtime-item" style="display:contents;"' . $this->build_loop_runtime_item_attrs( is_array( $item ) ? $item : [], (int) $index ) . '>';
-			$html .= $this->apply_loop_item_bindings_to_rendered_html(
-				$this->render_element( $template, $bpId, $child_cw, $child_ch, $child_layout_on, $child_flex_dir, $child_align_items, $loop_item_variables ),
-				$loop_item_variables,
-				$bpId
-			);
+		// ── Interactive modes: wrap with runtime data ─────────────────
+		// Merge top-level gap into mode config so the runtime has it
+		$mode_config = $loop_config[ $mode ] ?? [];
+		$mode_config['gap'] = $loop_config['gap'];
+		$config_json = wp_json_encode( $mode_config );
+		$html  = '<div class="fb-loop-interactive">';
+		$html .= '<div class="fb-loop-track" data-fb-loop-mode="' . esc_attr( $mode ) . '" data-fb-loop-config="' . esc_attr( $config_json ) . '" data-fb-loop-count="' . $item_count . '">';
+		$html .= $items_html;
+		$html .= '</div>';
+
+		// Arrows
+		$show_arrows = false;
+		if ( 'slideshow' === $mode ) {
+			$show_arrows = ! empty( $loop_config['slideshow']['showArrows'] );
+		} elseif ( 'carousel' === $mode ) {
+			$show_arrows = ! empty( $loop_config['carousel']['showArrows'] );
+		}
+		if ( $show_arrows ) {
+			$html .= '<button type="button" class="fb-loop-arrow fb-loop-arrow--prev" aria-label="Previous"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button>';
+			$html .= '<button type="button" class="fb-loop-arrow fb-loop-arrow--next" aria-label="Next"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></button>';
+		}
+
+		// Dots
+		$show_dots = false;
+		if ( 'slideshow' === $mode ) {
+			$show_dots = ! empty( $loop_config['slideshow']['showDots'] );
+		} elseif ( 'carousel' === $mode ) {
+			$show_dots = ! empty( $loop_config['carousel']['showDots'] );
+		}
+		if ( $show_dots && $item_count > 1 ) {
+			$html .= '<div class="fb-loop-dots">';
+			for ( $i = 0; $i < $item_count; $i++ ) {
+				$active_class = 0 === $i ? ' fb-loop-dot--active' : '';
+				$html .= '<button type="button" class="fb-loop-dot' . $active_class . '" data-fb-dot-index="' . $i . '" aria-label="Go to slide ' . ( $i + 1 ) . '"></button>';
+			}
 			$html .= '</div>';
 		}
+
+		$html .= '</div>'; // close .fb-loop-interactive
 
 		return $html;
 	}

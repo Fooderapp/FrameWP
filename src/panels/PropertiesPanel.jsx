@@ -4148,7 +4148,7 @@ export default function PropertiesPanel() {
                   />
                 ) : null}
               </VariableBindingLabel>
-              {textColorBindingVariable ? <BoundVariableCta variable={textColorBindingVariable} fallbackLabel="Color variable" /> : <ColorInput value={textColorMeta.baseColor} mixed={textColorMeta.mixed} onChange={v => { updS('color', v); commit(); }} />}
+              {textColorBindingVariable ? <BoundVariableCta variable={textColorBindingVariable} fallbackLabel="Color variable" /> : <FillPicker value={s.color ?? '#000000'} onChange={v => { updS('color', v); commit(); }} />}
             </div>
 
             {supportsPlaceholderStyling ? (
@@ -4971,54 +4971,240 @@ export default function PropertiesPanel() {
         {isLoopElement && !isComponentInstanceOnPage ? (
           <Section title="Loop" action={<ResetBtn show={isOv('loop')} onReset={() => { upd('loop', normalizeLoopConfig(null)); commit(); }} />}>
             <div className="fb-prop-row">
-              <span className="fb-prop-label">Pattern</span>
+              <span className="fb-prop-label">Mode</span>
               <ChoiceGroup
-                value={loopConfig.layout}
+                value={loopConfig.mode ?? 'loop'}
                 onChange={(value) => {
-                  const nextLoop = normalizeLoopConfig({ ...loopConfig, layout: value });
-                  const styleUpdates = value === 'grid'
-                    ? { display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: nextLoop.gap }
-                    : { display: 'flex', flexDirection: value === 'horizontal' ? 'row' : 'column', flexWrap: 'nowrap', gap: nextLoop.gap };
-                  upd('loop', nextLoop);
-                  updateStyles(element.id, bpId, styleUpdates);
+                  const nextLoop = normalizeLoopConfig({ ...loopConfig, mode: value });
+                  if (value === 'slideshow' || value === 'carousel') {
+                    upd('loop', nextLoop);
+                    updateStyles(element.id, bpId, { display: 'flex', flexDirection: 'row', flexWrap: 'nowrap', gap: nextLoop.gap, overflow: 'hidden' });
+                  } else if (value === 'ticker') {
+                    upd('loop', nextLoop);
+                    updateStyles(element.id, bpId, { display: 'flex', flexDirection: nextLoop.ticker?.direction === 'up' || nextLoop.ticker?.direction === 'down' ? 'column' : 'row', flexWrap: 'nowrap', gap: nextLoop.ticker?.gap ?? 24, overflow: 'hidden' });
+                  } else {
+                    // Switching to loop mode with manual source: keep only first child
+                    if ((loopConfig.source ?? 'query') === 'manual') {
+                      const kids = element.children ?? [];
+                      if (kids.length > 1) {
+                        deleteElements(kids.slice(1));
+                      }
+                    }
+                    const styleUpdates = nextLoop.layout === 'grid'
+                      ? { display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: nextLoop.gap, overflow: undefined }
+                      : { display: 'flex', flexDirection: nextLoop.layout === 'horizontal' ? 'row' : 'column', flexWrap: 'nowrap', gap: nextLoop.gap, overflow: undefined };
+                    upd('loop', nextLoop);
+                    updateStyles(element.id, bpId, styleUpdates);
+                  }
                   commit();
                 }}
                 options={[
-                  { value: 'vertical', label: 'Vertical' },
-                  { value: 'horizontal', label: 'Horizontal' },
-                  { value: 'grid', label: 'Grid' },
+                  { value: 'loop', label: 'Loop' },
+                  { value: 'slideshow', label: 'Slideshow' },
+                  { value: 'ticker', label: 'Ticker' },
+                  { value: 'carousel', label: 'Carousel' },
                 ]}
               />
             </div>
             <div className="fb-prop-row">
-              <span className="fb-prop-label">Item Gap</span>
-              <NumberInput
-                value={loopConfig.gap}
-                min={0}
+              <span className="fb-prop-label">Source</span>
+              <ChoiceGroup
+                value={loopConfig.source ?? 'query'}
                 onChange={(value) => {
-                  const nextLoop = normalizeLoopConfig({ ...loopConfig, gap: value });
-                  upd('loop', nextLoop);
-                  updS('gap', nextLoop.gap);
+                  upd('loop', normalizeLoopConfig({ ...loopConfig, source: value }));
                   commit();
                 }}
+                options={[
+                  { value: 'query', label: 'Query' },
+                  { value: 'manual', label: 'Manual' },
+                ]}
               />
             </div>
-            {loopConfig.layout === 'grid' ? (
+            {(loopConfig.mode ?? 'loop') === 'loop' ? (
               <>
                 <div className="fb-prop-row">
-                  <span className="fb-prop-label">Columns</span>
-                  <NumberInput value={loopConfig.columns} min={1} step={1} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, columns: value })); commit(); }} />
+                  <span className="fb-prop-label">Pattern</span>
+                  <ChoiceGroup
+                    value={loopConfig.layout}
+                    onChange={(value) => {
+                      const nextLoop = normalizeLoopConfig({ ...loopConfig, layout: value });
+                      const styleUpdates = value === 'grid'
+                        ? { display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: nextLoop.gap }
+                        : { display: 'flex', flexDirection: value === 'horizontal' ? 'row' : 'column', flexWrap: 'nowrap', gap: nextLoop.gap };
+                      upd('loop', nextLoop);
+                      updateStyles(element.id, bpId, styleUpdates);
+                      commit();
+                    }}
+                    options={[
+                      { value: 'vertical', label: 'Vertical' },
+                      { value: 'horizontal', label: 'Horizontal' },
+                      { value: 'grid', label: 'Grid' },
+                    ]}
+                  />
                 </div>
                 <div className="fb-prop-row">
-                  <span className="fb-prop-label">Min Item Width</span>
-                  <NumberInput value={loopConfig.minItemWidth} min={40} step={1} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, minItemWidth: value })); commit(); }} />
+                  <span className="fb-prop-label">Item Gap</span>
+                  <NumberInput
+                    value={loopConfig.gap}
+                    min={0}
+                    onChange={(value) => {
+                      const nextLoop = normalizeLoopConfig({ ...loopConfig, gap: value });
+                      upd('loop', nextLoop);
+                      updS('gap', nextLoop.gap);
+                      commit();
+                    }}
+                  />
+                </div>
+                {loopConfig.layout === 'grid' ? (
+                  <>
+                    <div className="fb-prop-row">
+                      <span className="fb-prop-label">Columns</span>
+                      <NumberInput value={loopConfig.columns} min={1} step={1} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, columns: value })); commit(); }} />
+                    </div>
+                    <div className="fb-prop-row">
+                      <span className="fb-prop-label">Min Item Width</span>
+                      <NumberInput value={loopConfig.minItemWidth} min={40} step={1} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, minItemWidth: value })); commit(); }} />
+                    </div>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+            {/* ── Slideshow settings ── */}
+            {(loopConfig.mode ?? 'loop') === 'slideshow' ? (
+              <>
+                <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Transition</span>
+                  <ChoiceGroup
+                    value={loopConfig.slideshow?.transition ?? 'slide'}
+                    onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, slideshow: { ...loopConfig.slideshow, transition: value } })); commit(); }}
+                    options={[
+                      { value: 'slide', label: 'Slide' },
+                      { value: 'fade', label: 'Fade' },
+                      { value: 'none', label: 'None' },
+                    ]}
+                  />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Duration</span>
+                  <NumberInput value={loopConfig.slideshow?.transitionDuration ?? 500} min={0} step={50} suffix="ms" onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, slideshow: { ...loopConfig.slideshow, transitionDuration: value } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Autoplay</span>
+                  <Toggle value={loopConfig.slideshow?.autoplay ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, slideshow: { ...loopConfig.slideshow, autoplay: v } })); commit(); }} />
+                </div>
+                {(loopConfig.slideshow?.autoplay ?? true) ? (
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Interval</span>
+                    <NumberInput value={loopConfig.slideshow?.interval ?? 4000} min={500} step={250} suffix="ms" onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, slideshow: { ...loopConfig.slideshow, interval: value } })); commit(); }} />
+                  </div>
+                ) : null}
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Arrows</span>
+                  <Toggle value={loopConfig.slideshow?.showArrows ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, slideshow: { ...loopConfig.slideshow, showArrows: v } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Dots</span>
+                  <Toggle value={loopConfig.slideshow?.showDots ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, slideshow: { ...loopConfig.slideshow, showDots: v } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Pause on Hover</span>
+                  <Toggle value={loopConfig.slideshow?.pauseOnHover ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, slideshow: { ...loopConfig.slideshow, pauseOnHover: v } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Loop</span>
+                  <Toggle value={loopConfig.slideshow?.loop ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, slideshow: { ...loopConfig.slideshow, loop: v } })); commit(); }} />
+                </div>
+              </>
+            ) : null}
+            {/* ── Ticker settings ── */}
+            {(loopConfig.mode ?? 'loop') === 'ticker' ? (
+              <>
+                <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Direction</span>
+                  <ChoiceGroup
+                    value={loopConfig.ticker?.direction ?? 'left'}
+                    onChange={(value) => {
+                      const isVertical = value === 'up' || value === 'down';
+                      upd('loop', normalizeLoopConfig({ ...loopConfig, ticker: { ...loopConfig.ticker, direction: value } }));
+                      updateStyles(element.id, bpId, { flexDirection: isVertical ? 'column' : 'row' });
+                      commit();
+                    }}
+                    options={[
+                      { value: 'left', label: 'Left' },
+                      { value: 'right', label: 'Right' },
+                      { value: 'up', label: 'Up' },
+                      { value: 'down', label: 'Down' },
+                    ]}
+                  />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Speed</span>
+                  <NumberInput value={loopConfig.ticker?.speed ?? 40} min={1} step={5} suffix="px/s" onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, ticker: { ...loopConfig.ticker, speed: value } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Item Gap</span>
+                  <NumberInput value={loopConfig.ticker?.gap ?? 24} min={0} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, ticker: { ...loopConfig.ticker, gap: value } })); updS('gap', value); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Pause on Hover</span>
+                  <Toggle value={loopConfig.ticker?.pauseOnHover ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, ticker: { ...loopConfig.ticker, pauseOnHover: v } })); commit(); }} />
+                </div>
+              </>
+            ) : null}
+            {/* ── Carousel settings ── */}
+            {(loopConfig.mode ?? 'loop') === 'carousel' ? (
+              <>
+                <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Visible Items</span>
+                  <NumberInput value={loopConfig.carousel?.visibleItems ?? 3} min={1} step={1} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, visibleItems: value } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Scroll Items</span>
+                  <NumberInput value={loopConfig.carousel?.scrollItems ?? 1} min={1} step={1} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, scrollItems: value } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Duration</span>
+                  <NumberInput value={loopConfig.carousel?.transitionDuration ?? 500} min={0} step={50} suffix="ms" onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, transitionDuration: value } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Autoplay</span>
+                  <Toggle value={loopConfig.carousel?.autoplay ?? false} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, autoplay: v } })); commit(); }} />
+                </div>
+                {(loopConfig.carousel?.autoplay) ? (
+                  <div className="fb-prop-row">
+                    <span className="fb-prop-label">Interval</span>
+                    <NumberInput value={loopConfig.carousel?.interval ?? 4000} min={500} step={250} suffix="ms" onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, interval: value } })); commit(); }} />
+                  </div>
+                ) : null}
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Arrows</span>
+                  <Toggle value={loopConfig.carousel?.showArrows ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, showArrows: v } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Dots</span>
+                  <Toggle value={loopConfig.carousel?.showDots ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, showDots: v } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Pause on Hover</span>
+                  <Toggle value={loopConfig.carousel?.pauseOnHover ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, pauseOnHover: v } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Loop</span>
+                  <Toggle value={loopConfig.carousel?.loop ?? true} onChange={(v) => { upd('loop', normalizeLoopConfig({ ...loopConfig, carousel: { ...loopConfig.carousel, loop: v } })); commit(); }} />
+                </div>
+                <div className="fb-prop-row">
+                  <span className="fb-prop-label">Item Gap</span>
+                  <NumberInput value={loopConfig.gap} min={0} onChange={(value) => { upd('loop', normalizeLoopConfig({ ...loopConfig, gap: value })); updS('gap', value); commit(); }} />
                 </div>
               </>
             ) : null}
           </Section>
         ) : null}
 
-        {isLoopElement && !isComponentInstanceOnPage ? (
+        {isLoopElement && !isComponentInstanceOnPage && (loopConfig.source ?? 'query') === 'query' ? (
           <Section title="Query" defaultOpen={false}>
             <div className="fb-prop-row">
               <span className="fb-prop-label">Collection</span>

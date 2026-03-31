@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, loopTemplateRootHasContent } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, readStoredElementClipboard, writeStoredElementClipboard, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, loopTemplateRootHasContent } from '../store/editorStore';
 import { UIIcons } from '../components/UIIcons';
-import { isLoopElementType } from '../domain/loopModel';
+import { isLoopElementType, normalizeLoopConfig } from '../domain/loopModel';
 
 function LayerComponentCreateModal({ defaultName, errorMessage = '', onCancel, onSubmit }) {
   const [name, setName] = useState(defaultName || 'Component');
@@ -186,6 +186,34 @@ const Icons = {
   ),
 };
 
+let layerClipboardSequence = 0;
+
+function cloneLayerClipboardSubtree(subtree, rootId) {
+  const idMap = {};
+  subtree.forEach((entry) => {
+    idMap[entry.id] = `fr-${Date.now()}-${++layerClipboardSequence}-${Math.random().toString(36).slice(2, 5)}`;
+  });
+  return subtree.map((entry) => ({
+    ...entry,
+    id: idMap[entry.id],
+    ...(entry.loopTemplateRootFor ? { loopTemplateRootFor: idMap[entry.loopTemplateRootFor] ?? entry.loopTemplateRootFor } : {}),
+    parentId: idMap[entry.parentId] ?? null,
+    children: (entry.children ?? []).map((childId) => idMap[childId]).filter(Boolean),
+    base: entry.id === rootId
+      ? {
+          ...entry.base,
+          ...(entry.base?.loop ? { loop: { ...entry.base.loop, ...(entry.base.loop.templateRootId ? { templateRootId: idMap[entry.base.loop.templateRootId] ?? entry.base.loop.templateRootId } : {}) } } : {}),
+          x: (entry.base?.x ?? 0) + 20,
+          y: (entry.base?.y ?? 0) + 20,
+        }
+      : {
+          ...entry.base,
+          ...(entry.base?.loop ? { loop: { ...entry.base.loop, ...(entry.base.loop.templateRootId ? { templateRootId: idMap[entry.base.loop.templateRootId] ?? entry.base.loop.templateRootId } : {}) } } : {}),
+        },
+    overrides: { ...(entry.overrides ?? {}) },
+  }));
+}
+
 function getIconForElement(el, bpId) {
   if (el.componentInstance) return UIIcons.component;
   if (el.type === 'form') return Icons.form;
@@ -271,6 +299,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
   const currentPage         = useEditorStore(s => s.pages.find((page) => page.id === s.currentPageId) ?? null);
   const globalVariables     = useEditorStore(s => s.globalVariables);
   const allElements         = useEditorStore(s => s.getAllElements());
+  const setLoopActiveChildIndex = useEditorStore(s => s.setLoopActiveChildIndex);
   const [expanded, setExpanded] = useState(true);
   const pageVariables = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
   const children = useMemo(() => getLayerChildren(el, allElements), [el, allElements]);
@@ -381,6 +410,21 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
             setPrimarySelection(el.id);
             return;
           }
+          // Auto-navigate paged loop ancestors when selecting a descendant
+          let cur = el;
+          while (cur) {
+            const parent = cur.parentId ? allElements.find((c) => c.id === cur.parentId) : null;
+            if (parent && isLoopElementType(parent.type)) {
+              const parentResolved = resolveElement(parent, bpId || 'desktop');
+              const parentLc = normalizeLoopConfig(parentResolved?.loop);
+              if ((parentLc.mode === 'slideshow' || parentLc.mode === 'carousel') && (parentLc.source ?? 'query') === 'manual') {
+                const parentChildren = getLayerChildren(parent, allElements);
+                const idx = parentChildren.findIndex((c) => c.id === cur.id);
+                if (idx >= 0) setLoopActiveChildIndex(parent.id, idx);
+              }
+            }
+            cur = parent;
+          }
           setSelection(nextSelection);
         }}
         onMouseEnter={() => setHoveredId(el.id)}
@@ -470,7 +514,7 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
       {expanded && hasChildren ? (
         <div className={`fb-layer-children${el.componentInstance ? ' fb-layer-children--component' : ''}${isBranchActive ? ' fb-layer-children--active' : ''}`}>
           {visibleChildren.map(child => (
-            <LayerItem
+            <MemoLayerItem
               key={child.id}
               el={child}
               depth={depth + 1}
@@ -486,6 +530,8 @@ function LayerItem({ el, depth, bpId, onReparent, onReorder, onOpenContextMenu, 
   );
 }
 
+const MemoLayerItem = React.memo(LayerItem);
+
 export default function LayersPanel() {
   const allElements     = useEditorStore(s => s.getAllElements());
   const bpDefs          = useEditorStore(s => s.breakpointDefs);
@@ -495,6 +541,7 @@ export default function LayersPanel() {
   const reorderElementInParent = useEditorStore(s => s.reorderElementInParent);
   const pushHistory            = useEditorStore(s => s.pushHistory);
   const deleteElement          = useEditorStore(s => s.deleteElement);
+  const addElements            = useEditorStore(s => s.addElements);
   const createComponentFromElement = useEditorStore(s => s.createComponentFromElement);
   const openComponentEditor    = useEditorStore(s => s.openComponentEditor);
   const selection       = useEditorStore(s => s.selection);
@@ -565,6 +612,49 @@ export default function LayersPanel() {
   };
 
   const hasStoredStyleClipboard = !!readStoredElementStyleClipboard();
+  const hasStoredElementClipboard = !!readStoredElementClipboard();
+  const contextMenuPosition = contextMenu
+    ? {
+        left: Math.max(8, Math.min(contextMenu.clientX, window.innerWidth - 180)),
+        top: Math.max(8, Math.min(contextMenu.clientY, window.innerHeight - 280)),
+      }
+    : null;
+
+  const copyElementSubtreeToClipboard = (elementId, bpId) => {
+    if (!elementId) return false;
+    const rootEl = allElements.find((entry) => entry.id === elementId);
+    if (!rootEl) return false;
+    const subtree = [];
+    const collectSubtree = (id) => {
+      const entry = allElements.find((candidate) => candidate.id === id);
+      if (!entry) return;
+      subtree.push(entry);
+      (entry.children ?? []).forEach(collectSubtree);
+    };
+    collectSubtree(rootEl.id);
+    const payload = { subtree, rootId: rootEl.id, bpId };
+    writeStoredElementClipboard(payload);
+    return true;
+  };
+
+  const cutElementSubtreeToClipboard = (elementId, bpId) => {
+    if (!copyElementSubtreeToClipboard(elementId, bpId)) return false;
+    deleteElement(elementId);
+    pushHistory();
+    return true;
+  };
+
+  const pasteStoredElementSubtree = (bpId) => {
+    const payload = readStoredElementClipboard();
+    if (!payload?.subtree?.length || !payload.rootId) return false;
+    const cloned = cloneLayerClipboardSubtree(payload.subtree, payload.rootId);
+    const root = cloned[0] ?? null;
+    if (!root) return false;
+    addElements(cloned, bpId || payload.bpId || 'desktop');
+    setSelection({ elementId: root.id, bpId: bpId || payload.bpId || 'desktop' });
+    pushHistory();
+    return true;
+  };
 
   const BP_ORDER  = ['desktop', 'tablet', 'mobile'];
 
@@ -585,7 +675,7 @@ export default function LayersPanel() {
       {activeSurface === 'component' ? (
         <>
           {rootEls.map(el => (
-            <LayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
+            <MemoLayerItem key={el.id} el={el} depth={0} bpId="desktop" offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
           ))}
           {rootEls.length === 0 && (
             <div className="fb-layers-empty fb-layers-empty--bp">No elements</div>
@@ -604,6 +694,20 @@ export default function LayersPanel() {
             <div
               className="fb-layer-artboard-header"
               onClick={() => { setArtboardSel(bpId); setSelection(null); }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setArtboardSel(bpId);
+                setSelection(null);
+                setContextMenu({
+                  clientX: event.clientX,
+                  clientY: event.clientY,
+                  elementId: null,
+                  bpId,
+                  defaultName: bp.name,
+                  canCreateComponent: false,
+                });
+              }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleArtboardHeaderDrop}
             >
@@ -612,7 +716,7 @@ export default function LayersPanel() {
               <span className="fb-layer-artboard-dim">{bp.width}×{bp.height}</span>
             </div>
             {visibleEls.map(el => (
-              <LayerItem key={el.id} el={el} depth={0} bpId={bpId} offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
+              <MemoLayerItem key={el.id} el={el} depth={0} bpId={bpId} offCanvas={false} onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
             ))}
             {visibleEls.length === 0 && (
               <div className="fb-layers-empty fb-layers-empty--bp">No elements</div>
@@ -643,7 +747,7 @@ export default function LayersPanel() {
             <span className="fb-layer-artboard-dim">{outsideEls.length}</span>
           </div>
           {outsideEls.map(el => (
-            <LayerItem key={el.id} el={el} depth={0} bpId={outsideBpId} offCanvas onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
+            <MemoLayerItem key={el.id} el={el} depth={0} bpId={outsideBpId} offCanvas onReparent={handleReparent} onReorder={handleReorder} onOpenContextMenu={setContextMenu} />
           ))}
         </div>
       )}
@@ -653,10 +757,43 @@ export default function LayersPanel() {
     {contextMenu && typeof document !== 'undefined' ? createPortal(
       <div
         className="fb-context-menu"
-        style={{ left: contextMenu.clientX, top: contextMenu.clientY }}
+        style={contextMenuPosition}
         onMouseDown={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
       >
+        <button
+          type="button"
+          className="fb-context-menu__item"
+          onClick={() => {
+            if (!copyElementSubtreeToClipboard(contextMenu.elementId, contextMenu.bpId)) return;
+            setContextMenu(null);
+          }}
+          disabled={!contextMenu.elementId}
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          className="fb-context-menu__item"
+          onClick={() => {
+            if (!cutElementSubtreeToClipboard(contextMenu.elementId, contextMenu.bpId)) return;
+            setContextMenu(null);
+          }}
+          disabled={!contextMenu.elementId}
+        >
+          Cut
+        </button>
+        <button
+          type="button"
+          className="fb-context-menu__item"
+          onClick={() => {
+            if (!pasteStoredElementSubtree(contextMenu.bpId)) return;
+            setContextMenu(null);
+          }}
+          disabled={!hasStoredElementClipboard}
+        >
+          Paste
+        </button>
         <button
           type="button"
           className="fb-context-menu__item"

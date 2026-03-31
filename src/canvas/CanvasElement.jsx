@@ -1,5 +1,5 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup, getLoopItemPreviewVariables, loopTemplateRootHasContent } from '../store/editorStore';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, getSelectionElementIds, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup, getLoopItemPreviewVariables, loopTemplateRootHasContent } from '../store/editorStore';
 import { canAssetApplyToElement, parseAssetDragPayload } from '../store/assetStyles';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 import { getEmbedPreview } from '../components/embedUtils';
@@ -12,6 +12,8 @@ import { buildElementRotationTransform, hasElement3DRotation } from '../utils/el
 import { isFormContainerType, isFormFieldType, isFormSubmitButtonType } from '../domain/formModel';
 import { isLoopElementType, normalizeLoopConfig } from '../domain/loopModel';
 import { FORM_STYLE_DEFAULTS, getFormIndicatorOffset, getFormSelectPaddingRight, getFormStateVisualModel, getFormVisualModel } from '../domain/formStyleModel';
+
+const _emptyArr = [];
 
 function rectStateChanged(current, next) {
   if (current === next) return false;
@@ -172,7 +174,7 @@ function isRichTextEditorUiTarget(target) {
   );
 }
 
-export default function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, artboardAlignItems, dragPreview = null, draggingElementId = null, draggingElementBpId = null }) {
+function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId, onStartElementDrag, onStartElementResize, onStartElementRotate, onDropOntoElement, onStartRadiusDrag, onStartPaddingDrag, reorderTarget, artboardLayoutOn, artboardFlexDir, artboardAlignItems, dragPreview = null, draggingElementId = null, draggingElementBpId = null }) {
   const [dropOver, setDropOver] = useState(false);
   const [isHoverAnimationActive, setIsHoverAnimationActive] = useState(false);
   const elementRef = useRef(null);
@@ -182,8 +184,8 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const syncedTextDraftRef = useRef({ text: 'Text', richTextHtml: plainTextToRichTextHtml('Text') });
   const selectAllOnTextEditRef = useRef(false);
 
-  const allElements            = useEditorStore(s => s.getAllElements());
-  const el                     = allElements.find(e => e.id === elementId);
+  const elsById                = useEditorStore(s => s.getElementsById());
+  const el                     = elsById[elementId] ?? null;
   const setSelection           = useEditorStore(s => s.setSelection);
   const toggleSelection        = useEditorStore(s => s.toggleSelection);
   const setPrimarySelection    = useEditorStore(s => s.setPrimarySelection);
@@ -198,26 +200,35 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const pendingDraw            = useEditorStore(s => s.pendingDraw);
   const openComponentEditor    = useEditorStore(s => s.openComponentEditor);
   const activeSurface          = useEditorStore(s => s.activeSurface);
+  const loopActiveIdx          = useEditorStore(s => s.loopActiveChildIndex[elementId] ?? 0);
+  const setLoopActiveChildIndex = useEditorStore(s => s.setLoopActiveChildIndex);
   const setComponentEditorActiveVariant = useEditorStore(s => s.setComponentEditorActiveVariant);
-  const viewport               = useEditorStore(s => s.viewport);
+  const canvasScale            = useEditorStore(s => s.viewport.scale);
   const animationEditor        = useEditorStore(s => s.animationEditor);
   const loopAnimationPreview   = useEditorStore(s => s.loopAnimationPreview);
   const hoverAnimationPreview  = useEditorStore(s => s.hoverAnimationPreview);
-  const currentPage            = useEditorStore((s) => {
-    if (s.activeSurface === 'component' && s.componentEditor?.isOpen) {
-      return s.componentEditor.page ?? null;
-    }
-    return s.pages.find((page) => page.id === s.currentPageId) ?? null;
+  const pageVariables          = useEditorStore((s) => {
+    const page = s.activeSurface === 'component' && s.componentEditor?.isOpen
+      ? (s.componentEditor.page ?? null)
+      : (s.pages.find((p) => p.id === s.currentPageId) ?? null);
+    return page?.variables ?? _emptyArr;
+  });
+  const pageLayout             = useEditorStore((s) => {
+    const page = s.activeSurface === 'component' && s.componentEditor?.isOpen
+      ? (s.componentEditor.page ?? null)
+      : (s.pages.find((p) => p.id === s.currentPageId) ?? null);
+    return resolvePageLayout(page?.layout, bpId);
   });
   const globalVariables        = useEditorStore(s => s.globalVariables);
   const variableSources        = useEditorStore(s => s.variableSources);
-  const pageVariables          = Array.isArray(currentPage?.variables) ? currentPage.variables : [];
-  const pageLayout             = resolvePageLayout(currentPage?.layout, bpId);
-  const children               = el?.children?.length
-    ? el.children.map((childId) => allElements.find((candidate) => candidate.id === childId)).filter(Boolean)
-    : allElements.filter((candidate) => candidate.parentId === elementId);
+  const children               = useMemo(() => {
+    const allElements = useEditorStore.getState().getAllElements();
+    return el?.children?.length
+      ? el.children.map((childId) => elsById[childId]).filter(Boolean)
+      : allElements.filter((candidate) => candidate.parentId === elementId);
+  }, [el?.children, elsById, elementId]);
 
-  const parentEl               = el?.parentId ? allElements.find(e => e.id === el.parentId) : null;
+  const parentEl               = el?.parentId ? (elsById[el.parentId] ?? null) : null;
   let componentInstanceAncestor = null;
   if (activeSurface === 'page' && el?.parentId) {
     let cursor = parentEl;
@@ -226,10 +237,10 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
         componentInstanceAncestor = cursor;
         break;
       }
-      cursor = cursor.parentId ? allElements.find((candidate) => candidate.id === cursor.parentId) : null;
+      cursor = cursor.parentId ? (elsById[cursor.parentId] ?? null) : null;
     }
   }
-  const loopItemVariables      = el ? getLoopItemPreviewVariables(el, allElements, variableSources, pageVariables, globalVariables) : [];
+  const loopItemVariables      = el ? getLoopItemPreviewVariables(el, useEditorStore.getState().getAllElements(), variableSources, pageVariables, globalVariables) : [];
   const rawResolved            = el ? resolveElementWithVariables(el, bpId, pageVariables, globalVariables, loopItemVariables) : null;
   const animationPreviewPatch  = el ? getAnimationEditorPreviewPatch(el, bpId, animationEditor) : null;
   const previewTreatAsFlowPositioned = !!rawResolved && (
@@ -247,22 +258,41 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const rotation               = resolved?.rotation;
   const styles                 = resolved?.styles ?? {};
   const loopConfig             = isLoopElementType(el?.type) ? normalizeLoopConfig(resolved?.loop) : null;
-  const loopTemplateChild      = isLoopElementType(el?.type)
+  const loopMode               = loopConfig?.mode ?? 'loop';
+  const loopSource             = loopConfig?.source ?? 'query';
+  const loopTemplateChild      = isLoopElementType(el?.type) && loopSource === 'query'
     ? (children.find((child) => child?.loopTemplateRootFor === el.id) ?? children[0] ?? null)
     : null;
   const loopTemplateHasContent = loopTemplateRootHasContent(loopTemplateChild);
-  const renderedChildren       = isLoopElementType(el?.type) && loopTemplateChild && !loopTemplateHasContent
+  const renderedChildrenBase   = isLoopElementType(el?.type) && loopTemplateChild && !loopTemplateHasContent
     ? children.filter((child) => child.id !== loopTemplateChild.id)
     : children;
-  const resolvedLoopTemplate   = loopTemplateChild ? resolveElementWithVariables(loopTemplateChild, bpId, pageVariables, globalVariables, getLoopItemPreviewVariables(loopTemplateChild, allElements, variableSources, pageVariables, globalVariables)) : null;
+  const renderedChildren       = (() => {
+    if (isLoopElementType(el?.type) && loopSource === 'manual' && (loopMode === 'slideshow' || loopMode === 'carousel') && renderedChildrenBase.length > 0) {
+      const idx = Math.min(loopActiveIdx, renderedChildrenBase.length - 1);
+      return [renderedChildrenBase[idx]];
+    }
+    return renderedChildrenBase;
+  })();
+  const resolvedLoopTemplate   = loopTemplateChild ? resolveElementWithVariables(loopTemplateChild, bpId, pageVariables, globalVariables, getLoopItemPreviewVariables(loopTemplateChild, useEditorStore.getState().getAllElements(), variableSources, pageVariables, globalVariables)) : null;
   const loopPreviewItemCount   = (() => {
     if (!isLoopElementType(el?.type)) return 0;
+    // For manual source, count is direct children (minus template shell)
+    if (loopSource === 'manual' || loopSource === 'component') {
+      return Math.max(1, children.length);
+    }
     const sourceType = loopConfig?.query?.source ?? 'collection';
     if (sourceType === 'selected') return Math.max(0, (loopConfig?.query?.selectedIds ?? []).length);
     if (sourceType === 'variable') return loopItemVariables.length ? 1 : 0;
     return Math.max(0, loopConfig?.query?.limit ?? 1);
   })();
-  const ghostCountRaw          = isLoopElementType(el?.type) ? Math.max(0, loopPreviewItemCount - 1) : 0;
+  const ghostCountRaw          = (() => {
+    if (!isLoopElementType(el?.type)) return 0;
+    if (loopMode === 'slideshow') return 0; // slideshow shows one item at a time
+    if (loopMode === 'carousel') return Math.max(0, Math.min(loopConfig.carousel?.visibleItems ?? 3, loopPreviewItemCount) - 1);
+    if (loopMode === 'ticker') return Math.min(3, Math.max(0, loopPreviewItemCount - 1));
+    return Math.max(0, loopPreviewItemCount - 1);
+  })();
   const ghostCount             = Math.min(ghostCountRaw, 4);
   const loopGhostPaddingTop    = Math.max(0, parseFloat(styles?.paddingTop) || 0);
   const loopGhostPaddingRight  = Math.max(0, parseFloat(styles?.paddingRight) || 0);
@@ -285,7 +315,6 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const hasGradientFrameStroke = typeof styles?.borderColor === 'string' && styles.borderColor.includes('gradient(');
   const strokeWidth = Math.max(0, parseFloat(styles?.strokeWidth) || 0);
   const strokeColor = getGradientFallbackColor(styles?.strokeColor, el.type === 'icon' ? (styles?.color ?? '#111827') : '#000000');
-  const canvasScale            = viewport?.scale ?? 1;
   const effectiveTextStrokeWidth = strokeWidth > 0 && !isEditingText
     ? (strokeWidth / Math.max(canvasScale, 0.001))
     : 0;
@@ -306,7 +335,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
   const isSurfaceStyledFormField = isFormFieldType(el.type);
 
   // ── Parent flex direction (needed for fill mode) ───────────
-  const parentResolved = parentEl ? resolveElementWithVariables(parentEl, bpId, pageVariables, globalVariables, getLoopItemPreviewVariables(parentEl, allElements, variableSources, pageVariables, globalVariables)) : null;
+  const parentResolved = parentEl ? resolveElementWithVariables(parentEl, bpId, pageVariables, globalVariables, getLoopItemPreviewVariables(parentEl, useEditorStore.getState().getAllElements(), variableSources, pageVariables, globalVariables)) : null;
   const parentIsLoopElement = isLoopElementType(parentEl?.type);
   const isLoopTemplateRoot = !!(el?.loopTemplateRootFor && parentIsLoopElement && el.loopTemplateRootFor === parentEl.id);
   const parentLoopConfig = isLoopTemplateRoot ? normalizeLoopConfig(parentResolved?.loop ?? parentEl?.base?.loop) : null;
@@ -493,6 +522,32 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       return;
     }
     onStartElementDrag && onStartElementDrag(e, bpId, { id });
+  };
+
+  const handleMouseDownCapture = (e) => {
+    if (e.button !== 0 || !onStartElementDrag) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+    if (isEditingText || isRichTextEditorUiTarget(e.target)) return;
+
+    const selectedIds = getSelectionElementIds(selection);
+    if (!selectedIds.length || selectedIds.includes(id)) return;
+
+    let cursor = el;
+    let selectedAncestorId = null;
+    while (cursor?.parentId) {
+      cursor = elsById[cursor.parentId] ?? null;
+      if (cursor && selectedIds.includes(cursor.id)) {
+        selectedAncestorId = cursor.id;
+        break;
+      }
+    }
+
+    if (!selectedAncestorId) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    setPrimarySelection(selectedAncestorId);
+    onStartElementDrag(e, bpId, { id: selectedAncestorId });
   };
 
   const handleDoubleClick = (e) => {
@@ -879,7 +934,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     fontSize: `${styles?.fontSize ?? 42}${styles?.fontSizeUnit ?? 'px'}`,
     lineHeight: `${styles?.lineHeight ?? 1.2}${styles?.lineHeightUnit ?? 'em'}`,
     letterSpacing: `${styles?.letterSpacing ?? 0}${styles?.letterSpacingUnit ?? 'em'}`,
-    color: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+    color: (typeof styles?.color === 'string' && styles.color.includes('gradient(')) || (typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient('))
       ? 'transparent'
       : (styles?.color ?? '#000000'),
     textAlign: styles?.textAlign ?? 'left',
@@ -893,16 +948,18 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
     userSelect: isEditingText ? 'text' : 'none',
     pointerEvents: isEditingText ? 'auto' : 'none',
     cursor: isEditingText ? 'text' : 'inherit',
-    backgroundImage: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
-      ? styles.backgroundColor
-      : undefined,
-    backgroundClip: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+    backgroundImage: (() => {
+      const colorGrad = typeof styles?.color === 'string' && styles.color.includes('gradient(') ? styles.color : '';
+      const bgGrad = typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(') ? styles.backgroundColor : '';
+      return colorGrad || bgGrad || undefined;
+    })(),
+    backgroundClip: (typeof styles?.color === 'string' && styles.color.includes('gradient(')) || (typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient('))
       ? 'text'
       : undefined,
-    WebkitBackgroundClip: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+    WebkitBackgroundClip: (typeof styles?.color === 'string' && styles.color.includes('gradient(')) || (typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient('))
       ? 'text'
       : undefined,
-    WebkitTextFillColor: typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient(')
+    WebkitTextFillColor: (typeof styles?.color === 'string' && styles.color.includes('gradient(')) || (typeof styles?.backgroundColor === 'string' && styles.backgroundColor.includes('gradient('))
       ? 'transparent'
       : undefined,
     outline: 'none',
@@ -1006,7 +1063,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       window.removeEventListener('resize', measure);
       window.removeEventListener('scroll', measure, true);
     };
-  }, [el?.type, isEditingText, viewport?.scale, viewport?.x, viewport?.y, resolved?.width, resolved?.height, x, y]);
+  }, [el?.type, isEditingText, canvasScale, resolved?.width, resolved?.height, x, y]);
 
   if (!el || hidden) return null;
 
@@ -1017,6 +1074,7 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
       style={inlineStyle}
       onMouseEnter={() => setIsHoverAnimationActive(true)}
       onMouseLeave={() => setIsHoverAnimationActive(false)}
+      onMouseDownCapture={handleMouseDownCapture}
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
       onKeyDown={handleKeyDown}
@@ -1931,6 +1989,83 @@ export default function CanvasElement({ elementId, bpId, isSelected, isDropTarge
             );
           })
         : null}
+      {isLoopElementType(el?.type) && loopMode !== 'loop' ? (
+        <div
+          className="fb-loop-mode-badge"
+          style={{
+            position: 'absolute', top: 4, right: 4, zIndex: 10,
+            background: 'rgba(0,0,0,.65)', color: '#fff',
+            fontSize: 10, lineHeight: '16px', padding: '0 6px',
+            borderRadius: 4, pointerEvents: 'none', textTransform: 'capitalize',
+          }}
+          aria-hidden="true"
+        >
+          {loopMode}
+        </div>
+      ) : null}
+      {isLoopElementType(el?.type) && (loopMode === 'slideshow' || loopMode === 'carousel') && (loopConfig?.[loopMode]?.showArrows ?? true) ? (
+        <>
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', zIndex: 9,
+              width: 28, height: 28, borderRadius: '50%', background: 'rgba(0,0,0,.35)', color: '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              pointerEvents: loopSource === 'manual' ? 'auto' : 'none', cursor: loopSource === 'manual' ? 'pointer' : 'default',
+            }}
+            onMouseDown={loopSource === 'manual' ? (e) => {
+              e.stopPropagation();
+              const total = renderedChildrenBase.length;
+              if (total > 0) {
+                const cur = loopActiveIdx;
+                setLoopActiveChildIndex(el.id, (cur - 1 + total) % total);
+              }
+            } : undefined}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </div>
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', zIndex: 9,
+              width: 28, height: 28, borderRadius: '50%', background: 'rgba(0,0,0,.35)', color: '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              pointerEvents: loopSource === 'manual' ? 'auto' : 'none', cursor: loopSource === 'manual' ? 'pointer' : 'default',
+            }}
+            onMouseDown={loopSource === 'manual' ? (e) => {
+              e.stopPropagation();
+              const total = renderedChildrenBase.length;
+              if (total > 0) {
+                const cur = loopActiveIdx;
+                setLoopActiveChildIndex(el.id, (cur + 1) % total);
+              }
+            } : undefined}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </>
+      ) : null}
+      {isLoopElementType(el?.type) && (loopMode === 'slideshow' || loopMode === 'carousel') && (loopConfig?.[loopMode]?.showDots ?? true) ? (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute', bottom: 4, left: 0, right: 0, zIndex: 9,
+            display: 'flex', justifyContent: 'center', gap: 5, pointerEvents: 'none',
+          }}
+        >
+          {Array.from({ length: Math.min(loopPreviewItemCount || 3, 12) }, (_, i) => (
+            <div
+              key={i}
+              style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: i === (loopSource === 'manual' ? loopActiveIdx : 0) ? 'rgba(0,0,0,.7)' : 'rgba(0,0,0,.25)',
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
+
+export default React.memo(CanvasElement);
