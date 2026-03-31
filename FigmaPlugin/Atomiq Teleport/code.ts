@@ -224,6 +224,20 @@ function getSolidPaintColor(paints: Paint[]): string | null {
   return solid ? rgbaToCss(solid.color, solid.opacity ?? 1) : null;
 }
 
+function paintToCss(paint: Paint | undefined, width = 1, height = 1): string | null {
+  if (!paint || paint.visible === false) return null;
+  if (paint.type === 'SOLID') return rgbaToCss(paint.color, paint.opacity ?? 1);
+  if (paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL' || paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND') {
+    return gradientPaintToCss(paint, width, height);
+  }
+  return null;
+}
+
+function getPrimaryPaintCss(paints: Paint[], width = 1, height = 1): string | null {
+  const visiblePaint = paints.find((paint) => paint.type === 'SOLID' || paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL' || paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND');
+  return paintToCss(visiblePaint, width, height);
+}
+
 function getTextCaseCss(textCase: TextCase | null | undefined): 'none' | 'uppercase' | 'lowercase' | 'capitalize' {
   if (textCase === 'UPPER') return 'uppercase';
   if (textCase === 'LOWER') return 'lowercase';
@@ -359,8 +373,8 @@ function getNodeConstraints(node: SceneNode, width: number, height: number): Tel
   const vertical = pickConstraintPins(constraints.vertical, localY, height, Math.max(1, parent.height));
 
   return {
-    horizontal: mapConstraintMode(constraints.horizontal, 'horizontal'),
-    vertical: mapConstraintMode(constraints.vertical, 'vertical'),
+    horizontal: mapConstraintMode(constraints.horizontal, 'horizontal') as TeleportConstraints['horizontal'],
+    vertical: mapConstraintMode(constraints.vertical, 'vertical') as TeleportConstraints['vertical'],
     top: vertical.start,
     bottom: vertical.end,
     left: horizontal.start,
@@ -719,7 +733,11 @@ async function collectTeleportStyles(selection: readonly SceneNode[]): Promise<T
       if (!seen.has(key) && style?.type === 'TEXT') {
         seen.add(key);
         const fills = getVisiblePaints(node);
-        const textColor = getSolidPaintColor(fills) ?? '#111111';
+        const textColor = getPrimaryPaintCss(
+          fills,
+          round('width' in node ? node.width : 1, 1),
+          round('height' in node ? node.height : 1, 1),
+        ) ?? '#111111';
         textStyles.push({
           id: `figma-text-${styledNode.textStyleId}`,
           name: style.name || node.name || 'Figma Text Style',
@@ -943,7 +961,12 @@ function getStyledSegments(node: TextNode): TeleportTextSegment[] {
 function buildRichTextHtml(node: TextNode, segments: TeleportTextSegment[]): string {
   if (!segments.length) return textContentToHtml(node.characters || '');
   return segments.map((segment) => {
-    const color = getSolidPaintColor(Array.isArray(segment.fills) ? segment.fills.filter((paint) => paint?.visible !== false) : []) ?? null;
+    const fillCss = getPrimaryPaintCss(
+      Array.isArray(segment.fills) ? segment.fills.filter((paint) => paint?.visible !== false) : [],
+      round(node.width, 1),
+      round(node.height, 1),
+    );
+    const gradientText = !!fillCss && /gradient\(/i.test(fillCss);
     const lineHeight = getLineHeightCss(segment.lineHeight);
     const letterSpacing = getLetterSpacingCss(segment.letterSpacing);
     const style = joinCssDeclarations([
@@ -951,7 +974,11 @@ function buildRichTextHtml(node: TextNode, segments: TeleportTextSegment[]): str
       Number.isFinite(segment.fontWeight) ? `font-weight:${segment.fontWeight}` : null,
       `${segment.fontStyle || ''}`.toLowerCase().includes('italic') ? 'font-style:italic' : null,
       Number.isFinite(segment.fontSize) ? `font-size:${round(segment.fontSize, 16)}px` : null,
-      color ? `color:${color}` : null,
+      fillCss ? `color:${gradientText ? 'transparent' : fillCss}` : null,
+      gradientText ? `background-image:${fillCss}` : null,
+      gradientText ? 'background-clip:text' : null,
+      gradientText ? '-webkit-background-clip:text' : null,
+      gradientText ? '-webkit-text-fill-color:transparent' : null,
       getTextDecorationCss(segment.textDecoration) !== 'none' ? `text-decoration:${getTextDecorationCss(segment.textDecoration)}` : null,
       getTextCaseCss(segment.textCase) !== 'none' ? `text-transform:${getTextCaseCss(segment.textCase)}` : null,
       letterSpacing.value !== 0 ? `letter-spacing:${letterSpacing.value}${letterSpacing.unit}` : null,
@@ -1016,7 +1043,11 @@ async function convertNode(node: SceneNode, rootOffset: { x: number; y: number }
     const segments = getStyledSegments(node);
     const primarySegment = segments.find((segment) => `${segment.characters || ''}`.length > 0) ?? segments[0] ?? null;
     const primaryColor = primarySegment
-      ? (getSolidPaintColor(Array.isArray(primarySegment.fills) ? primarySegment.fills.filter((paint) => paint?.visible !== false) : []) ?? null)
+      ? (getPrimaryPaintCss(
+        Array.isArray(primarySegment.fills) ? primarySegment.fills.filter((paint) => paint?.visible !== false) : [],
+        width,
+        height,
+      ) ?? null)
       : null;
     const primaryLineHeight = primarySegment ? getLineHeightCss(primarySegment.lineHeight) : { value: 1.2, unit: 'em' as const };
     const primaryLetterSpacing = primarySegment ? getLetterSpacingCss(primarySegment.letterSpacing) : { value: 0, unit: 'px' as const };
@@ -1028,7 +1059,7 @@ async function convertNode(node: SceneNode, rootOffset: { x: number; y: number }
       ...getNodeBorderRadiusData(node, width, height),
       text: node.characters || '',
       richTextHtml,
-      color: primaryColor ?? getSolidPaintColor(fills) ?? '#111111',
+      color: primaryColor ?? getPrimaryPaintCss(fills, width, height) ?? '#111111',
       fontFamily: primarySegment?.fontName?.family || getTextMetrics(node).fontFamily,
       fontWeight: Number.isFinite(primarySegment?.fontWeight) ? primarySegment.fontWeight : getTextMetrics(node).fontWeight,
       fontStyle: `${primarySegment?.fontStyle || ''}`.toLowerCase().includes('italic') ? 'italic' : getTextMetrics(node).fontStyle,

@@ -44,6 +44,32 @@
     });
   }
 
+  function cloneLoopItems(items) {
+    return items.map(function (item) {
+      return item.cloneNode(true);
+    });
+  }
+
+  function onTrackTransitionComplete(track, duration, callback) {
+    var done = false;
+
+    function finish() {
+      if (done) return;
+      done = true;
+      track.removeEventListener('transitionend', onEnd);
+      callback();
+    }
+
+    function onEnd(event) {
+      if (event.target !== track) return;
+      if (event.propertyName && event.propertyName !== 'transform') return;
+      finish();
+    }
+
+    track.addEventListener('transitionend', onEnd);
+    window.setTimeout(finish, Math.max(0, duration) + 60);
+  }
+
   /* ── Drag / swipe helper ────────────────────────────────────── */
   function bindDrag(track, opts) {
     var startX = 0;
@@ -110,23 +136,39 @@
     var interval = cfg.interval || 4000;
     var paused = false;
     var timer = null;
+    var visualIndex = 0;
+    var isAnimating = false;
+    var slideItems = items;
+    var hasLoopClones = transition === 'slide' && loopEnabled && items.length > 1;
 
     track.style.display = 'flex';
     track.style.flexWrap = 'nowrap';
     track.style.gap = '0px';
+    track.style.willChange = 'transform';
+
+    if (hasLoopClones) {
+      track.insertBefore(items[items.length - 1].cloneNode(true), track.firstChild);
+      track.appendChild(items[0].cloneNode(true));
+      slideItems = Array.from(track.querySelectorAll(':scope > .fb-loop-runtime-item'));
+      bindItemNavigation(track);
+      visualIndex = 1;
+    }
 
     if (transition === 'slide') {
       track.style.transition = 'transform ' + duration + 'ms ease';
     }
 
-    items.forEach(function (item, i) {
+    function getSlideWidth() {
+      return container.clientWidth || container.offsetWidth || 0;
+    }
+
+    slideItems.forEach(function (item, i) {
       item.style.flex = '0 0 100%';
+      item.style.flexShrink = '0';
       item.style.minWidth = '100%';
       item.style.width = '100%';
       item.style.boxSizing = 'border-box';
-      item.style.display = 'flex';
-      item.style.justifyContent = 'center';
-      item.style.alignItems = 'center';
+      item.style.display = 'block';
       if (transition === 'fade') {
         item.style.position = i === 0 ? 'relative' : 'absolute';
         item.style.top = '0';
@@ -142,27 +184,71 @@
       track.style.position = 'relative';
     }
 
+    function setSlidePosition(index, animated) {
+      if (transition !== 'slide') return;
+      track.style.transition = animated ? ('transform ' + duration + 'ms ease') : 'none';
+      track.style.transform = 'translateX(-' + (index * getSlideWidth()) + 'px)';
+    }
+
     function goTo(index) {
-      if (index === current) return;
+      if (transition === 'slide' && isAnimating) return;
+      if (index === current && (!hasLoopClones || visualIndex === current + 1)) return;
       var prev = current;
-      current = index;
 
       if (transition === 'fade') {
+        current = index;
         items[prev].style.opacity = '0';
         items[prev].style.zIndex = '0';
         items[prev].style.position = 'absolute';
         items[current].style.opacity = '1';
         items[current].style.zIndex = '1';
         items[current].style.position = 'relative';
+        updateDots(container, current);
       } else if (transition === 'slide') {
-        track.style.transform = 'translateX(-' + (current * 100) + '%)';
+        if (hasLoopClones) {
+          if (index >= items.length) {
+            isAnimating = true;
+            current = 0;
+            visualIndex = items.length + 1;
+            updateDots(container, current);
+            setSlidePosition(visualIndex, true);
+            onTrackTransitionComplete(track, duration, function () {
+              isAnimating = false;
+              visualIndex = 1;
+              setSlidePosition(visualIndex, false);
+            });
+            return;
+          }
+          if (index < 0) {
+            isAnimating = true;
+            current = items.length - 1;
+            visualIndex = 0;
+            updateDots(container, current);
+            setSlidePosition(visualIndex, true);
+            onTrackTransitionComplete(track, duration, function () {
+              isAnimating = false;
+              visualIndex = items.length;
+              setSlidePosition(visualIndex, false);
+            });
+            return;
+          }
+          current = index;
+          visualIndex = current + 1;
+          updateDots(container, current);
+          setSlidePosition(visualIndex, true);
+          return;
+        }
+
+        current = Math.max(0, Math.min(index, items.length - 1));
+        setSlidePosition(current, true);
+        updateDots(container, current);
       } else {
+        current = index;
         items.forEach(function (it, idx) {
           it.style.display = idx === current ? 'flex' : 'none';
         });
+        updateDots(container, current);
       }
-
-      updateDots(container, current);
     }
 
     function next() {
@@ -195,23 +281,34 @@
     if (transition === 'slide') {
       bindDrag(track, {
         onStart: function () {
+          if (isAnimating) return;
           stopAutoplay();
           track.style.transition = 'none';
         },
         onMove: function (dx) {
-          var base = current * 100;
-          var pct = (dx / container.clientWidth) * 100;
-          track.style.transform = 'translateX(' + (-base + pct) + '%)';
+          if (isAnimating) return;
+          var base = (hasLoopClones ? visualIndex : current) * getSlideWidth();
+          track.style.transform = 'translateX(' + (-base + dx) + 'px)';
         },
         onEnd: function (dx) {
+          if (isAnimating) return;
           track.style.transition = 'transform ' + duration + 'ms ease';
           if (dx < -40) next();
           else if (dx > 40) prev();
-          else track.style.transform = 'translateX(-' + (current * 100) + '%)';
+          else setSlidePosition(hasLoopClones ? visualIndex : current, true);
           startAutoplay();
         },
       });
     }
+
+    if (transition === 'slide' && hasLoopClones) {
+      setSlidePosition(visualIndex, false);
+    }
+
+    window.addEventListener('resize', function () {
+      if (transition !== 'slide') return;
+      setSlidePosition(hasLoopClones ? visualIndex : current, false);
+    });
 
     if (cfg.pauseOnHover !== false) {
       container.addEventListener('mouseenter', function () { paused = true; stopAutoplay(); });
@@ -302,10 +399,26 @@
     var timer = null;
     var current = 0;
     var gap = typeof cfg.gap === 'number' ? cfg.gap : 0;
+    var carouselItems = items;
+    var visualIndex = 0;
+    var isAnimating = false;
+    var hasLoopClones = loopEnabled && items.length > 1;
 
     track.style.display = 'flex';
     track.style.flexWrap = 'nowrap';
     track.style.gap = gap + 'px';
+
+    if (hasLoopClones) {
+      cloneLoopItems(items).reverse().forEach(function (clone) {
+        track.insertBefore(clone, track.firstChild);
+      });
+      cloneLoopItems(items).forEach(function (clone) {
+        track.appendChild(clone);
+      });
+      carouselItems = Array.from(track.querySelectorAll(':scope > .fb-loop-runtime-item'));
+      bindItemNavigation(track);
+      visualIndex = items.length;
+    }
 
     function getContainerWidth() {
       return container.clientWidth || container.offsetWidth || 0;
@@ -320,11 +433,12 @@
     function applyItemWidths() {
       var w = getItemWidth();
       if (w <= 0) return;
-      items.forEach(function (item) {
+      carouselItems.forEach(function (item) {
         item.style.flex = '0 0 ' + w + 'px';
         item.style.minWidth = w + 'px';
         item.style.width = w + 'px';
         item.style.boxSizing = 'border-box';
+        item.style.display = 'block';
         item.style.overflow = 'hidden';
       });
     }
@@ -334,26 +448,55 @@
       return index * (w + gap);
     }
 
-    function applyPosition(animated) {
-      if (animated) {
-        track.style.transition = 'transform ' + duration + 'ms ease';
-      } else {
-        track.style.transition = 'none';
-      }
-      track.style.transform = 'translateX(-' + getOffset(current) + 'px)';
+    function applyPosition(index, animated) {
+      track.style.transition = animated ? ('transform ' + duration + 'ms ease') : 'none';
+      track.style.transform = 'translateX(-' + getOffset(index) + 'px)';
     }
 
     function goTo(index, animated) {
       var maxIndex = Math.max(0, items.length - visible);
-      if (!loopEnabled) {
+      if (!hasLoopClones) {
         index = Math.max(0, Math.min(index, maxIndex));
-      } else {
-        if (index > maxIndex) index = 0;
-        if (index < 0) index = maxIndex;
+        current = index;
+        applyPosition(current, animated !== false);
+        updateDots(container, current);
+        return;
       }
+
+      if (isAnimating) return;
+
+      if (index >= items.length) {
+        isAnimating = true;
+        current = index % items.length;
+        visualIndex = items.length + index;
+        updateDots(container, current);
+        applyPosition(visualIndex, animated !== false);
+        onTrackTransitionComplete(track, duration, function () {
+          isAnimating = false;
+          visualIndex = items.length + current;
+          applyPosition(visualIndex, false);
+        });
+        return;
+      }
+
+      if (index < 0) {
+        isAnimating = true;
+        current = (index % items.length + items.length) % items.length;
+        visualIndex = items.length + index;
+        updateDots(container, current);
+        applyPosition(visualIndex, animated !== false);
+        onTrackTransitionComplete(track, duration, function () {
+          isAnimating = false;
+          visualIndex = items.length + current;
+          applyPosition(visualIndex, false);
+        });
+        return;
+      }
+
       current = index;
-      applyPosition(animated !== false);
+      visualIndex = items.length + current;
       updateDots(container, current);
+      applyPosition(visualIndex, animated !== false);
     }
 
     function next() { goTo(current + scrollN); }
@@ -373,11 +516,11 @@
     // Defer initial layout to ensure container has computed width
     requestAnimationFrame(function () {
       applyItemWidths();
-      applyPosition(false);
+      applyPosition(hasLoopClones ? visualIndex : current, false);
 
       window.addEventListener('resize', function () {
         applyItemWidths();
-        applyPosition(false);
+        applyPosition(hasLoopClones ? (items.length + current) : current, false);
       });
 
       bindArrows(container, prev, next);
@@ -386,20 +529,23 @@
       // Drag / swipe
       bindDrag(track, {
         onStart: function () {
+          if (isAnimating) return;
           stopAutoplay();
           track.style.transition = 'none';
         },
         onMove: function (dx) {
-          var base = getOffset(current);
+          if (isAnimating) return;
+          var base = getOffset(hasLoopClones ? visualIndex : current);
           track.style.transform = 'translateX(' + (-base + dx) + 'px)';
         },
         onEnd: function (dx) {
+          if (isAnimating) return;
           var w = getItemWidth();
           var threshold = w * 0.2;
           track.style.transition = 'transform ' + duration + 'ms ease';
           if (dx < -threshold) next();
           else if (dx > threshold) prev();
-          else applyPosition(true);
+          else applyPosition(hasLoopClones ? visualIndex : current, true);
           startAutoplay();
         },
       });

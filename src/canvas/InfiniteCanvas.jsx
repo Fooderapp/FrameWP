@@ -432,6 +432,111 @@ function getTeleportFilterStyles(node) {
   return nextStyles;
 }
 
+function clampTeleportUnit(value, fallback = 0) {
+  const nextValue = typeof value === 'number' ? value : parseFloat(value);
+  if (!Number.isFinite(nextValue)) return fallback;
+  return Math.max(0, Math.min(1, nextValue));
+}
+
+function teleportColorToCss(value, fallback = '#111111') {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (!value || typeof value !== 'object') return fallback;
+
+  const rawR = value.r ?? value.red ?? value.R ?? null;
+  const rawG = value.g ?? value.green ?? value.G ?? null;
+  const rawB = value.b ?? value.blue ?? value.B ?? null;
+  const rawA = value.a ?? value.alpha ?? value.opacity ?? 1;
+  if (![rawR, rawG, rawB].every((entry) => entry != null && Number.isFinite(Number(entry)))) return fallback;
+
+  const r = Math.max(0, Math.min(255, Number(rawR) <= 1 ? Math.round(Number(rawR) * 255) : Math.round(Number(rawR))));
+  const g = Math.max(0, Math.min(255, Number(rawG) <= 1 ? Math.round(Number(rawG) * 255) : Math.round(Number(rawG))));
+  const b = Math.max(0, Math.min(255, Number(rawB) <= 1 ? Math.round(Number(rawB) * 255) : Math.round(Number(rawB))));
+  const a = clampTeleportUnit(rawA, 1);
+
+  if (a >= 0.999) {
+    return `rgb(${r}, ${g}, ${b})`;
+  }
+  return `rgba(${r}, ${g}, ${b}, ${Math.round(a * 1000) / 1000})`;
+}
+
+function getTeleportGradientType(type) {
+  const normalized = typeof type === 'string' ? type.trim().toUpperCase() : '';
+  if (normalized === 'GRADIENT_LINEAR' || normalized === 'LINEAR_GRADIENT' || normalized === 'LINEAR') return 'linear';
+  if (normalized === 'GRADIENT_RADIAL' || normalized === 'RADIAL_GRADIENT' || normalized === 'RADIAL') return 'radial';
+  if (normalized === 'GRADIENT_ANGULAR' || normalized === 'GRADIENT_CONIC' || normalized === 'CONIC_GRADIENT' || normalized === 'CONIC') return 'conic';
+  return '';
+}
+
+function teleportPaintToCss(value, fallback = '#111111') {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    const firstVisiblePaint = value.find((entry) => entry && entry.visible !== false);
+    return teleportPaintToCss(firstVisiblePaint, fallback);
+  }
+  if (!value || typeof value !== 'object') return fallback;
+  if (typeof value.css === 'string' && value.css.trim()) return value.css.trim();
+
+  const gradientType = getTeleportGradientType(value.type ?? value.paintType ?? value.kind);
+  if (!gradientType) {
+    return teleportColorToCss(value.color ?? value, fallback);
+  }
+
+  const rawStops = Array.isArray(value.gradientStops)
+    ? value.gradientStops
+    : Array.isArray(value.stops)
+      ? value.stops
+      : [];
+  const stops = rawStops
+    .map((stop, index) => {
+      const pos = stop?.position ?? stop?.pos ?? stop?.offset ?? ((rawStops.length <= 1 ? 0 : index / (rawStops.length - 1)) * 100);
+      return {
+        id: stop?.id ?? index,
+        color: teleportColorToCss(stop?.color ?? stop?.value ?? stop, fallback),
+        pos: Math.round(clampTeleportNumber(Number(pos) <= 1 ? Number(pos) * 100 : Number(pos), index * 100, 0, 100)),
+      };
+    })
+    .filter((stop) => typeof stop.color === 'string' && stop.color);
+
+  if (stops.length < 2) {
+    return teleportColorToCss(value.color ?? value, fallback);
+  }
+
+  if (gradientType === 'linear') {
+    const handles = Array.isArray(value.gradientHandlePositions) ? value.gradientHandlePositions : (Array.isArray(value.handles) ? value.handles : []);
+    const start = handles[0] ?? null;
+    const end = handles[1] ?? null;
+    const angle = start && end
+      ? cssAngleFromVector((end.x ?? 1) - (start.x ?? 0), (end.y ?? 0) - (start.y ?? 0))
+      : clampTeleportNumber(value.angle, 135);
+    return buildGradient({ type: 'linear', angle, stops });
+  }
+
+  if (gradientType === 'radial') {
+    const handles = Array.isArray(value.gradientHandlePositions) ? value.gradientHandlePositions : (Array.isArray(value.handles) ? value.handles : []);
+    const center = handles[0] ?? value.center ?? { x: 0.5, y: 0.5 };
+    const radiusHandle = handles[1] ?? null;
+    const centerX = clampTeleportNumber((center.x ?? 0.5) * 100, 50, 0, 100);
+    const centerY = clampTeleportNumber((center.y ?? 0.5) * 100, 50, 0, 100);
+    const radius = radiusHandle
+      ? clampTeleportNumber(Math.hypot((radiusHandle.x ?? 0.5) - (center.x ?? 0.5), (radiusHandle.y ?? 0.5) - (center.y ?? 0.5)) * 100, 50, 1, 150)
+      : clampTeleportNumber(value.radius, 50, 1, 150);
+    return buildGradient({ type: 'radial', centerX, centerY, radius, stops });
+  }
+
+  return buildGradient({ type: 'conic', angle: clampTeleportNumber(value.angle, 0), stops });
+}
+
+function resolveTeleportTextFill(node) {
+  return teleportPaintToCss(
+    node?.color
+      ?? node?.fill
+      ?? node?.fills
+      ?? node?.textFill
+      ?? node?.textFills,
+    '#111111',
+  );
+}
+
 function buildImportedFrame(node, parentIsLayout = false) {
   const label = typeof node?.name === 'string' && node.name.trim() ? node.name.trim() : 'Frame';
   const element = createFrame(
@@ -490,6 +595,7 @@ function buildImportedFrame(node, parentIsLayout = false) {
 function buildImportedText(node, parentIsLayout = false) {
   const label = typeof node?.name === 'string' && node.name.trim() ? node.name.trim() : 'Text';
   const content = typeof node?.text === 'string' ? node.text : label;
+  const textFill = resolveTeleportTextFill(node);
   const richTextHtml = typeof node?.richTextHtml === 'string' && node.richTextHtml.trim()
     ? (sanitizeRichTextHtml(node.richTextHtml) || plainTextToRichTextHtml(content || 'Text'))
     : plainTextToRichTextHtml(content || 'Text');
@@ -518,7 +624,7 @@ function buildImportedText(node, parentIsLayout = false) {
       ...element.base.styles,
       alignSelf: getTeleportAlignSelf(node),
       backgroundColor: 'transparent',
-      color: typeof node?.color === 'string' ? node.color : '#111111',
+      color: textFill,
       fontFamily: typeof node?.fontFamily === 'string' && node.fontFamily.trim() ? node.fontFamily : 'Inter',
       fontWeight: Math.max(100, clampTeleportNumber(node?.fontWeight, 400, 100, 900)),
       fontStyle: node?.fontStyle === 'italic' ? 'italic' : 'normal',
