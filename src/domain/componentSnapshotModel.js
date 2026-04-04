@@ -1,5 +1,6 @@
 import { makeId } from '../utils/id.js';
 import { getComponentVariantStateLabel, getPrimaryComponentVariant, isDefaultComponentVariant, normalizeComponentInteraction } from './componentModel.js';
+import { normalizeComponentTransition } from './componentTransition.js';
 
 const COMPONENT_ROOT_LAYOUT_KEYS = [
   'width', 'height', 'widthMode', 'heightMode', 'widthPct', 'heightPct', 'widthFr', 'heightFr',
@@ -7,6 +8,7 @@ const COMPONENT_ROOT_LAYOUT_KEYS = [
 ];
 
 function deepClone(value) {
+  if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
 }
 
@@ -379,7 +381,15 @@ export function getLiveComponentEditorVariants(componentEditor) {
 
   return presentVariants.map((variant) => {
     if (variant.id === primaryVariant.id) {
-      return { ...variant, name: 'Primary', mode: 'default', parentVariantId: null, snapshot: primarySnapshot, interaction: normalizeComponentInteraction(variant.interaction) };
+      return {
+        ...variant,
+        name: 'Primary',
+        mode: 'default',
+        parentVariantId: null,
+        snapshot: primarySnapshot,
+        interaction: normalizeComponentInteraction(variant.interaction),
+        childTransition: normalizeComponentTransition(variant.childTransition),
+      };
     }
     const fullVariantSnapshot = extractEditorVariantSnapshot(pageElements, variant.id);
     fullSnapshotsById.set(variant.id, fullVariantSnapshot);
@@ -390,6 +400,7 @@ export function getLiveComponentEditorVariants(componentEditor) {
       ...variant,
       name: isDefaultComponentVariant(variant) ? variant.name : getComponentVariantStateLabel(variant.mode),
       interaction: isDefaultComponentVariant(variant) ? normalizeComponentInteraction(variant.interaction) : null,
+      childTransition: isDefaultComponentVariant(variant) ? normalizeComponentTransition(variant.childTransition) : null,
       snapshot: extractVariantOverrides(parentSnapshot, fullVariantSnapshot),
     };
   });

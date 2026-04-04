@@ -9,6 +9,8 @@ import { getResolvedRichTextHtml } from './richText';
 import { getResolvedVideoSource, getVideoEmbedLayout } from './videoUtils';
 import { buildElementRotationTransform, hasElement3DRotation } from '../utils/elementTransform';
 
+
+
 gsap.registerPlugin(Flip);
 
 function isObject(value) {
@@ -644,16 +646,8 @@ function getNodeAnimationChanges(currentNode, nextNode) {
 
 function prepareAnimatedPairs(pairs) {
   const pairEntries = pairs.map((pair) => ({ pair, changes: getNodeAnimationChanges(pair.currentNode, pair.nextNode) }));
-  const byId = new Map(pairEntries.map((entry) => [entry.pair.nextNode.dataset.fbNodeId, entry]));
   return pairEntries.filter((entry) => {
-    if (!entry.changes.geometryChanged && !entry.changes.styleChanged && !entry.changes.needsCrossfade) return false;
-    let ancestor = entry.pair.nextNode.parentElement?.closest('[data-fb-node-id]');
-    while (ancestor) {
-      const ancestorEntry = byId.get(ancestor.dataset.fbNodeId);
-      if (ancestorEntry?.changes?.geometryChanged || ancestorEntry?.changes?.needsCrossfade) return false;
-      ancestor = ancestor.parentElement?.closest('[data-fb-node-id]');
-    }
-    return true;
+    return entry.changes.geometryChanged || entry.changes.styleChanged || entry.changes.needsCrossfade;
   });
 }
 
@@ -673,7 +667,7 @@ function collectTopLevelUnmatchedNodes(variantNode, matchedIds) {
   });
 }
 
-function PreviewNode({ element, indexById, bpId = 'desktop' }) {
+function PreviewNode({ element, indexById, bpId = 'desktop', onTriggerEvent = null }) {
   const nodeRef = useRef(null);
   const [isHoverAnimationActive, setIsHoverAnimationActive] = useState(false);
   const loopAnimationPreview = useEditorStore((state) => state.loopAnimationPreview);
@@ -924,8 +918,20 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
       data-fb-node-id={element.id}
       data-flip-id={element.id}
       style={style}
-      onMouseEnter={() => setIsHoverAnimationActive(true)}
-      onMouseLeave={() => setIsHoverAnimationActive(false)}
+      onClick={(event) => {
+        if (onTriggerEvent?.(element.id, 'click')) event.stopPropagation();
+      }}
+      onPointerDown={(event) => {
+        if (onTriggerEvent?.(element.id, 'click-start')) event.stopPropagation();
+      }}
+      onMouseEnter={(event) => {
+        setIsHoverAnimationActive(true);
+        if (onTriggerEvent?.(element.id, 'mouse-enter')) event.stopPropagation();
+      }}
+      onMouseLeave={(event) => {
+        setIsHoverAnimationActive(false);
+        if (onTriggerEvent?.(element.id, 'mouse-leave')) event.stopPropagation();
+      }}
     >
       {hasGradientFrameStroke && styles?.borderWidth > 0 ? (
         <div
@@ -1059,7 +1065,7 @@ function PreviewNode({ element, indexById, bpId = 'desktop' }) {
       ) : null}
       {(element.children ?? []).map((childId) => {
         const child = indexById.get(childId);
-        return child ? <PreviewNode key={child.id} element={child} indexById={indexById} bpId={bpId} /> : null;
+        return child ? <PreviewNode key={child.id} element={child} indexById={indexById} bpId={bpId} onTriggerEvent={onTriggerEvent} /> : null;
       })}
     </div>
   );
@@ -1074,14 +1080,15 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
   }, [defaultVariants, initialVariantId, variants]);
   const [activeVariantId, setActiveVariantId] = useState(initialBaseVariantId);
   const stageRef = useRef(null);
-  const timerRef = useRef(null);
+  const timersRef = useRef([]);
 
   useEffect(() => {
     setActiveVariantId(initialBaseVariantId);
   }, [initialBaseVariantId]);
 
   useEffect(() => () => {
-    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    timersRef.current = [];
   }, []);
 
   const variantStates = useMemo(() => (variants ?? []).map((variant) => {
@@ -1089,6 +1096,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
     const root = getSnapshotRoot(snapshot);
     return {
       variant,
+      snapshot,
       root,
       indexById: new Map(snapshot.map((element) => [element.id, element])),
     };
@@ -1102,6 +1110,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
   const activeVariant = activeVariantId ? (variantStateMap.get(activeVariantId)?.variant ?? null) : null;
   const activeBaseVariantId = useMemo(() => getBaseVariantId(variants ?? [], activeVariantId), [activeVariantId, variants]);
   const activeBaseVariant = activeBaseVariantId ? (variantStateMap.get(activeBaseVariantId)?.variant ?? null) : null;
+  const activeBaseVariantState = activeBaseVariantId ? (variantStateMap.get(activeBaseVariantId) ?? null) : null;
   const stageSize = useMemo(() => variantStates.reduce((acc, entry) => {
     const resolvedRoot = resolveElement(entry.root, 'desktop');
     return {
@@ -1148,56 +1157,84 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
       setActiveVariantId(targetVariantId);
     };
 
-    const currentFlipTargets = current.querySelectorAll('[data-flip-id]');
-    const state = Flip.getState(currentFlipTargets, { props: FLIP_PROPS, simple: false });
     const totalDuration = getTransitionDurationMs(transition) / 1000;
     const ease = transition.type === 'realistic'
       ? (transition.springMode === 'physics'
         ? `elastic.out(1, ${Math.max(0.2, transition.mass * 0.45)})`
         : `back.out(${1 + transition.bounce * 1.2})`)
       : getTransitionEasing(transition);
+
+    // --- GSAP Flip auto-animate (Figma/Framer style) ---
+
+    // 1. Both variants visible so we can diff elements
+    next.classList.add('is-present');
+    next.style.visibility = 'visible';
+    next.style.pointerEvents = 'none';
+    next.style.opacity = '0';
+
+    // 2. Diff: find which elements actually changed between variants
     const sharedPairs = collectSharedElementPairs(stage, current, next);
     const animatedPairs = prepareAnimatedPairs(sharedPairs);
     const matchedIds = new Set(sharedPairs.map((entry) => entry.nextNode.dataset.fbNodeId).filter(Boolean));
-    const shouldCrossfadeVariants = animatedPairs.some((entry) => entry.changes.needsCrossfade)
-      || collectTopLevelUnmatchedNodes(current, matchedIds).length > 0
-      || collectTopLevelUnmatchedNodes(next, matchedIds).length > 0;
 
-    current.style.opacity = '1';
+    // 3. Build set of node IDs that actually changed – only these plus unmatched go through Flip
+    const changedNodeIds = new Set(animatedPairs.map((entry) => entry.pair.nextNode.dataset.fbNodeId).filter(Boolean));
+    const flipIdRelevant = (el) => {
+      const flipId = el.dataset.flipId ?? '';
+      const baseId = flipId.includes('__') ? flipId.slice(0, flipId.indexOf('__')) : flipId;
+      return changedNodeIds.has(baseId) || !matchedIds.has(baseId);
+    };
+
+    // 4. Capture Flip state from changed + unmatched elements
+    const currentFlipTargets = Array.from(current.querySelectorAll('[data-flip-id]')).filter(flipIdRelevant);
+    const state = currentFlipTargets.length ? Flip.getState(currentFlipTargets, { props: FLIP_PROPS, simple: false }) : null;
+    const nextFlipTargets = Array.from(next.querySelectorAll('[data-flip-id]')).filter(flipIdRelevant);
+    const hasFlipTargets = state && nextFlipTargets.length > 0;
+
+    // 5. Swap active state
     current.classList.remove('is-active');
     current.classList.add('is-present');
-    next.classList.add('is-present');
     next.classList.add('is-active');
-    next.style.visibility = 'visible';
-    next.style.pointerEvents = 'none';
     current.style.pointerEvents = 'none';
-    next.style.opacity = shouldCrossfadeVariants ? '0' : '1';
 
-    animateVariantWrappers(current, next, transition, { crossfadeVariants: shouldCrossfadeVariants });
+    if (hasFlipTargets) {
+      // Flip handles per-element morphing – always hide current, Flip onEnter/onLeave handles unmatched
+      current.style.opacity = '0';
+      next.style.opacity = '1';
 
-    Flip.from(state, {
-      targets: [...current.querySelectorAll('[data-flip-id]'), ...next.querySelectorAll('[data-flip-id]')],
-      absolute: true,
-      nested: true,
-      scale: true,
-      simple: false,
-      props: FLIP_PROPS,
-      duration: totalDuration,
-      ease,
-      onEnter: (elements) => gsap.fromTo(elements, { opacity: 0 }, {
-        opacity: 1,
+      Flip.from(state, {
+        targets: nextFlipTargets,
+        nested: true,
+        scale: true,
+        simple: false,
+        props: FLIP_PROPS,
         duration: totalDuration,
         ease,
-        clearProps: 'opacity',
-      }),
-      onLeave: (elements) => gsap.to(elements, {
-        opacity: 0,
-        duration: totalDuration,
-        ease,
-        clearProps: 'opacity',
-      }),
-      onComplete: finish,
-    });
+        onEnter: (elements) => gsap.fromTo(elements, { opacity: 0 }, {
+          opacity: 1,
+          duration: totalDuration * 0.5,
+          ease,
+          clearProps: 'opacity',
+        }),
+        onLeave: (elements) => gsap.to(elements, {
+          opacity: 0,
+          duration: totalDuration * 0.5,
+          ease,
+          clearProps: 'opacity',
+        }),
+        onComplete: finish,
+      });
+    } else {
+      // No Flip-worthy changes – use wrapper animation as fallback
+      current.style.opacity = '1';
+      next.style.opacity = '0';
+      const wrapperTimeline = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
+      if (wrapperTimeline) {
+        wrapperTimeline.eventCallback('onComplete', finish);
+      } else {
+        finish();
+      }
+    }
   }, [activeVariantId]);
 
   const applyVisualState = useCallback((mode) => {
@@ -1210,27 +1247,54 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
     switchVariant(targetVariantId, { transition: getStateTransition() }, { transient: true });
   }, [activeVariantId, switchVariant, variants]);
 
+  const clearTimers = useCallback(() => {
+    timersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    timersRef.current = [];
+  }, []);
+
+  const queueInteraction = useCallback((interaction, fallbackTransition = null) => {
+    if (!interaction?.targetVariantId) return false;
+    const delay = Math.max(0, Number(interaction.delay) || 0) * 1000;
+    const timerId = window.setTimeout(() => {
+      switchVariant(interaction.targetVariantId, {
+        ...interaction,
+        transition: interaction?.transition ?? fallbackTransition ?? null,
+      });
+      timersRef.current = timersRef.current.filter((entry) => entry !== timerId);
+    }, delay);
+    timersRef.current.push(timerId);
+    return true;
+  }, [switchVariant]);
+
   const runInteraction = useCallback((expectedTrigger) => {
     const interaction = activeBaseVariant?.interaction;
     if (!interaction?.targetVariantId || interaction.trigger !== expectedTrigger) return;
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    const delay = Math.max(0, Number(interaction.delay) || 0) * 1000;
-    timerRef.current = window.setTimeout(() => {
-      switchVariant(interaction.targetVariantId, interaction);
-    }, delay);
-  }, [activeBaseVariant, switchVariant]);
+    clearTimers();
+    queueInteraction(interaction);
+  }, [activeBaseVariant, clearTimers, queueInteraction]);
+
+  const runElementInteraction = useCallback((elementId, expectedTrigger) => {
+    const element = activeBaseVariantState?.indexById?.get(elementId) ?? null;
+    const interaction = element?.base?.componentInteraction ?? null;
+    if (!interaction?.targetVariantId || interaction.trigger !== expectedTrigger) return false;
+    clearTimers();
+    queueInteraction(interaction, activeBaseVariant?.childTransition ?? activeBaseVariant?.interaction?.transition ?? null);
+    return true;
+  }, [activeBaseVariant, activeBaseVariantState, clearTimers, queueInteraction]);
 
   useEffect(() => {
     const interaction = activeBaseVariant?.interaction;
-    if (!interaction?.targetVariantId || interaction.trigger !== 'appear') return undefined;
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      switchVariant(interaction.targetVariantId, interaction);
-    }, Math.max(0, Number(interaction.delay) || 0) * 1000);
+    const nodeInteractions = (activeBaseVariantState?.snapshot ?? [])
+      .map((element) => element?.base?.componentInteraction ?? null)
+      .filter((entry) => entry?.targetVariantId && entry.trigger === 'appear');
+    if ((!interaction?.targetVariantId || interaction.trigger !== 'appear') && !nodeInteractions.length) return undefined;
+    clearTimers();
+    if (interaction?.targetVariantId && interaction.trigger === 'appear') queueInteraction(interaction);
+    nodeInteractions.forEach((entry) => queueInteraction(entry, activeBaseVariant?.childTransition ?? interaction?.transition ?? null));
     return () => {
-      if (timerRef.current) window.clearTimeout(timerRef.current);
+      clearTimers();
     };
-  }, [activeBaseVariant, switchVariant]);
+  }, [activeBaseVariant, activeBaseVariantState, clearTimers, queueInteraction]);
 
   if (!variantStates.length) return null;
 
@@ -1290,7 +1354,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
                   data-variant-id={variant.id}
                   className={`fb-component-play-preview__variant${variant.id === activeVariantId ? ' is-active' : ''}`}
                 >
-                  <PreviewNode element={root} indexById={indexById} />
+                  <PreviewNode element={root} indexById={indexById} onTriggerEvent={runElementInteraction} />
                 </div>
               ))}
             </div>

@@ -62,7 +62,7 @@ function ShapePickerGrid({ onPick, onDragStart, onDragEnd }) {
   );
 }
 
-export default function BottomToolbar() {
+export default function BottomToolbar({ showComments = true }) {
   const activeCanvasTool = useEditorStore((state) => state.activeCanvasTool);
   const setActiveCanvasTool = useEditorStore((state) => state.setActiveCanvasTool);
   const setPendingDraw = useEditorStore((state) => state.setPendingDraw);
@@ -178,17 +178,19 @@ export default function BottomToolbar() {
           }}
         />
 
-        <ToolButton
-          active={activeSurface !== 'component' && (activeCanvasTool === 'comment' || !!activeCommentId)}
-          icon={UIIcons.comment}
-          title="Comment"
-          badge={unresolvedCount > 0 ? unresolvedCount : null}
-          onClick={() => {
-            if (activeSurface === 'component') return;
-            setOpenMenu(null);
-            setActiveCanvasTool(activeCanvasTool === 'comment' && !activeCommentId ? 'select' : 'comment');
-          }}
-        />
+        {showComments ? (
+          <ToolButton
+            active={activeSurface !== 'component' && (activeCanvasTool === 'comment' || !!activeCommentId)}
+            icon={UIIcons.comment}
+            title="Comment"
+            badge={unresolvedCount > 0 ? unresolvedCount : null}
+            onClick={() => {
+              if (activeSurface === 'component') return;
+              setOpenMenu(null);
+              setActiveCanvasTool(activeCanvasTool === 'comment' && !activeCommentId ? 'select' : 'comment');
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );

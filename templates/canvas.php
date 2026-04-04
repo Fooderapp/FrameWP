@@ -9,14 +9,20 @@
 defined( 'ABSPATH' ) || exit;
 
 global $post;
-$html = get_post_meta( $post->ID, '_fb_published_html', true );
 $layout_raw = get_post_meta( $post->ID, '_fb_layout', true );
+$html = '';
 if ( is_string( $layout_raw ) && '' !== trim( $layout_raw ) ) {
-	$layout = json_decode( wp_unslash( $layout_raw ), true );
+	$layout = json_decode( $layout_raw, true );
+	if ( ! is_array( $layout ) ) {
+		$layout = json_decode( wp_unslash( $layout_raw ), true );
+	}
 	if ( is_array( $layout ) ) {
 		$exporter = new FrameBuilder_Exporter( $layout, (int) $post->ID );
 		$html = $exporter->generate_html();
 	}
+}
+if ( ! is_string( $html ) || '' === trim( $html ) ) {
+	$html = get_post_meta( $post->ID, '_fb_published_html', true );
 }
 $global_variables_raw = get_option( '_fb_global_variables', '[]' );
 $global_variables = json_decode( $global_variables_raw, true );

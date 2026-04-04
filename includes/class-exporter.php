@@ -1189,14 +1189,28 @@ class FrameBuilder_Exporter {
 		$layout_inline = $inline;
 
 		$visual_props = [
-			'backgroundColor' => 'background-color',
-			'borderRadius'    => 'border-radius',
-			'opacity'         => 'opacity',
-			'mixBlendMode'    => 'mix-blend-mode',
-			'overflow'        => 'overflow',
-			'boxShadow'       => 'box-shadow',
-			'zIndex'          => 'z-index',
+			'backgroundColor'  => 'background-color',
+			'borderRadius'     => 'border-radius',
+			'borderWidth'      => 'border-width',
+			'borderColor'      => 'border-color',
+			'borderStyle'      => 'border-style',
+			'opacity'          => 'opacity',
+			'mixBlendMode'     => 'mix-blend-mode',
+			'overflow'         => 'overflow',
+			'display'          => 'display',
+			'flexDirection'    => 'flex-direction',
+			'flexWrap'         => 'flex-wrap',
+			'gap'              => 'gap',
+			'alignItems'       => 'align-items',
+			'justifyContent'   => 'justify-content',
+			'paddingTop'       => 'padding-top',
+			'paddingRight'     => 'padding-right',
+			'paddingBottom'    => 'padding-bottom',
+			'paddingLeft'      => 'padding-left',
+			'boxShadow'        => 'box-shadow',
+			'zIndex'           => 'z-index',
 		];
+		$px_inline_props = [ 'border-radius', 'border-width', 'gap', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left' ];
 		foreach ( $visual_props as $camel => $kebab ) {
 			if ( ! isset( $styles[ $camel ] ) || $styles[ $camel ] === '' ) continue;
 			$val = $styles[ $camel ];
@@ -1205,8 +1219,12 @@ class FrameBuilder_Exporter {
 				$inline .= 'background-image:' . $this->sanitize_css_value( $val ) . ';';
 				continue;
 			}
-			if ( is_numeric( $val ) && $kebab === 'border-radius' ) $val .= 'px';
+			if ( $camel === 'borderColor' && $this->is_gradient_css_value( $val ) ) continue;
+			if ( is_numeric( $val ) && in_array( $kebab, $px_inline_props, true ) ) $val .= 'px';
 			$inline .= $kebab . ':' . $this->sanitize_css_value( $val ) . ';';
+		}
+		if ( ! empty( $styles['borderWidth'] ) && $this->is_gradient_css_value( $styles['borderColor'] ?? '' ) ) {
+			$inline .= 'border-color:transparent;';
 		}
 		// Independent corner radius overrides the shorthand set above
 		if ( ( $styles['borderRadiusMode'] ?? '' ) === 'independent' ) {
@@ -1257,6 +1275,9 @@ class FrameBuilder_Exporter {
 		$interactions_json = ! empty( $el['interactions'] ) ? esc_attr( wp_json_encode( $el['interactions'] ) ) : '';
 		$animations_json = ! empty( $el['animations'] ) ? esc_attr( wp_json_encode( $el['animations'] ) ) : '';
 		$link_url = $this->sanitize_navigation_url( $this->normalize_link_url_value( $resolved['linkUrl'] ?? '' ) );
+		$component_interaction = is_array( $resolved['componentInteraction'] ?? null )
+			? $resolved['componentInteraction']
+			: ( is_array( $el['base']['componentInteraction'] ?? null ) ? $el['base']['componentInteraction'] : null );
 		$runtime_attrs = '';
 		if ( $bindings_json !== '' ) {
 			$runtime_attrs .= ' data-fb-bindings="' . $bindings_json . '"';
@@ -1272,6 +1293,29 @@ class FrameBuilder_Exporter {
 		}
 		if ( $animations_json !== '' ) {
 			$runtime_attrs .= ' data-fb-animations="' . $animations_json . '"';
+		}
+		if ( is_array( $component_interaction ) && ! empty( $component_interaction['targetVariantId'] ) ) {
+			$component_transition = is_array( $component_interaction['transition'] ?? null )
+				? $this->normalize_component_transition( $component_interaction['transition'] )
+				: null;
+			$runtime_attrs .= ' data-fb-trigger="' . esc_attr( sanitize_text_field( $component_interaction['trigger'] ?? 'click' ) ) . '"';
+			$runtime_attrs .= ' data-fb-target-variant-id="' . esc_attr( sanitize_text_field( $component_interaction['targetVariantId'] ) ) . '"';
+			$runtime_attrs .= ' data-fb-delay="' . esc_attr( (string) max( 0, (float) ( $component_interaction['delay'] ?? 0 ) ) ) . '"';
+			if ( $component_transition ) {
+				$runtime_attrs .= ' data-fb-transition-type="' . esc_attr( $component_transition['type'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-duration="' . esc_attr( (string) $component_transition['duration'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-physics-duration="' . esc_attr( (string) $component_transition['physicsDuration'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-ease="' . esc_attr( $component_transition['easePreset'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-spring-mode="' . esc_attr( $component_transition['springMode'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-bounce="' . esc_attr( (string) $component_transition['bounce'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-stiffness="' . esc_attr( (string) $component_transition['stiffness'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-damping="' . esc_attr( (string) $component_transition['damping'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-mass="' . esc_attr( (string) $component_transition['mass'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-bezier-x1="' . esc_attr( (string) $component_transition['bezier']['x1'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-bezier-y1="' . esc_attr( (string) $component_transition['bezier']['y1'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-bezier-x2="' . esc_attr( (string) $component_transition['bezier']['x2'] ) . '"';
+				$runtime_attrs .= ' data-fb-transition-bezier-y2="' . esc_attr( (string) $component_transition['bezier']['y2'] ) . '"';
+			}
 		}
 		$runtime_attrs .= ' data-fb-base-x="' . esc_attr( (string) $x ) . '"';
 		$runtime_attrs .= ' data-fb-base-y="' . esc_attr( (string) $y ) . '"';
@@ -3458,6 +3502,9 @@ class FrameBuilder_Exporter {
 				if ( ! empty( $snapshot_el['id'] ) ) $snapshot_index[ $snapshot_el['id'] ] = $snapshot_el;
 			}
 
+			$variant_design_width = max( 1, (float) ( $root['base']['width'] ?? $root_width ) );
+			$variant_design_height = max( 1, (float) ( $root['base']['height'] ?? $root_height ) );
+
 			$root_variant = $root;
 			$root_variant['parentId'] = null;
 			$root_variant['base']['x'] = 0;
@@ -3478,23 +3525,27 @@ class FrameBuilder_Exporter {
 			$trigger = sanitize_text_field( $interaction['trigger'] ?? '' );
 			$delay = isset( $interaction['delay'] ) ? max( 0, (float) $interaction['delay'] ) : 0;
 			$transition = $this->normalize_component_transition( is_array( $interaction['transition'] ?? null ) ? $interaction['transition'] : null );
+			$child_transition = $this->normalize_component_transition( is_array( $variant['childTransition'] ?? null ) ? $variant['childTransition'] : null );
 			$attrs = ' data-fb-variant-id="' . esc_attr( $variant_id ) . '"';
 			$attrs .= ' data-fb-variant-mode="' . esc_attr( $variant_mode ) . '"';
 			$attrs .= ' data-fb-parent-variant-id="' . esc_attr( $parent_variant_id ) . '"';
-			if ( 'default' === $variant_mode && $target_variant_id !== '' && $target_variant_id !== $variant_id ) {
-				$attrs .= ' data-fb-transition-type="' . esc_attr( $transition['type'] ) . '"';
-				$attrs .= ' data-fb-transition-duration="' . esc_attr( (string) $transition['duration'] ) . '"';
-				$attrs .= ' data-fb-transition-physics-duration="' . esc_attr( (string) $transition['physicsDuration'] ) . '"';
-				$attrs .= ' data-fb-transition-ease="' . esc_attr( $transition['easePreset'] ) . '"';
-				$attrs .= ' data-fb-transition-spring-mode="' . esc_attr( $transition['springMode'] ) . '"';
-				$attrs .= ' data-fb-transition-bounce="' . esc_attr( (string) $transition['bounce'] ) . '"';
-				$attrs .= ' data-fb-transition-stiffness="' . esc_attr( (string) $transition['stiffness'] ) . '"';
-				$attrs .= ' data-fb-transition-damping="' . esc_attr( (string) $transition['damping'] ) . '"';
-				$attrs .= ' data-fb-transition-mass="' . esc_attr( (string) $transition['mass'] ) . '"';
-				$attrs .= ' data-fb-transition-bezier-x1="' . esc_attr( (string) $transition['bezier']['x1'] ) . '"';
-				$attrs .= ' data-fb-transition-bezier-y1="' . esc_attr( (string) $transition['bezier']['y1'] ) . '"';
-				$attrs .= ' data-fb-transition-bezier-x2="' . esc_attr( (string) $transition['bezier']['x2'] ) . '"';
-				$attrs .= ' data-fb-transition-bezier-y2="' . esc_attr( (string) $transition['bezier']['y2'] ) . '"';
+			$attrs .= ' data-fb-variant-width="' . esc_attr( (string) $variant_design_width ) . '"';
+			$attrs .= ' data-fb-variant-height="' . esc_attr( (string) $variant_design_height ) . '"';
+			if ( 'default' === $variant_mode && ( ( $target_variant_id !== '' && $target_variant_id !== $variant_id ) || is_array( $variant['childTransition'] ?? null ) ) ) {
+				$transition_source = ( $target_variant_id !== '' && $target_variant_id !== $variant_id ) ? $transition : $child_transition;
+				$attrs .= ' data-fb-transition-type="' . esc_attr( $transition_source['type'] ) . '"';
+				$attrs .= ' data-fb-transition-duration="' . esc_attr( (string) $transition_source['duration'] ) . '"';
+				$attrs .= ' data-fb-transition-physics-duration="' . esc_attr( (string) $transition_source['physicsDuration'] ) . '"';
+				$attrs .= ' data-fb-transition-ease="' . esc_attr( $transition_source['easePreset'] ) . '"';
+				$attrs .= ' data-fb-transition-spring-mode="' . esc_attr( $transition_source['springMode'] ) . '"';
+				$attrs .= ' data-fb-transition-bounce="' . esc_attr( (string) $transition_source['bounce'] ) . '"';
+				$attrs .= ' data-fb-transition-stiffness="' . esc_attr( (string) $transition_source['stiffness'] ) . '"';
+				$attrs .= ' data-fb-transition-damping="' . esc_attr( (string) $transition_source['damping'] ) . '"';
+				$attrs .= ' data-fb-transition-mass="' . esc_attr( (string) $transition_source['mass'] ) . '"';
+				$attrs .= ' data-fb-transition-bezier-x1="' . esc_attr( (string) $transition_source['bezier']['x1'] ) . '"';
+				$attrs .= ' data-fb-transition-bezier-y1="' . esc_attr( (string) $transition_source['bezier']['y1'] ) . '"';
+				$attrs .= ' data-fb-transition-bezier-x2="' . esc_attr( (string) $transition_source['bezier']['x2'] ) . '"';
+				$attrs .= ' data-fb-transition-bezier-y2="' . esc_attr( (string) $transition_source['bezier']['y2'] ) . '"';
 				$attrs .= ' data-fb-trigger="' . esc_attr( $trigger ?: 'click' ) . '"';
 				$attrs .= ' data-fb-target-variant-id="' . esc_attr( $target_variant_id ) . '"';
 				$attrs .= ' data-fb-delay="' . esc_attr( (string) $delay ) . '"';
@@ -4473,21 +4524,26 @@ class FrameBuilder_Exporter {
 		return Number.isFinite(parsed) ? parsed : fallback;
 	};
 	var parseTransition = function(node) {
+		var source = node;
+		if (!source || !source.dataset || !source.dataset.fbTransitionType) {
+			var variantNode = node && typeof node.closest === 'function' ? node.closest('.fb-component-variant') : null;
+			if (variantNode && variantNode.dataset && variantNode.dataset.fbTransitionType) source = variantNode;
+		}
 		return {
-			type: node.dataset.fbTransitionType || 'instant',
-			duration: Math.max(0, parseNumber(node.dataset.fbTransitionDuration, 0.3)),
-			physicsDuration: Math.max(0, parseNumber(node.dataset.fbTransitionPhysicsDuration, parseNumber(node.dataset.fbTransitionDuration, 0.3))),
-			easePreset: node.dataset.fbTransitionEase || 'easeInOut',
-			springMode: node.dataset.fbTransitionSpringMode || 'time',
-			bounce: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBounce, 0.2))),
-			stiffness: Math.max(1, parseNumber(node.dataset.fbTransitionStiffness, 500)),
-			damping: Math.max(1, parseNumber(node.dataset.fbTransitionDamping, 24)),
-			mass: Math.max(0.1, parseNumber(node.dataset.fbTransitionMass, 1)),
+			type: source.dataset.fbTransitionType || 'instant',
+			duration: Math.max(0, parseNumber(source.dataset.fbTransitionDuration, 0.3)),
+			physicsDuration: Math.max(0, parseNumber(source.dataset.fbTransitionPhysicsDuration, parseNumber(source.dataset.fbTransitionDuration, 0.3))),
+			easePreset: source.dataset.fbTransitionEase || 'easeInOut',
+			springMode: source.dataset.fbTransitionSpringMode || 'time',
+			bounce: Math.max(0, Math.min(1, parseNumber(source.dataset.fbTransitionBounce, 0.2))),
+			stiffness: Math.max(1, parseNumber(source.dataset.fbTransitionStiffness, 500)),
+			damping: Math.max(1, parseNumber(source.dataset.fbTransitionDamping, 24)),
+			mass: Math.max(0.1, parseNumber(source.dataset.fbTransitionMass, 1)),
 			bezier: {
-				x1: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBezierX1, 0.44))),
-				y1: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBezierY1, 0))),
-				x2: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBezierX2, 0.56))),
-				y2: Math.max(0, Math.min(1, parseNumber(node.dataset.fbTransitionBezierY2, 1)))
+				x1: Math.max(0, Math.min(1, parseNumber(source.dataset.fbTransitionBezierX1, 0.44))),
+				y1: Math.max(0, Math.min(1, parseNumber(source.dataset.fbTransitionBezierY1, 0))),
+				x2: Math.max(0, Math.min(1, parseNumber(source.dataset.fbTransitionBezierX2, 0.56))),
+				y2: Math.max(0, Math.min(1, parseNumber(source.dataset.fbTransitionBezierY2, 1)))
 			}
 		};
 	};
@@ -5057,7 +5113,7 @@ class FrameBuilder_Exporter {
 			height: parseNumber(node.style.height, parseNumber(computed.height, rect.height || node.offsetHeight || 0)),
 			widthCss: node.style.width || '',
 			heightCss: node.style.height || '',
-			rotation: parseNumber(node.getAttribute('data-fb-base-rotation'), getRotationFromComputedStyle(computed)),
+			rotation: parseNumber(node.getAttribute('data-fb-base-rotation'), getRotationDeg(computed)),
 			rotationX: parseNumber(node.getAttribute('data-fb-base-rotation-x'), 0),
 			rotationY: parseNumber(node.getAttribute('data-fb-base-rotation-y'), 0),
 			opacity: parseNumber(computed.opacity, 1),
@@ -6012,15 +6068,13 @@ class FrameBuilder_Exporter {
 		};
 	};
 	var applyInstantSwitch = function(instance, next) {
-		if (gsap) gsap.killTweensOf(instance.querySelectorAll('.fb-component-variant'));
-		instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
-			node.classList.remove('is-present');
-			node.classList.toggle('is-active', node === next);
-			node.style.opacity = '';
-			node.style.transform = '';
-			node.style.visibility = '';
-			node.style.pointerEvents = '';
-		});
+		saReset(instance, next);
+		var nextW = parseFloat(next.dataset.fbVariantWidth) || 0;
+		var nextH = parseFloat(next.dataset.fbVariantHeight) || 0;
+		if (nextW && nextH) {
+			instance.style.width = nextW + 'px';
+			instance.style.height = nextH + 'px';
+		}
 	};
 	var getEnterVars = function(transition) {
 		if (transition.type === 'realistic') {
@@ -6159,260 +6213,253 @@ class FrameBuilder_Exporter {
 		}, 0);
 		return timeline;
 	};
-	var collectSharedElementPairs = function(container, currentVariant, nextVariant) {
-		if (!container || !currentVariant || !nextVariant) return [];
-		var containerRect = container.getBoundingClientRect();
-		var currentNodes = new Map(Array.prototype.map.call(currentVariant.querySelectorAll('[data-fb-node-id]'), function(node) {
-			return [node.dataset.fbNodeId, node];
-		}));
-		return Array.prototype.reduce.call(nextVariant.querySelectorAll('[data-fb-node-id]'), function(pairs, nextNode) {
-			var nodeId = nextNode.dataset.fbNodeId;
-			var currentNode = currentNodes.get(nodeId);
-			if (!nodeId || !currentNode) return pairs;
-			var currentRect = currentNode.getBoundingClientRect();
-			var nextRect = nextNode.getBoundingClientRect();
-			if (!currentRect.width || !currentRect.height || !nextRect.width || !nextRect.height) return pairs;
-			var insideViewport = currentRect.right >= containerRect.left
-				&& currentRect.left <= containerRect.right
-				&& currentRect.bottom >= containerRect.top
-				&& currentRect.top <= containerRect.bottom;
-			pairs.push({
-				currentNode: currentNode,
-				nextNode: nextNode,
-				deltaX: currentRect.left - nextRect.left,
-				deltaY: currentRect.top - nextRect.top,
-				scaleX: currentRect.width / nextRect.width,
-				scaleY: currentRect.height / nextRect.height,
-				insideViewport: insideViewport
-			});
-			return pairs;
-		}, []);
-	};
-	var ANIMATABLE_STYLE_PROPS = ['backgroundColor', 'color', 'borderRadius', 'borderColor', 'boxShadow', 'opacity', 'filter', 'backdropFilter'];
-	var CROSSFADE_STYLE_PROPS = ['backgroundImage'];
-	var FLIP_PROPS = 'opacity,backgroundColor,color,borderRadius,borderColor,boxShadow,filter,backdropFilter';
-	var hasStyleDifference = function(currentValue, nextValue) {
-		if (currentValue === nextValue) return false;
-		var currentNumber = parseFloat(currentValue);
-		var nextNumber = parseFloat(nextValue);
-		if (isFinite(currentNumber) && isFinite(nextNumber)) {
-			return Math.abs(currentNumber - nextNumber) > 0.01;
-		}
-		return true;
-	};
-	var getRotationFromComputedStyle = function(style) {
-		var rotate = style && style.rotate;
-		if (rotate && rotate !== 'none') {
-			var parsedRotate = parseFloat(rotate);
-			if (isFinite(parsedRotate)) return parsedRotate;
-		}
-		var transform = style && style.transform;
-		if (!transform || transform === 'none') return 0;
-		var matrixMatch = transform.match(/^matrix\(([^)]+)\)$/);
-		if (matrixMatch) {
-			var matrixValues = matrixMatch[1].split(',').map(function(value) { return parseFloat(value.trim()); });
-			if (matrixValues.length >= 2 && matrixValues.every(function(value) { return isFinite(value); })) {
-				return Math.atan2(matrixValues[1], matrixValues[0]) * (180 / Math.PI);
-			}
-		}
-		var matrix3dMatch = transform.match(/^matrix3d\(([^)]+)\)$/);
-		if (matrix3dMatch) {
-			var matrix3dValues = matrix3dMatch[1].split(',').map(function(value) { return parseFloat(value.trim()); });
-			if (matrix3dValues.length >= 2 && matrix3dValues.every(function(value) { return isFinite(value); })) {
-				return Math.atan2(matrix3dValues[1], matrix3dValues[0]) * (180 / Math.PI);
-			}
-		}
+	/* ══════════════════════════════════════════════════════════════
+	   Smart Animate Engine  (GSAP Flip — same approach as preview)
+	   ──────────────────────────────────────────────────────────────
+	   Uses `Flip.getState()` + `Flip.from()` — the exact same method
+	   that powers the working in-editor preview.  Falls back to
+	   wrapper crossfade when Flip is unavailable or no targets found.
+	   ══════════════════════════════════════════════════════════════ */
+	var SA_FLIP_PROPS = 'opacity,backgroundColor,color,borderRadius,borderColor,boxShadow,filter,backdropFilter';
+	var SA_STYLE_PROPS = ['backgroundColor','color','borderRadius','borderColor','boxShadow','opacity','filter','backdropFilter'];
+	var SA_CROSSFADE_PROPS = ['backgroundImage'];
+	var saTimeline = null;
+	var getRotationDeg = function(style) {
+		if (!style) return 0;
+		var r = style.rotate;
+		if (r && r !== 'none') { var p = parseFloat(r); if (isFinite(p)) return p; }
+		var t = style.transform;
+		if (!t || t === 'none') return 0;
+		var m = t.match(/^matrix\(([^)]+)\)$/);
+		if (m) { var v = m[1].split(',').map(function(s){ return parseFloat(s.trim()); }); if (v.length >= 2) return Math.atan2(v[1], v[0]) * (180 / Math.PI); }
+		var m3 = t.match(/^matrix3d\(([^)]+)\)$/);
+		if (m3) { var v3 = m3[1].split(',').map(function(s){ return parseFloat(s.trim()); }); if (v3.length >= 2) return Math.atan2(v3[1], v3[0]) * (180 / Math.PI); }
 		return 0;
 	};
-	var getNodeAnimationChanges = function(currentNode, nextNode) {
-		var currentRect = currentNode.getBoundingClientRect();
-		var nextRect = nextNode.getBoundingClientRect();
-		var currentStyle = window.getComputedStyle(currentNode);
-		var nextStyle = window.getComputedStyle(nextNode);
+	var saHasStyleDifference = function(a, b) {
+		if (a === b) return false;
+		var na = parseFloat(a), nb = parseFloat(b);
+		if (isFinite(na) && isFinite(nb)) return Math.abs(na - nb) > 0.01;
+		return true;
+	};
+	/* Collect matched element pairs between two variants by data-fb-node-id */
+	var saCollectSharedPairs = function(container, currentVariant, nextVariant) {
+		if (!container || !currentVariant || !nextVariant) return [];
+		var currentNodes = {};
+		var curEls = currentVariant.querySelectorAll('[data-fb-node-id]');
+		for (var i = 0; i < curEls.length; i++) {
+			var cid = curEls[i].dataset.fbNodeId;
+			if (cid) currentNodes[cid] = curEls[i];
+		}
+		var pairs = [];
+		var nextEls = nextVariant.querySelectorAll('[data-fb-node-id]');
+		for (var j = 0; j < nextEls.length; j++) {
+			var nid = nextEls[j].dataset.fbNodeId;
+			var curNode = nid ? currentNodes[nid] : null;
+			if (!curNode) continue;
+			var cr = curNode.getBoundingClientRect();
+			var nr = nextEls[j].getBoundingClientRect();
+			if (!cr.width || !cr.height || !nr.width || !nr.height) continue;
+			pairs.push({
+				currentNode: curNode,
+				nextNode: nextEls[j],
+				deltaX: cr.left - nr.left,
+				deltaY: cr.top - nr.top,
+				scaleX: cr.width / nr.width,
+				scaleY: cr.height / nr.height
+			});
+		}
+		return pairs;
+	};
+	/* Detect what changed for a matched pair */
+	var saGetChanges = function(currentNode, nextNode) {
+		var cr = currentNode.getBoundingClientRect();
+		var nr = nextNode.getBoundingClientRect();
+		var cs = getComputedStyle(currentNode);
+		var ns = getComputedStyle(nextNode);
 		var styleFrom = {};
 		var styleTo = {};
-		ANIMATABLE_STYLE_PROPS.forEach(function(prop) {
-			var currentValue = currentStyle[prop];
-			var nextValue = nextStyle[prop];
-			if (!hasStyleDifference(currentValue, nextValue)) return;
-			styleFrom[prop] = currentValue;
-			styleTo[prop] = nextValue;
-		});
-		var unsupportedChange = CROSSFADE_STYLE_PROPS.some(function(prop) {
-			return hasStyleDifference(currentStyle[prop], nextStyle[prop]);
-		}) || currentNode.textContent !== nextNode.textContent;
-		var deltaX = currentRect.left - nextRect.left;
-		var deltaY = currentRect.top - nextRect.top;
-		var scaleX = currentRect.width / Math.max(nextRect.width, 0.01);
-		var scaleY = currentRect.height / Math.max(nextRect.height, 0.01);
-		var rotation = getRotationFromComputedStyle(currentStyle) - getRotationFromComputedStyle(nextStyle);
-		var geometryChanged = Math.abs(deltaX) > 0.5
-			|| Math.abs(deltaY) > 0.5
-			|| Math.abs(scaleX - 1) > 0.01
-			|| Math.abs(scaleY - 1) > 0.01
-			|| Math.abs(rotation) > 0.5;
-		return {
-			geometryChanged: geometryChanged,
-			styleChanged: Object.keys(styleTo).length > 0,
-			needsCrossfade: unsupportedChange,
-			startState: {
-				x: deltaX,
-				y: deltaY,
-				scaleX: Math.max(0.01, scaleX),
-				scaleY: Math.max(0.01, scaleY),
-				rotation: rotation
-			},
-			styleFrom: styleFrom,
-			styleTo: styleTo,
-			styleProps: Object.keys(styleTo)
-		};
-	};
-	var prepareAnimatedPairs = function(pairs) {
-		var pairEntries = pairs.map(function(pair) {
-			return { pair: pair, changes: getNodeAnimationChanges(pair.currentNode, pair.nextNode) };
-		});
-		var byId = new Map(pairEntries.map(function(entry) {
-			return [entry.pair.nextNode.dataset.fbNodeId, entry];
-		}));
-		return pairEntries.filter(function(entry) {
-			if (!entry.changes.geometryChanged && !entry.changes.styleChanged && !entry.changes.needsCrossfade) return false;
-			var ancestor = entry.pair.nextNode.parentElement ? entry.pair.nextNode.parentElement.closest('[data-fb-node-id]') : null;
-			while (ancestor) {
-				var ancestorEntry = byId.get(ancestor.dataset.fbNodeId);
-				if (ancestorEntry && (ancestorEntry.changes.geometryChanged || ancestorEntry.changes.needsCrossfade)) return false;
-				ancestor = ancestor.parentElement ? ancestor.parentElement.closest('[data-fb-node-id]') : null;
+		for (var i = 0; i < SA_STYLE_PROPS.length; i++) {
+			var prop = SA_STYLE_PROPS[i];
+			if (saHasStyleDifference(cs[prop], ns[prop])) {
+				styleFrom[prop] = cs[prop];
+				styleTo[prop] = ns[prop];
 			}
-			return true;
-		});
-	};
-	var collectTopLevelUnmatchedNodes = function(variantNode, matchedIds) {
-		if (!variantNode) return [];
-		var allNodes = Array.prototype.slice.call(variantNode.querySelectorAll('[data-fb-node-id]'));
-		return allNodes.filter(function(node) {
-			var nodeId = node.dataset.fbNodeId;
-			if (!nodeId || matchedIds.has(nodeId)) return false;
-			var ancestor = node.parentElement ? node.parentElement.closest('[data-fb-node-id]') : null;
-			while (ancestor) {
-				var ancestorId = ancestor.dataset.fbNodeId;
-				if (ancestorId && !matchedIds.has(ancestorId)) return false;
-				ancestor = ancestor.parentElement ? ancestor.parentElement.closest('[data-fb-node-id]') : null;
-			}
-			return true;
-		});
-	};
-	var animateVariantSwitchFallback = function(instance, current, next, transition, onComplete) {
-		if (!gsap) {
-			applyInstantSwitch(instance, next);
-			if (onComplete) onComplete();
-			return;
 		}
-		var complete = function() {
-			instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
-				var isActive = node === next;
-				node.classList.remove('is-present');
-				node.classList.toggle('is-active', isActive);
-				node.style.opacity = '';
-				node.style.transform = '';
-				node.style.visibility = '';
-				node.style.pointerEvents = '';
-			});
-			if (onComplete) onComplete();
+		var needsCrossfade = false;
+		for (var c = 0; c < SA_CROSSFADE_PROPS.length; c++) {
+			if (saHasStyleDifference(cs[SA_CROSSFADE_PROPS[c]], ns[SA_CROSSFADE_PROPS[c]])) {
+				needsCrossfade = true; break;
+			}
+		}
+		if (!needsCrossfade && currentNode.textContent !== nextNode.textContent) needsCrossfade = true;
+		var dx = cr.left - nr.left;
+		var dy = cr.top - nr.top;
+		var sx = cr.width / Math.max(nr.width, 0.01);
+		var sy = cr.height / Math.max(nr.height, 0.01);
+		var rot = getRotationDeg(cs) - getRotationDeg(ns);
+		var geomChanged = Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5
+			|| Math.abs(sx - 1) > 0.01 || Math.abs(sy - 1) > 0.01
+			|| Math.abs(rot) > 0.5;
+		return {
+			geometryChanged: geomChanged,
+			styleChanged: Object.keys(styleTo).length > 0,
+			needsCrossfade: needsCrossfade
 		};
-		gsap.killTweensOf([current, next]);
-		current.style.opacity = '1';
-		current.classList.remove('is-active');
-		current.classList.add('is-present');
-		next.classList.add('is-present');
-		next.classList.add('is-active');
-		next.style.visibility = 'visible';
-		next.style.pointerEvents = 'none';
-		current.style.pointerEvents = 'none';
-		var timeline = animateVariantWrappers(current, next, transition) || gsap.timeline({ defaults: { overwrite: true } });
-		timeline.eventCallback('onComplete', complete);
 	};
+	/* Filter pairs to only those that actually changed */
+	var saPrepareAnimatedPairs = function(pairs) {
+		var result = [];
+		for (var i = 0; i < pairs.length; i++) {
+			var changes = saGetChanges(pairs[i].currentNode, pairs[i].nextNode);
+			if (changes.geometryChanged || changes.styleChanged || changes.needsCrossfade) {
+				result.push({ pair: pairs[i], changes: changes });
+			}
+		}
+		return result;
+	};
+	/* Full cleanup */
+	var saReset = function(instance, next) {
+		if (saTimeline) { saTimeline.kill(); saTimeline = null; }
+		if (gsap) {
+			gsap.killTweensOf(instance);
+			instance.querySelectorAll('.fb-component-variant').forEach(function(v) { gsap.killTweensOf(v); });
+		}
+		instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
+			node.classList.remove('is-present');
+			node.classList.toggle('is-active', node === next);
+			node.style.opacity = '';
+			node.style.transform = '';
+			node.style.visibility = '';
+			node.style.pointerEvents = '';
+		});
+	};
+	/* Convert transition to GSAP ease */
+	var saGetEase = function(transition) {
+		if (!transition) return 'power2.inOut';
+		if (transition.type === 'realistic') {
+			return transition.springMode === 'physics'
+				? 'elastic.out(1,' + Math.max(0.2, (transition.mass || 1) * 0.45) + ')'
+				: 'back.out(' + (1 + (transition.bounce || 0) * 1.2) + ')';
+		}
+		return getEaseValue(transition);
+	};
+	/* ── Main animation function ── */
 	var animateVariantSwitch = function(instance, current, next, transition, onComplete) {
 		if (!next) return;
+		/* Instant / reduced-motion / no-transition path */
 		if (!current || current === next || prefersReducedMotion || !transition || transition.type === 'instant') {
-			applyInstantSwitch(instance, next);
+			saReset(instance, next);
+			var iw = parseFloat(next.dataset.fbVariantWidth) || 0;
+			var ih = parseFloat(next.dataset.fbVariantHeight) || 0;
+			if (iw && ih) { instance.style.width = iw + 'px'; instance.style.height = ih + 'px'; }
 			if (onComplete) onComplete();
 			return;
 		}
-		var duration = getTransitionDurationMs(transition);
-		if (!duration) {
-			applyInstantSwitch(instance, next);
+		var durationMs = getTransitionDurationMs(transition);
+		if (!durationMs || !gsap) {
+			saReset(instance, next);
+			var fw = parseFloat(next.dataset.fbVariantWidth) || 0;
+			var fh = parseFloat(next.dataset.fbVariantHeight) || 0;
+			if (fw && fh) { instance.style.width = fw + 'px'; instance.style.height = fh + 'px'; }
 			if (onComplete) onComplete();
 			return;
 		}
-		if (!gsap || !Flip) {
-			animateVariantSwitchFallback(instance, current, next, transition, onComplete);
-			return;
-		}
-		next.classList.add('is-present');
-		next.style.visibility = 'visible';
-		next.style.pointerEvents = 'none';
-		next.style.opacity = '1';
-		current.style.pointerEvents = 'none';
-		var complete = function() {
+		/* Kill prior animation */
+		if (saTimeline) { saTimeline.kill(); saTimeline = null; }
+		gsap.killTweensOf(instance.querySelectorAll('.fb-component-variant'));
+
+		var totalDuration = durationMs / 1000;
+		var ease = saGetEase(transition);
+		var nextW = parseFloat(next.dataset.fbVariantWidth) || 0;
+		var nextH = parseFloat(next.dataset.fbVariantHeight) || 0;
+		var oldW = instance.offsetWidth;
+		var oldH = instance.offsetHeight;
+
+		/* Cleanup function — called on animation complete */
+		var finish = function() {
+			saTimeline = null;
 			instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
 				var isActive = node === next;
-				node.classList.remove('is-present');
 				node.classList.toggle('is-active', isActive);
+				node.classList.remove('is-present');
 				node.style.opacity = '';
 				node.style.transform = '';
 				node.style.visibility = '';
 				node.style.pointerEvents = '';
 			});
+			if (nextW && nextH) {
+				instance.style.width = nextW + 'px';
+				instance.style.height = nextH + 'px';
+			}
 			if (onComplete) onComplete();
 		};
-		var currentFlipTargets = current.querySelectorAll('[data-flip-id]');
-		var state = null;
-		try {
-			state = Flip.getState(currentFlipTargets, { props: FLIP_PROPS, simple: false });
-		} catch (error) {
-			state = null;
-		}
-		if (!state) {
-			animateVariantSwitchFallback(instance, current, next, transition, onComplete);
-			return;
-		}
-		var totalDuration = getTransitionDurationMs(transition) / 1000;
-		var ease = transition.type === 'realistic'
-			? (transition.springMode === 'physics'
-				? 'elastic.out(1,' + Math.max(0.2, transition.mass * 0.45) + ')'
-				: 'back.out(' + (1 + transition.bounce * 1.2) + ')')
-			: getEaseValue(transition);
-		var sharedPairs = collectSharedElementPairs(instance, current, next);
-		var animatedPairs = prepareAnimatedPairs(sharedPairs);
-		var matchedIds = new Set(sharedPairs.map(function(entry) {
-			return entry.nextNode.dataset.fbNodeId;
-		}).filter(Boolean));
-		var shouldCrossfadeVariants = animatedPairs.some(function(entry) {
-			return entry.changes.needsCrossfade;
-		}) || collectTopLevelUnmatchedNodes(current, matchedIds).length > 0 || collectTopLevelUnmatchedNodes(next, matchedIds).length > 0;
-		current.style.opacity = '1';
-		current.classList.remove('is-active');
-		current.classList.add('is-present');
+
+		/* ── PHASE 1: Make next visible so we can diff ── */
 		next.classList.add('is-present');
-		next.classList.add('is-active');
 		next.style.visibility = 'visible';
 		next.style.pointerEvents = 'none';
+		next.style.opacity = '0';
+
+		/* ── PHASE 2: Diff elements between variants ── */
+		var sharedPairs = saCollectSharedPairs(instance, current, next);
+		var animatedPairs = saPrepareAnimatedPairs(sharedPairs);
+
+		/* Build set of all matched node IDs and changed node IDs */
+		var matchedIds = {};
+		for (var m = 0; m < sharedPairs.length; m++) {
+			var mid = sharedPairs[m].nextNode.dataset.fbNodeId;
+			if (mid) matchedIds[mid] = true;
+		}
+		var changedIds = {};
+		for (var c = 0; c < animatedPairs.length; c++) {
+			var cid = animatedPairs[c].pair.nextNode.dataset.fbNodeId;
+			if (cid) changedIds[cid] = true;
+		}
+
+		/* Filter flip targets: only changed + unmatched elements */
+		var flipIdRelevant = function(el) {
+			var flipId = el.dataset.flipId || '';
+			var baseId = flipId.indexOf('__') !== -1 ? flipId.slice(0, flipId.indexOf('__')) : flipId;
+			return changedIds[baseId] || !matchedIds[baseId];
+		};
+
+		/* ── PHASE 3: Capture Flip state from CURRENT variant ── */
+		var currentFlipTargets = Array.prototype.filter.call(
+			current.querySelectorAll('[data-flip-id]'), flipIdRelevant
+		);
+		var state = (Flip && currentFlipTargets.length)
+			? Flip.getState(currentFlipTargets, { props: SA_FLIP_PROPS, simple: false })
+			: null;
+		var nextFlipTargets = Array.prototype.filter.call(
+			next.querySelectorAll('[data-flip-id]'), flipIdRelevant
+		);
+		var hasFlipTargets = state && nextFlipTargets.length > 0;
+
+		/* ── PHASE 4: Swap active state ── */
+		current.classList.remove('is-active');
+		current.classList.add('is-present');
+		next.classList.add('is-active');
 		current.style.pointerEvents = 'none';
-		next.style.opacity = shouldCrossfadeVariants ? '0' : '1';
-		animateVariantWrappers(current, next, transition, { crossfadeVariants: shouldCrossfadeVariants });
-		try {
-			Flip.from(state, {
-				targets: Array.prototype.slice.call(current.querySelectorAll('[data-flip-id]')).concat(Array.prototype.slice.call(next.querySelectorAll('[data-flip-id]'))),
-				absolute: true,
+
+		/* ── PHASE 5: Animate ── */
+		if (hasFlipTargets) {
+			/* Flip handles per-element morphing */
+			current.style.opacity = '0';
+			next.style.opacity = '1';
+
+			var flipTl = Flip.from(state, {
+				targets: nextFlipTargets,
 				nested: true,
 				scale: true,
 				simple: false,
-				props: FLIP_PROPS,
+				props: SA_FLIP_PROPS,
 				duration: totalDuration,
 				ease: ease,
 				onEnter: function(elements) {
 					return gsap.fromTo(elements, { opacity: 0 }, {
 						opacity: 1,
-						duration: totalDuration,
+						duration: totalDuration * 0.5,
 						ease: ease,
 						clearProps: 'opacity'
 					});
@@ -6420,15 +6467,40 @@ class FrameBuilder_Exporter {
 				onLeave: function(elements) {
 					return gsap.to(elements, {
 						opacity: 0,
-						duration: totalDuration,
+						duration: totalDuration * 0.5,
 						ease: ease,
 						clearProps: 'opacity'
 					});
 				},
-				onComplete: complete
+				onComplete: finish
 			});
-		} catch (error) {
-			animateVariantSwitchFallback(instance, current, next, transition, onComplete);
+			saTimeline = flipTl;
+
+			/* Container size animation (run in parallel with Flip) */
+			if (nextW && nextH && (Math.abs(oldW - nextW) > 1 || Math.abs(oldH - nextH) > 1)) {
+				gsap.fromTo(instance,
+					{ width: oldW, height: oldH },
+					{ width: nextW, height: nextH, duration: totalDuration, ease: ease }
+				);
+			}
+		} else {
+			/* No Flip targets — use wrapper crossfade fallback */
+			current.style.opacity = '1';
+			next.style.opacity = '0';
+			var wrapperTimeline = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
+			if (wrapperTimeline) {
+				saTimeline = wrapperTimeline;
+				wrapperTimeline.eventCallback('onComplete', finish);
+				/* Container size */
+				if (nextW && nextH && (Math.abs(oldW - nextW) > 1 || Math.abs(oldH - nextH) > 1)) {
+					gsap.fromTo(instance,
+						{ width: oldW, height: oldH },
+						{ width: nextW, height: nextH, duration: totalDuration, ease: ease }
+					);
+				}
+			} else {
+				finish();
+			}
 		}
 	};
 	var syncInitialElementAnimationState = function(node) {
@@ -6468,16 +6540,18 @@ class FrameBuilder_Exporter {
 	scope.querySelectorAll('[data-fb-scroll-sequence]').forEach(initScrollSequence);
 
 	instances.forEach(function(instance) {
-		var timer = null;
+		var timers = [];
 		var scrollVariantFrame = null;
 		var lockedScrollVariantTarget = null;
 		var scrollVariantBaseId = '';
 		var activeVariantId = instance.dataset.fbActiveVariant || '';
 		var baseVariantId = '';
-		var clearTimer = function() {
-			if (!timer) return;
-			window.clearTimeout(timer);
-			timer = null;
+		var clearTimers = function() {
+			if (!timers.length) return;
+			timers.forEach(function(timerId) {
+				window.clearTimeout(timerId);
+			});
+			timers = [];
 		};
 		var isDefaultVariantNode = function(node) {
 			return (node && node.dataset ? (node.dataset.fbVariantMode || 'default') : 'default') === 'default';
@@ -6538,16 +6612,47 @@ class FrameBuilder_Exporter {
 			}, { setBase: false, queueAppear: false });
 		};
 		var queueAppear = function() {
-			clearTimer();
+			clearTimers();
 			var active = getBaseVariantNode();
-			if (!active || active.dataset.fbTrigger !== 'appear') return;
-			var target = active.dataset.fbTargetVariantId;
-			if (!target) return;
-			var delay = Math.max(0, parseNumber(active.dataset.fbDelay, 0) * 1000);
-			var transition = parseTransition(active);
-			timer = window.setTimeout(function() {
-				showVariant(target, transition);
-			}, delay);
+			if (!active) return;
+			if (active.dataset.fbTrigger === 'appear' && active.dataset.fbTargetVariantId) {
+				var activeDelay = Math.max(0, parseNumber(active.dataset.fbDelay, 0) * 1000);
+				var activeTransition = parseTransition(active);
+				var activeTimerId = window.setTimeout(function() {
+					showVariant(active.dataset.fbTargetVariantId, activeTransition);
+					timers = timers.filter(function(entry) { return entry !== activeTimerId; });
+				}, activeDelay);
+				timers.push(activeTimerId);
+			}
+			active.querySelectorAll('[data-fb-node-id][data-fb-trigger="appear"][data-fb-target-variant-id]').forEach(function(node) {
+				var delay = Math.max(0, parseNumber(node.dataset.fbDelay, 0) * 1000);
+				var transition = parseTransition(node);
+				var timerId = window.setTimeout(function() {
+					showVariant(node.dataset.fbTargetVariantId, transition);
+					timers = timers.filter(function(entry) { return entry !== timerId; });
+				}, delay);
+				timers.push(timerId);
+			});
+		};
+		var runNodeTrigger = function(node, expected) {
+			if (!node || node.dataset.fbTrigger !== expected) return false;
+			var active = getBaseVariantNode();
+			if (!active || active !== node.closest('.fb-component-variant')) return false;
+			var target = node.dataset.fbTargetVariantId;
+			if (!target) return false;
+			var delay = Math.max(0, parseNumber(node.dataset.fbDelay, 0) * 1000);
+			var transition = parseTransition(node);
+			clearTimers();
+			if (delay > 0) {
+				var timerId = window.setTimeout(function() {
+					showVariant(target, transition);
+					timers = timers.filter(function(entry) { return entry !== timerId; });
+				}, delay);
+				timers.push(timerId);
+				return true;
+			}
+			showVariant(target, transition);
+			return true;
 		};
 		var runTrigger = function(expected) {
 			var active = getBaseVariantNode();
@@ -6556,15 +6661,39 @@ class FrameBuilder_Exporter {
 			if (!target) return;
 			var delay = Math.max(0, parseNumber(active.dataset.fbDelay, 0) * 1000);
 			var transition = parseTransition(active);
-			clearTimer();
+			clearTimers();
 			if (delay > 0) {
-				timer = window.setTimeout(function() {
+				var timerId = window.setTimeout(function() {
 					showVariant(target, transition);
+					timers = timers.filter(function(entry) { return entry !== timerId; });
 				}, delay);
+				timers.push(timerId);
 				return;
 			}
 			showVariant(target, transition);
 		};
+		instance.querySelectorAll('[data-fb-node-id][data-fb-target-variant-id]').forEach(function(node) {
+			if (node.classList.contains('fb-component-instance')) return;
+			if (node.dataset.fbComponentTriggerBound === 'true') return;
+			node.dataset.fbComponentTriggerBound = 'true';
+			node.addEventListener('click', function(event) {
+				if (!runNodeTrigger(node, 'click')) return;
+				event.stopPropagation();
+			});
+			node.addEventListener('pointerdown', function(event) {
+				applyVisualState('pressed');
+				if (!runNodeTrigger(node, 'click-start')) return;
+				event.stopPropagation();
+			});
+			node.addEventListener('mouseenter', function() {
+				applyVisualState('hover');
+				runNodeTrigger(node, 'mouse-enter');
+			});
+			node.addEventListener('mouseleave', function() {
+				applyVisualState(null);
+				runNodeTrigger(node, 'mouse-leave');
+			});
+		});
 		var getScrollVariantBaseId = function() {
 			return scrollVariantBaseId || baseVariantId || instance.dataset.fbBaseVariant || getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || '');
 		};

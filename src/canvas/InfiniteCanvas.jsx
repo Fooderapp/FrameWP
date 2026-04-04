@@ -2787,6 +2787,7 @@ export default function InfiniteCanvas() {
   const addComponentVariant = useEditorStore(s => s.addComponentVariant);
   const ensureComponentEditorVariantState = useEditorStore(s => s.ensureComponentEditorVariantState);
   const updateComponentEditorVariantInteraction = useEditorStore(s => s.updateComponentEditorVariantInteraction);
+  const updateComponentEditorElementInteraction = useEditorStore(s => s.updateComponentEditorElementInteraction);
   const deleteElement       = useEditorStore(s => s.deleteElement);
   const reparentElement      = useEditorStore(s => s.reparentElement);
   const setHoveredId         = useEditorStore(s => s.setHoveredId);
@@ -2829,8 +2830,8 @@ export default function InfiniteCanvas() {
   const [draggingElementId, setDraggingElementId] = useState(null); // element being dragged (for ghost opacity)
   const [draggingElementBpId, setDraggingElementBpId] = useState(null);
   const [variantRootLayout, setVariantRootLayout] = useState({});
-  const [variantConnectionDraft, setVariantConnectionDraft] = useState(null); // { sourceVariantId, clientX, clientY }
-  const [variantInteractionModal, setVariantInteractionModal] = useState(null); // { sourceVariantId, targetVariantId, initialInteraction }
+  const [variantConnectionDraft, setVariantConnectionDraft] = useState(null); // { sourceVariantId, sourceElementId, clientX, clientY }
+  const [variantInteractionModal, setVariantInteractionModal] = useState(null); // { sourceVariantId, sourceElementId, targetVariantId, initialInteraction }
   const [contextMenu,      setContextMenu]      = useState(null);
   const [componentModal,   setComponentModal]   = useState(null);
   const clipboard = useRef(null);
@@ -3090,29 +3091,34 @@ export default function InfiniteCanvas() {
     return null;
   }, [activeSurface, componentEditor.page?.elements, variantRootLayout]);
 
-  const openVariantInteractionModal = useCallback((sourceVariantId, targetVariantId) => {
+  const openVariantInteractionModal = useCallback((sourceVariantId, targetVariantId, sourceElementId = null) => {
     if (!sourceVariantId || !targetVariantId) return;
     const sourceVariant = (componentEditor.variants ?? []).find((variant) => variant.id === sourceVariantId) ?? null;
     if (!sourceVariant) return;
+    const sourceElement = sourceElementId
+      ? (componentEditor.page?.elements ?? []).find((element) => element.id === sourceElementId) ?? null
+      : null;
+    const sourceInteraction = sourceElement?.base?.componentInteraction ?? sourceVariant?.interaction ?? null;
 
     setVariantInteractionModal({
       sourceVariantId,
+      sourceElementId,
       targetVariantId,
-      initialInteraction: sourceVariant?.interaction?.targetVariantId === targetVariantId
+      initialInteraction: sourceInteraction?.targetVariantId === targetVariantId
         ? {
             targetVariantId,
-            trigger: sourceVariant.interaction.trigger,
-            delay: sourceVariant.interaction.delay ?? 0,
-            transition: sourceVariant.interaction.transition ?? null,
+            trigger: sourceInteraction.trigger,
+            delay: sourceInteraction.delay ?? 0,
+            transition: sourceInteraction.transition ?? null,
           }
         : {
             targetVariantId,
-            trigger: sourceVariant.interaction?.trigger ?? 'click',
-            delay: sourceVariant.interaction?.targetVariantId ? (sourceVariant.interaction.delay ?? 0) : 0,
-            transition: sourceVariant.interaction?.transition ?? null,
+            trigger: sourceInteraction?.trigger ?? 'click',
+            delay: sourceInteraction?.targetVariantId ? (sourceInteraction.delay ?? 0) : 0,
+            transition: sourceInteraction?.transition ?? null,
           },
     });
-  }, [componentEditor.variants]);
+  }, [componentEditor.page?.elements, componentEditor.variants]);
 
   useEffect(() => {
     if (!selection && drag.current?.type?.startsWith?.('gradient-linear')) {
@@ -3259,7 +3265,7 @@ export default function InfiniteCanvas() {
         const target = resolveVariantRootAtClientPoint(e.clientX, e.clientY, { excludeVariantId: current.sourceVariantId });
 
         if (target) {
-          openVariantInteractionModal(current.sourceVariantId, target.variantId);
+          openVariantInteractionModal(current.sourceVariantId, target.variantId, current.sourceElementId ?? null);
         }
 
         return null;
@@ -5871,8 +5877,38 @@ export default function InfiniteCanvas() {
     : null;
   const activeVariantConnector = activeSurface === 'component'
     ? (() => {
-        const entry = variantRootLayout[componentEditor.activeVariantId] ?? null;
-        return entry?.mode === 'default' ? entry : null;
+        const activeVariant = (componentEditor.variants ?? []).find((variant) => variant.id === componentEditor.activeVariantId) ?? null;
+        if (!activeVariant || !isDefaultVariant(activeVariant)) return null;
+
+        const activeElements = (componentEditor.page?.elements ?? []);
+        const selectedElement = selection?.elementId
+          ? activeElements.find((entry) => entry.id === selection.elementId) ?? null
+          : null;
+        const sourceElement = selectedElement?.componentEditorVariantId === activeVariant.id
+          ? selectedElement
+          : activeElements.find((entry) => !entry.parentId && entry.componentRoot && entry.componentEditorVariantId === activeVariant.id) ?? null;
+        if (!sourceElement) return null;
+
+        const boardDom = document.querySelector('.fb-artboard[data-bp="desktop"]');
+        const node = boardDom?.querySelector(`[data-id="${sourceElement.id}"]`) ?? null;
+        if (!node) return null;
+
+        const rect = node.getBoundingClientRect();
+        const currentBp = useEditorStore.getState().breakpointDefs.desktop;
+        const currentScale = useEditorStore.getState().viewport.scale ?? 1;
+        const boardRect = boardDom.getBoundingClientRect();
+        const left = currentBp.x + (rect.left - boardRect.left) / currentScale;
+        const top = currentBp.y + (rect.top - boardRect.top) / currentScale;
+        const width = rect.width / currentScale;
+        const height = rect.height / currentScale;
+        return {
+          variantId: activeVariant.id,
+          sourceElementId: sourceElement.componentRoot ? null : sourceElement.id,
+          sourceElementName: sourceElement.name || sourceElement.type || activeVariant.name,
+          mode: activeVariant.mode,
+          from: { x: left + width, y: top + (height / 2) },
+          connector: { x: left + width, y: top + (height / 2) },
+        };
       })()
     : null;
   const connectorContainerRect = containerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
@@ -5884,18 +5920,46 @@ export default function InfiniteCanvas() {
     ? (componentEditor.variants ?? []).flatMap((variant) => {
         if (!isDefaultVariant(variant)) return [];
         if (variant.id !== componentEditor.activeVariantId) return [];
-        const source = variantRootLayout[variant.id];
-        const target = variant.interaction?.targetVariantId ? variantRootLayout[variant.interaction.targetVariantId] : null;
-        if (!source || !target) return [];
-        return [{
-          key: `${variant.id}-${variant.interaction.targetVariantId}`,
-          sourceVariantId: variant.id,
-          targetVariantId: variant.interaction.targetVariantId,
-          path: buildConnectorPath(source.from, target.to),
-          end: target.to,
-          trigger: variant.interaction.trigger,
-          delay: variant.interaction.delay ?? 0,
-        }];
+        const activeElements = componentEditor.page?.elements ?? [];
+        const connectedElements = activeElements.filter((element) => (
+          element.componentEditorVariantId === variant.id
+          && !!element.base?.componentInteraction?.targetVariantId
+        ));
+        const rootElement = activeElements.find((element) => !element.parentId && element.componentRoot && element.componentEditorVariantId === variant.id) ?? null;
+        const sources = [
+          ...(variant.interaction?.targetVariantId && rootElement
+            ? [{ element: rootElement, interaction: variant.interaction, isRoot: true }]
+            : []),
+          ...connectedElements.map((element) => ({ element, interaction: element.base.componentInteraction, isRoot: false })),
+        ];
+
+        return sources.flatMap(({ element, interaction, isRoot }) => {
+          const target = interaction?.targetVariantId ? variantRootLayout[interaction.targetVariantId] : null;
+          if (!target) return [];
+          const boardDom = document.querySelector('.fb-artboard[data-bp="desktop"]');
+          const node = boardDom?.querySelector(`[data-id="${element.id}"]`) ?? null;
+          if (!node) return [];
+          const rect = node.getBoundingClientRect();
+          const currentBp = useEditorStore.getState().breakpointDefs.desktop;
+          const currentScale = useEditorStore.getState().viewport.scale ?? 1;
+          const boardRect = boardDom.getBoundingClientRect();
+          const left = currentBp.x + (rect.left - boardRect.left) / currentScale;
+          const top = currentBp.y + (rect.top - boardRect.top) / currentScale;
+          const width = rect.width / currentScale;
+          const height = rect.height / currentScale;
+          const from = { x: left + width, y: top + (height / 2) };
+          return [{
+            key: `${variant.id}-${element.id}-${interaction.targetVariantId}`,
+            sourceVariantId: variant.id,
+            sourceElementId: isRoot ? null : element.id,
+            sourceName: element.name || element.type || variant.name,
+            targetVariantId: interaction.targetVariantId,
+            path: buildConnectorPath(from, target.to),
+            end: target.to,
+            trigger: interaction.trigger,
+            delay: interaction.delay ?? 0,
+          }];
+        });
       })
     : [];
   const draftHoverTarget = variantConnectionDraft
@@ -5905,10 +5969,12 @@ export default function InfiniteCanvas() {
     ? clientToWorldPoint(connectorContainerRect, useEditorStore.getState().viewport, { x: variantConnectionDraft.clientX, y: variantConnectionDraft.clientY })
     : null);
   const variantDraftPath = variantConnectionDraft && variantRootLayout[variantConnectionDraft.sourceVariantId]
-    ? buildConnectorPath(variantRootLayout[variantConnectionDraft.sourceVariantId].from, draftEndpoint)
+    ? buildConnectorPath(activeVariantConnector?.sourceElementId === variantConnectionDraft.sourceElementId ? activeVariantConnector.from : variantRootLayout[variantConnectionDraft.sourceVariantId].from, draftEndpoint)
     : null;
   const variantInteractionSource = variantInteractionModal
-    ? (componentEditor.variants ?? []).find((variant) => variant.id === variantInteractionModal.sourceVariantId) ?? null
+    ? (variantInteractionModal.sourceElementId
+        ? (componentEditor.page?.elements ?? []).find((element) => element.id === variantInteractionModal.sourceElementId) ?? null
+        : (componentEditor.variants ?? []).find((variant) => variant.id === variantInteractionModal.sourceVariantId) ?? null)
     : null;
   const variantInteractionTarget = variantInteractionModal
     ? (componentEditor.variants ?? []).find((variant) => variant.id === variantInteractionModal.targetVariantId) ?? null
@@ -5917,19 +5983,24 @@ export default function InfiniteCanvas() {
   const saveVariantInteraction = useCallback((nextInteraction) => {
     if (!variantInteractionModal?.sourceVariantId || !variantInteractionModal?.targetVariantId) return;
     const sourceVariant = (componentEditor.variants ?? []).find((variant) => variant.id === variantInteractionModal.sourceVariantId) ?? null;
-    updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, {
+    const interactionPayload = {
       targetVariantId: variantInteractionModal.targetVariantId,
       trigger: nextInteraction.trigger,
       delay: nextInteraction.delay,
-      transition: nextInteraction.transition ?? sourceVariant?.interaction?.transition ?? null,
-    });
+      transition: variantInteractionModal.sourceElementId
+        ? null
+        : (nextInteraction.transition ?? sourceVariant?.interaction?.transition ?? null),
+    };
+    if (variantInteractionModal.sourceElementId) updateComponentEditorElementInteraction(variantInteractionModal.sourceElementId, interactionPayload);
+    else updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, interactionPayload);
     setVariantInteractionModal(null);
-  }, [componentEditor.variants, updateComponentEditorVariantInteraction, variantInteractionModal]);
+  }, [componentEditor.variants, updateComponentEditorElementInteraction, updateComponentEditorVariantInteraction, variantInteractionModal]);
   const disconnectVariantInteraction = useCallback(() => {
     if (!variantInteractionModal?.sourceVariantId) return;
-    updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, null);
+    if (variantInteractionModal.sourceElementId) updateComponentEditorElementInteraction(variantInteractionModal.sourceElementId, null);
+    else updateComponentEditorVariantInteraction(variantInteractionModal.sourceVariantId, null);
     setVariantInteractionModal(null);
-  }, [updateComponentEditorVariantInteraction, variantInteractionModal]);
+  }, [updateComponentEditorElementInteraction, updateComponentEditorVariantInteraction, variantInteractionModal]);
 
   return (
     <div
@@ -6120,7 +6191,7 @@ export default function InfiniteCanvas() {
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    openVariantInteractionModal(line.sourceVariantId, line.targetVariantId);
+                    openVariantInteractionModal(line.sourceVariantId, line.targetVariantId, line.sourceElementId ?? null);
                   }}
                 />
                 <circle
@@ -6131,7 +6202,7 @@ export default function InfiniteCanvas() {
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    openVariantInteractionModal(line.sourceVariantId, line.targetVariantId);
+                    openVariantInteractionModal(line.sourceVariantId, line.targetVariantId, line.sourceElementId ?? null);
                   }}
                 />
               </g>
@@ -6170,11 +6241,12 @@ export default function InfiniteCanvas() {
               e.stopPropagation();
               setVariantConnectionDraft({
                 sourceVariantId: activeVariantConnector.variantId,
+                sourceElementId: activeVariantConnector.sourceElementId ?? null,
                 clientX: e.clientX,
                 clientY: e.clientY,
               });
             }}
-            title={`Connect ${activeVariantConnector.name}`}
+            title={`Connect ${activeVariantConnector.sourceElementName || activeVariantConnector.name}`}
           >
             <span className="fb-variant-connector-handle__dot" />
             <span className="fb-variant-connector-handle__core" aria-hidden="true" />
@@ -6217,12 +6289,15 @@ export default function InfiniteCanvas() {
       )}
       {variantInteractionModal && variantInteractionSource && variantInteractionTarget ? (
         <VariantInteractionModal
-          sourceName={variantInteractionSource.name}
+          sourceName={variantInteractionSource?.name || variantInteractionSource?.type || 'Layer'}
           targetName={variantInteractionTarget.name}
           initialInteraction={variantInteractionModal.initialInteraction}
+          showTransition={!variantInteractionModal.sourceElementId}
           onCancel={() => setVariantInteractionModal(null)}
           onSave={saveVariantInteraction}
-          onDisconnect={variantInteractionSource.interaction ? disconnectVariantInteraction : null}
+          onDisconnect={((variantInteractionModal.sourceElementId
+            ? variantInteractionSource?.base?.componentInteraction
+            : variantInteractionSource?.interaction) ? disconnectVariantInteraction : null)}
         />
       ) : null}
       {radiusDragInfo && (

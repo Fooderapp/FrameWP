@@ -945,7 +945,7 @@ function getTransformMode(rotationX, rotationY) {
   return Math.abs(normalizeFiniteNumber(rotationX, 0)) > 0.01 || Math.abs(normalizeFiniteNumber(rotationY, 0)) > 0.01 ? '3d' : '2d';
 }
 
-function VariableBindingButton({ variables, binding, onSelect, onRemove, title = 'Bind variable' }) {
+function VariableBindingButton({ variables, binding, onSelect, onRemove, title = 'Bind variable', extraActions = [] }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
 
@@ -976,6 +976,20 @@ function VariableBindingButton({ variables, binding, onSelect, onRemove, title =
               Remove binding
             </button>
           ) : null}
+          {extraActions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className="fb-binding-popover__item"
+              onClick={() => {
+                action.onClick?.();
+                setOpen(false);
+              }}
+            >
+              <span>{action.label}</span>
+              {action.meta ? <span className="fb-binding-popover__meta">{action.meta}</span> : null}
+            </button>
+          ))}
           {variables.length ? variables.map((variable) => (
             <button
               key={`${variable.scope}:${variable.id}`}
@@ -1681,9 +1695,10 @@ function getComponentControlDefaultValue(type, options = []) {
 
 function getComponentControlTypeForProperty(property) {
   if (property === 'hidden') return 'boolean';
-  if (property === 'src') return 'url';
+  if (property === 'src' || property === 'linkUrl' || property === 'styles.backgroundImage') return 'url';
+  if (property === 'styles.fontFamily') return 'text';
   if (property === 'styles.backgroundColor' || property === 'styles.color') return 'color';
-  if (property === 'styles.borderRadius' || property === 'styles.borderWidth' || property === 'styles.opacity') return 'number';
+  if (property === 'styles.borderRadius' || property === 'styles.borderWidth' || property === 'styles.opacity' || property === 'styles.zIndex') return 'number';
   return 'text';
 }
 
@@ -1733,6 +1748,12 @@ function getComponentControlEffectiveValue(control, props = {}) {
     : control.defaultValue;
 }
 
+function getComponentVariableDisplayLabel(control) {
+  const preferredName = typeof control?.name === 'string' ? control.name.trim() : '';
+  const fallbackLabel = typeof control?.label === 'string' ? control.label.trim() : '';
+  return preferredName || fallbackLabel || 'variable';
+}
+
 // ── Reset override button ───────────────────────────────────────
 function ResetBtn({ show, onReset }) {
   if (!show) return null;
@@ -1772,10 +1793,13 @@ export default function PropertiesPanel() {
   const components          = useEditorStore(s => s.components);
   const changeComponentInstanceVariant = useEditorStore(s => s.changeComponentInstanceVariant);
   const updateComponentInstanceProp = useEditorStore(s => s.updateComponentInstanceProp);
+  const setComponentInstancePropBinding = useEditorStore(s => s.setComponentInstancePropBinding);
   const updateComponentEditorVariantInteraction = useEditorStore(s => s.updateComponentEditorVariantInteraction);
-  const addComponentEditorControl = useEditorStore(s => s.addComponentEditorControl);
-  const updateComponentEditorControl = useEditorStore(s => s.updateComponentEditorControl);
-  const removeComponentEditorControl = useEditorStore(s => s.removeComponentEditorControl);
+  const updateComponentEditorElementInteraction = useEditorStore(s => s.updateComponentEditorElementInteraction);
+  const updateComponentEditorVariantChildTransition = useEditorStore(s => s.updateComponentEditorVariantChildTransition);
+  const bindComponentEditorControlToProperty = useEditorStore(s => s.bindComponentEditorControlToProperty);
+  const clearComponentEditorControlBinding = useEditorStore(s => s.clearComponentEditorControlBinding);
+  const updateEditingComponentMeta = useEditorStore(s => s.updateEditingComponentMeta);
   const activeVectorPoint   = useEditorStore(s => s.activeVectorPoint);
   const setActiveVectorPoint = useEditorStore(s => s.setActiveVectorPoint);
   const clearActiveVectorPoint = useEditorStore(s => s.clearActiveVectorPoint);
@@ -2053,12 +2077,123 @@ export default function PropertiesPanel() {
     }
     return compatible;
   };
+  const getCompatibleVariablesForComponentControl = (control) => {
+    if (!control) return [];
+    const hasVariantBinding = (control.bindings ?? []).some((binding) => binding.property === 'variant');
+    const supportedTypes = hasVariantBinding
+      ? ['string']
+      : control.type === 'boolean'
+        ? ['boolean']
+        : control.type === 'color'
+          ? ['color']
+          : control.type === 'number'
+            ? ['number']
+            : control.type === 'image'
+              ? ['image', 'string']
+              : ['string', 'number'];
+    return allVariables.filter((variable) => variable.scope !== 'loop-item' && supportedTypes.includes(variable.type));
+  };
   const commitBinding = (propertyKey, binding, applyValue) => {
     if (!element || !selection) return;
     setElementPropertyBinding(element.id, selection.bpId || 'desktop', propertyKey, binding);
     const variable = resolveBoundVariable(binding);
     if (variable && typeof applyValue === 'function') applyValue(variable.value);
     pushHistory();
+  };
+  const isComponentBindingTypeCompatible = (control, propertyKey) => {
+    const expectedType = getComponentControlTypeForProperty(propertyKey);
+    if (!control) return false;
+    if (expectedType === 'text') return control.type === 'text' || control.type === 'textarea';
+    if (expectedType === 'url') return control.type === 'url' || control.type === 'image' || control.type === 'text';
+    return control.type === expectedType;
+  };
+  const getBoundComponentControl = (propertyKey) => {
+    if (activeSurface !== 'component' || !componentControlTargetId) return null;
+    return (componentEditor.controls ?? []).find((control) => (
+      (control.bindings ?? []).some((binding) => binding.elementId === componentControlTargetId && binding.property === propertyKey)
+    )) ?? null;
+  };
+  const getCompatibleComponentControlVariables = (propertyKey) => {
+    if (activeSurface !== 'component') return [];
+    return (componentEditor.controls ?? [])
+      .filter((control) => isComponentBindingTypeCompatible(control, propertyKey))
+      .map((control) => ({
+        scope: 'component',
+        id: control.id,
+        name: getComponentVariableDisplayLabel(control),
+        type: control.type,
+      }));
+  };
+  const commitComponentControlBinding = (propertyKey, controlId, applyValue) => {
+    if (activeSurface !== 'component' || !componentControlTargetId || !controlId) return;
+    bindComponentEditorControlToProperty(controlId, componentControlTargetId, propertyKey);
+    const variable = (componentEditor.controls ?? []).find((control) => control.id === controlId) ?? null;
+    if (variable && typeof applyValue === 'function') applyValue(getComponentControlEffectiveValue(variable));
+    pushHistory();
+  };
+  const removeComponentControlBinding = (propertyKey) => {
+    if (activeSurface !== 'component' || !componentControlTargetId) return;
+    clearComponentEditorControlBinding(componentControlTargetId, propertyKey);
+    pushHistory();
+  };
+  const renderInlineBindingButton = (propertyKey, applyValue, options = {}) => {
+    if (activeSurface === 'page') {
+      return (
+        <VariableBindingButton
+          variables={getCompatibleBindingVariables(propertyKey)}
+          binding={getBindingForProperty(propertyKey)}
+          onSelect={(binding) => commitBinding(propertyKey, binding, applyValue)}
+          onRemove={() => commitBinding(propertyKey, null)}
+          title={options.title || 'Bind variable'}
+        />
+      );
+    }
+    if (activeSurface === 'component' && !isAssetStorageSurface && componentControlTargetId) {
+      const boundControl = getBoundComponentControl(propertyKey);
+      return (
+        <VariableBindingButton
+          variables={getCompatibleComponentControlVariables(propertyKey)}
+          binding={boundControl ? { scope: 'component', variableId: boundControl.id } : null}
+          onSelect={(binding) => commitComponentControlBinding(propertyKey, binding.variableId, applyValue)}
+          onRemove={() => removeComponentControlBinding(propertyKey)}
+          title={options.title || 'Bind component variable'}
+        />
+      );
+    }
+    return null;
+  };
+  const getInlineBoundVariable = (propertyKey) => {
+    if (activeSurface === 'page') return resolveBoundVariable(getBindingForProperty(propertyKey));
+    const control = getBoundComponentControl(propertyKey);
+    if (!control) return null;
+    return {
+      scope: 'component',
+      type: control.type,
+      name: getComponentVariableDisplayLabel(control),
+    };
+  };
+  const getComponentInstancePropBinding = (controlId) => {
+    if (activeSurface !== 'page' || !element?.componentInstance) return null;
+    return element.componentInstance?.bindings?.[controlId] ?? null;
+  };
+  const getComponentInstanceBoundVariable = (controlId) => resolveBoundVariable(getComponentInstancePropBinding(controlId));
+  const renderComponentInstanceBindingButton = (control) => {
+    if (activeSurface !== 'page' || !element?.componentInstance || !control) return null;
+    return (
+      <VariableBindingButton
+        variables={getCompatibleVariablesForComponentControl(control)}
+        binding={getComponentInstancePropBinding(control.id)}
+        onSelect={(binding) => {
+          setComponentInstancePropBinding(element.id, control.id, binding);
+          commit();
+        }}
+        onRemove={() => {
+          setComponentInstancePropBinding(element.id, control.id, null);
+          commit();
+        }}
+        title="Bind exposed variable"
+      />
+    );
   };
 
   const interactions = Array.isArray(element?.interactions) ? element.interactions : [];
@@ -2148,144 +2283,99 @@ export default function PropertiesPanel() {
     const rawSmoothScroll = page?.smoothScroll?.[artboardSel] ?? null;
     const effectiveSmoothScroll = resolvePageSmoothScroll(page?.smoothScroll, artboardSel);
     const isSmoothScrollInherited = artboardSel !== 'desktop' && rawSmoothScroll == null;
-    const updatePad   = (key, val) => {
-      const cur = rawPad ?? { ...effectivePad };
-      setPagePadding(artboardSel, { ...cur, [key]: val });
-    };
+
+    const setBg = (v) => setPageBackground(artboardSel, v);
+    const setPad = (side, v) => setPagePadding(artboardSel, { ...(rawPad ?? effectivePad), [side]: v });
+
     return (
       <aside className="fb-right">
-        <div className="fb-right__header">{bp.name} Artboard</div>
+        <div className="fb-right__header">Artboard</div>
         <div className="fb-panel-body">
-          <Section title="Size">
-            <div className="fb-quad" style={{ marginBottom: 6 }}>
-              <NumberInput
-                value={bp.width}
-                min={100}
-                label="W"
-                onChange={v => updateBreakpointDef(artboardSel, { width: Math.max(100, v) })}
-              />
-              <NumberInput
-                value={bp.height}
-                min={100}
-                label="H"
-                onChange={v => updateBreakpointDef(artboardSel, { height: Math.max(100, v) })}
-              />
-            </div>
-            <div className="fb-artboard-bp-note">
-              {artboardSel === 'desktop'
-                ? 'Canvas width for builder display. Live site is fully responsive.'
-                : `Breakpoint threshold ≤ ${bp.width}px. Live site is fully responsive.`}
-            </div>
-          </Section>
           <Section title="Background">
-            <div className="fb-prop-row--full">
-              <FillPicker
-                value={effectiveBg}
-                onChange={v => setPageBackground(artboardSel, v)}
-              />
+            <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+              <span className="fb-prop-label">Fill</span>
+              <FillPicker value={effectiveBg} onChange={v => setBg(v)} mixed={false} />
             </div>
             {artboardSel !== 'desktop' && (
-              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {isBgInherited
                   ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
-                  : <IconButton icon={UIIcons.inherit} title="Inherit background from parent" onClick={() => setPageBackground(artboardSel, null)} />
-                }
-              </div>
-            )}
-          </Section>
-          <Section title="Scrolling">
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Smooth scroll</span>
-              <Toggle value={!!effectiveSmoothScroll} onChange={value => setPageSmoothScroll(artboardSel, value)} />
-            </div>
-            <div className="fb-artboard-bp-note">
-              Enables smooth scrolling for anchor jumps and scripted page scrolling on the published page.
-            </div>
-            {artboardSel !== 'desktop' && (
-              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                {isSmoothScrollInherited
-                  ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
-                  : <IconButton icon={UIIcons.inherit} title="Inherit smooth scroll from parent" onClick={() => setPageSmoothScroll(artboardSel, null)} />
-                }
+                  : <IconButton icon={UIIcons.inherit} title="Inherit background from parent" onClick={() => setPageBackground(artboardSel, null)} />}
               </div>
             )}
           </Section>
           <Section title="Padding">
             <div className="fb-quad" style={{ marginBottom: 6 }}>
-              <NumberInput value={activePad.top}    label="T" onChange={v => updatePad('top', v)}    />
-              <NumberInput value={activePad.right}  label="R" onChange={v => updatePad('right', v)}  />
-              <NumberInput value={activePad.bottom} label="B" onChange={v => updatePad('bottom', v)} />
-              <NumberInput value={activePad.left}   label="L" onChange={v => updatePad('left', v)}   />
+              <NumberInput value={activePad.top} label="T" onChange={v => setPad('top', v)} />
+              <NumberInput value={activePad.right} label="R" onChange={v => setPad('right', v)} />
+              <NumberInput value={activePad.bottom} label="B" onChange={v => setPad('bottom', v)} />
+              <NumberInput value={activePad.left} label="L" onChange={v => setPad('left', v)} />
             </div>
             {artboardSel !== 'desktop' && (
               <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {isPadInherited
                   ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
-                  : <IconButton icon={UIIcons.inherit} title="Inherit padding from parent" onClick={() => setPagePadding(artboardSel, null)} />
-                }
+                  : <IconButton icon={UIIcons.inherit} title="Inherit padding from parent" onClick={() => setPagePadding(artboardSel, null)} />}
+              </div>
+            )}
+          </Section>
+          <Section title="Smooth Scroll">
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Behavior</span>
+              <select className="fb-prop-input" value={effectiveSmoothScroll ?? 'smooth'} onChange={(event) => setPageSmoothScroll(artboardSel, event.target.value)}>
+                <option value="smooth">Smooth</option>
+                <option value="auto">Auto</option>
+              </select>
+            </div>
+            {artboardSel !== 'desktop' && (
+              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                {isSmoothScrollInherited
+                  ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
+                  : <IconButton icon={UIIcons.inherit} title="Inherit smooth scroll from parent" onClick={() => setPageSmoothScroll(artboardSel, null)} />}
               </div>
             )}
           </Section>
           {(() => {
-            const rawLayout      = page?.layout?.[artboardSel] ?? null;
+            const rawLayout = page?.layout?.[artboardSel] ?? null;
             const effectiveLayout = resolvePageLayout(page?.layout, artboardSel);
             const isLayoutInherited = artboardSel !== 'desktop' && rawLayout == null;
-            const layoutOn       = effectiveLayout !== null;
+            const layoutOn = effectiveLayout !== null;
             const DEFAULT_LAYOUT = { flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'flex-start', flexWrap: 'nowrap', gap: 0 };
-            const activeLayout   = effectiveLayout ?? savedLayoutRef.current[artboardSel] ?? DEFAULT_LAYOUT;
-            const updLayout      = (key, val) => {
+            const activeLayout = effectiveLayout ?? savedLayoutRef.current[artboardSel] ?? DEFAULT_LAYOUT;
+            const updLayout = (key, val) => {
               const cur = rawLayout ?? { ...activeLayout };
               setPageLayout(artboardSel, { ...cur, [key]: val });
             };
             return (
               <Section title="Layout">
-                {/* On/Off toggle row */}
                 <div className="fb-prop-row">
                   <span className="fb-prop-label">Auto layout</span>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                    <IconButton
-                      icon={UIIcons.layoutOff}
-                      active={!layoutOn}
-                      title="Auto layout off"
-                      onClick={() => {
-                        // Save the current layout before clearing, so re-enabling restores it
-                        if (layoutOn) savedLayoutRef.current[artboardSel] = { ...activeLayout };
-                        setPageLayout(artboardSel, null);
-                      }}
-                    />
-                    <IconButton
-                      icon={UIIcons.layoutOn}
-                      active={layoutOn}
-                      title="Auto layout on"
-                      onClick={() => {
-                        if (!layoutOn) {
-                          // Restore last saved layout, or fall back to defaults
-                          setPageLayout(artboardSel, savedLayoutRef.current[artboardSel] ?? { ...DEFAULT_LAYOUT });
-                        }
-                      }}
-                    />
+                    <IconButton icon={UIIcons.layoutOff} active={!layoutOn} title="Auto layout off" onClick={() => {
+                      if (layoutOn) savedLayoutRef.current[artboardSel] = { ...activeLayout };
+                      setPageLayout(artboardSel, null);
+                    }} />
+                    <IconButton icon={UIIcons.layoutOn} active={layoutOn} title="Auto layout on" onClick={() => {
+                      if (!layoutOn) setPageLayout(artboardSel, savedLayoutRef.current[artboardSel] ?? { ...DEFAULT_LAYOUT });
+                    }} />
                   </div>
                 </div>
-                {layoutOn && (
+                {layoutOn ? (
                   <>
-                    <LayoutGrid
-                      layout={activeLayout}
-                      onChange={(key, val) => updLayout(key, val)}
-                    />
+                    <LayoutGrid layout={activeLayout} onChange={(key, val) => updLayout(key, val)} />
                     <div className="fb-prop-row" style={{ marginTop: 6 }}>
                       <span className="fb-prop-label">Gap</span>
                       <NumberInput value={activeLayout.gap ?? 0} min={0} onChange={v => updLayout('gap', v)} />
                     </div>
                   </>
-                )}
-                {artboardSel !== 'desktop' && (
+                ) : null}
+                {artboardSel !== 'desktop' ? (
                   <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                     {isLayoutInherited
                       ? <span style={{ opacity: 0.7 }}>↑ Inherited from parent</span>
-                      : <IconButton icon={UIIcons.inherit} title="Inherit layout from parent" onClick={() => setPageLayout(artboardSel, null)} />
-                    }
+                      : <IconButton icon={UIIcons.inherit} title="Inherit layout from parent" onClick={() => setPageLayout(artboardSel, null)} />}
                   </div>
-                )}
+                ) : null}
               </Section>
             );
           })()}
@@ -2924,7 +3014,6 @@ export default function PropertiesPanel() {
   const formConfig = normalizeFormConfig(resolved?.formConfig);
   const loopConfig = normalizeLoopConfig(resolved?.loop);
   const formFieldOptions = ensureFormOptions(resolved?.fieldOptions);
-  const allowVariableBindings = activeSurface === 'page';
   const componentMeta = isComponentInstanceOnPage ? selectedComponentMeta : null;
   const componentVariants = isComponentInstanceOnPage ? selectedComponentVariants : [];
   const componentVariantId = componentVariants.some((variant) => variant.id === element.componentInstance?.variantId)
@@ -2933,25 +3022,113 @@ export default function PropertiesPanel() {
   const selectedEditorVariant = activeSurface === 'component' && !isAssetStorageSurface && element.componentRoot
     ? (componentEditor.variants ?? []).find((variant) => variant.id === element.componentEditorVariantId)
     : null;
-  const transitionEditorVariant = transitionModalState?.variantId
-    ? (componentEditor.variants ?? []).find((variant) => variant.id === transitionModalState.variantId) ?? null
-    : null;
   const selectedEditorVariantLabel = getVariantLabel(componentEditor.variants ?? [], selectedEditorVariant);
-    const transitionEditorTarget = transitionEditorVariant?.interaction?.targetVariantId
-      ? (componentEditor.variants ?? []).find((variant) => variant.id === transitionEditorVariant.interaction.targetVariantId) ?? null
+  const selectedEditorVariantId = selectedEditorVariant?.id ?? null;
+  const selectedVariantChildInteractions = selectedEditorVariantId
+    ? (componentEditor.page?.elements ?? []).filter((entry) => (
+        entry.componentEditorVariantId === selectedEditorVariantId
+        && !entry.componentRoot
+        && !!entry.base?.componentInteraction?.targetVariantId
+      ))
+    : [];
+  const childInteractionCountForSelectedVariant = selectedVariantChildInteractions.length;
+  const firstSelectedVariantChildInteraction = selectedVariantChildInteractions[0]?.base?.componentInteraction ?? null;
+  const selectedRootTransitionSource = (() => {
+    if (!element.componentRoot || !isDefaultVariant(selectedEditorVariant)) return null;
+    if (selectedEditorVariant?.interaction?.targetVariantId) {
+      return {
+        kind: 'variant',
+        variantId: selectedEditorVariant.id,
+        sourceName: selectedEditorVariant.name || 'Primary',
+        targetVariantId: selectedEditorVariant.interaction.targetVariantId,
+        transition: selectedEditorVariant.interaction?.transition ?? null,
+        delay: selectedEditorVariant.interaction?.delay ?? 0,
+      };
+    }
+    // Fallback: check if root element itself has a componentInteraction (legacy connector data path)
+    const rootElementInteraction = element.base?.componentInteraction;
+    if (rootElementInteraction?.targetVariantId) {
+      return {
+        kind: 'variant',
+        variantId: selectedEditorVariant.id,
+        sourceName: selectedEditorVariant.name || 'Primary',
+        targetVariantId: rootElementInteraction.targetVariantId,
+        transition: rootElementInteraction.transition ?? null,
+        delay: rootElementInteraction.delay ?? 0,
+        _rootElementId: element.id,
+      };
+    }
+    if (childInteractionCountForSelectedVariant > 0) {
+      return {
+        kind: 'variant-child',
+        variantId: selectedEditorVariant.id,
+        sourceName: selectedEditorVariant.name || 'Primary',
+        targetVariantId: firstSelectedVariantChildInteraction?.targetVariantId ?? null,
+        transition: selectedEditorVariant?.childTransition ?? null,
+        delay: 0,
+        childCount: childInteractionCountForSelectedVariant,
+      };
+    }
+    return null;
+  })();
+  const transitionEditorSource = (() => {
+    if (!transitionModalState) return null;
+    const sourceVariant = transitionModalState.variantId
+      ? (componentEditor.variants ?? []).find((variant) => variant.id === transitionModalState.variantId) ?? null
       : null;
+    if (!sourceVariant) return null;
+    if (transitionModalState.kind === 'variant-child') {
+      return {
+        kind: 'variant-child',
+        sourceName: sourceVariant.name || 'Primary',
+        transition: sourceVariant.childTransition ?? null,
+        variant: sourceVariant,
+        targetName: transitionModalState.targetName || 'Connected child variants',
+      };
+    }
+    if (!sourceVariant?.interaction?.targetVariantId) {
+      // Fallback: check root element's componentInteraction (legacy connector data path)
+      const rootEl = selectedRootTransitionSource?._rootElementId
+        ? (componentEditor.page?.elements ?? []).find((entry) => entry.id === selectedRootTransitionSource._rootElementId) ?? null
+        : null;
+      const rootElInteraction = rootEl?.base?.componentInteraction;
+      if (!rootElInteraction?.targetVariantId) return null;
+      return {
+        kind: 'variant',
+        sourceName: sourceVariant.name || 'Primary',
+        interaction: rootElInteraction,
+        variant: sourceVariant,
+        _rootElementId: rootEl.id,
+      };
+    }
+    return {
+      kind: 'variant',
+      sourceName: sourceVariant.name || 'Primary',
+      interaction: sourceVariant.interaction,
+      variant: sourceVariant,
+    };
+  })();
+  const transitionEditorTarget = transitionEditorSource?.kind === 'variant-child'
+    ? { name: transitionEditorSource.targetName || 'Connected child variants' }
+    : (transitionEditorSource?.interaction?.targetVariantId
+      ? (componentEditor.variants ?? []).find((variant) => variant.id === transitionEditorSource.interaction.targetVariantId) ?? null
+      : null);
   const componentEditorControls = activeSurface === 'component' && !isAssetStorageSurface ? (componentEditor.controls ?? []) : [];
   const componentControlTargetId = activeSurface === 'component' && !isAssetStorageSurface
     ? (element?.componentSourceId ?? element?.id ?? null)
     : null;
+  const allowVariableBindings = activeSurface === 'page' || (activeSurface === 'component' && !isAssetStorageSurface && !!componentControlTargetId);
   const componentControlPropertyOptions = activeSurface === 'component' && !isAssetStorageSurface
     ? getComponentControlPropertyOptions(element)
     : [];
-  const selectedEditorTransitionTarget = selectedEditorVariant?.interaction?.targetVariantId
-    ? (componentEditor.variants ?? []).find((variant) => variant.id === selectedEditorVariant.interaction.targetVariantId) ?? null
+  const editingComponentMeta = activeSurface === 'component' && !isAssetStorageSurface
+    ? (components.find((entry) => entry.id === componentEditor.componentId) ?? null)
+    : null;
+  const selectedRootTransitionTarget = selectedRootTransitionSource?.targetVariantId
+    ? (componentEditor.variants ?? []).find((variant) => variant.id === selectedRootTransitionSource.targetVariantId) ?? null
     : null;
   const openTransitionContextMenu = (event) => {
-    if (!selectedEditorVariant?.interaction?.targetVariantId) return;
+    if (!selectedRootTransitionSource) return;
     event.preventDefault();
     setHasStoredTransitionClipboard(!!readStoredTransitionClipboard());
     setTransitionContextMenu({
@@ -2960,10 +3137,10 @@ export default function PropertiesPanel() {
     });
   };
   const copySelectedTransition = async () => {
-    if (!selectedEditorVariant?.interaction?.targetVariantId) return;
+    if (!selectedRootTransitionSource) return;
     const payload = {
-      transition: selectedEditorVariant.interaction?.transition ?? { type: 'instant' },
-      delay: selectedEditorVariant.interaction?.delay ?? 0,
+      transition: selectedRootTransitionSource.transition ?? { type: 'instant' },
+      delay: selectedRootTransitionSource.delay ?? 0,
     };
     writeStoredTransitionClipboard(payload);
     setHasStoredTransitionClipboard(true);
@@ -2977,7 +3154,7 @@ export default function PropertiesPanel() {
     setTransitionContextMenu(null);
   };
   const pasteSelectedTransition = async () => {
-    if (!selectedEditorVariant?.interaction?.targetVariantId) return;
+    if (!selectedRootTransitionSource) return;
     let payload = readStoredTransitionClipboard();
     if (!payload && navigator.clipboard?.readText) {
       try {
@@ -2992,12 +3169,23 @@ export default function PropertiesPanel() {
       setTransitionContextMenu(null);
       return;
     }
-    updateComponentEditorVariantInteraction(selectedEditorVariant.id, {
-      targetVariantId: selectedEditorVariant.interaction?.targetVariantId,
-      trigger: selectedEditorVariant.interaction?.trigger ?? 'click',
-      delay: typeof payload.delay === 'number' ? payload.delay : (selectedEditorVariant.interaction?.delay ?? 0),
-      transition: payload.transition,
-    });
+    if (selectedRootTransitionSource.kind === 'variant-child') {
+      updateComponentEditorVariantChildTransition(selectedRootTransitionSource.variantId, payload.transition);
+    } else if (selectedRootTransitionSource._rootElementId) {
+      updateComponentEditorElementInteraction(selectedRootTransitionSource._rootElementId, {
+        targetVariantId: selectedRootTransitionSource.targetVariantId,
+        trigger: selectedEditorVariant?.interaction?.trigger ?? element.base?.componentInteraction?.trigger ?? 'click',
+        delay: typeof payload.delay === 'number' ? payload.delay : (element.base?.componentInteraction?.delay ?? 0),
+        transition: payload.transition,
+      });
+    } else {
+      updateComponentEditorVariantInteraction(selectedRootTransitionSource.variantId, {
+        targetVariantId: selectedEditorVariant?.interaction?.targetVariantId,
+        trigger: selectedEditorVariant?.interaction?.trigger ?? 'click',
+        delay: typeof payload.delay === 'number' ? payload.delay : (selectedEditorVariant?.interaction?.delay ?? 0),
+        transition: payload.transition,
+      });
+    }
     commit();
     setHasStoredTransitionClipboard(true);
     setTransitionContextMenu(null);
@@ -3120,17 +3308,23 @@ export default function PropertiesPanel() {
   };
   const componentControlAuthoringSection = activeSurface === 'component' && !isAssetStorageSurface ? (
     <Section
-      title="Component Controls"
+      title="Component Variables"
       action={(
         <HeaderActionButton
           icon={UIIcons.plusCircle}
-          title="Add control"
+          title="Add variable"
           label="Add"
           onClick={() => {
             const defaultProperty = componentControlPropertyOptions[0]?.value ?? 'text';
             const inferredType = getComponentControlTypeForProperty(defaultProperty);
+            const nextVariableName = `${(element?.name || componentControlPropertyOptions[0]?.label || 'variable')}`
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '_')
+              .replace(/^_+|_+$/g, '') || 'variable';
             const nextControlId = addComponentEditorControl({
-              label: `${element?.name || 'Element'} ${componentControlPropertyOptions[0]?.label || 'Control'}`,
+              name: nextVariableName,
+              label: `${element?.name || 'Element'} ${componentControlPropertyOptions[0]?.label || 'Variable'}`,
               type: inferredType,
               defaultValue: getComponentControlDefaultValue(inferredType),
               options: inferredType === 'select' ? [{ label: 'Option 1', value: 'option-1' }] : [],
@@ -3144,10 +3338,10 @@ export default function PropertiesPanel() {
       )}
     >
       <div className="fb-artboard-bp-note" style={{ marginBottom: componentEditorControls.length ? 10 : 0 }}>
-        Select a layer in the component editor, then create controls that bind to its text, source, visibility, or style properties.
+        Create named variables for this component, bind them to the selected layer, then edit them from component instances on the page.
       </div>
       {!componentEditorControls.length ? (
-        <div className="fb-artboard-bp-note">No controls yet. Add one from the currently selected element.</div>
+        <div className="fb-artboard-bp-note">No variables yet. Select a layer, then add one and bind it to text, source, visibility, or style properties.</div>
       ) : null}
       {componentEditorControls.map((control) => {
         const primaryBinding = control.bindings?.[0] ?? null;
@@ -3157,7 +3351,17 @@ export default function PropertiesPanel() {
         return (
           <div key={control.id} className="fb-section-block" style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
             <div className="fb-prop-row">
-              <span className="fb-prop-label">Label</span>
+              <span className="fb-prop-label">Name</span>
+              <input
+                className="fb-prop-input"
+                value={control.name ?? ''}
+                onChange={(event) => updateComponentEditorControl(control.id, { name: event.target.value })}
+                onBlur={commit}
+                placeholder="hero_title"
+              />
+            </div>
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Title</span>
               <input
                 className="fb-prop-input"
                 value={control.label}
@@ -3211,8 +3415,8 @@ export default function PropertiesPanel() {
             </div>
             <div className="fb-artboard-bp-note" style={{ marginTop: -4, marginBottom: 8 }}>
               {primaryBinding
-                ? `Currently bound to ${bindingTargetLabel} · ${primaryBinding.property}`
-                : 'Choose a property from the currently selected element to bind this control.'}
+                ? `Exposed as ${getComponentVariableDisplayLabel(control)} and currently bound to ${bindingTargetLabel} · ${primaryBinding.property}`
+                : 'Choose a property from the currently selected element to bind this variable.'}
             </div>
             {control.type === 'select' ? (
               <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
@@ -3292,7 +3496,7 @@ export default function PropertiesPanel() {
                   commit();
                 }}
               >
-                Remove control
+                Remove variable
               </button>
             </div>
           </div>
@@ -3352,6 +3556,21 @@ export default function PropertiesPanel() {
         <aside className="fb-right">
           <div className="fb-right__header">{selectedEditorVariantLabel}</div>
           <div className="fb-panel-body">
+            <Section title="Component">
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Name</span>
+                <input
+                  className="fb-prop-input"
+                  value={componentEditor.page?.title ?? editingComponentMeta?.name ?? ''}
+                  onChange={(event) => updateEditingComponentMeta({ name: event.target.value })}
+                  onBlur={commit}
+                  placeholder="Component name"
+                />
+              </div>
+              <div className="fb-artboard-bp-note">
+                This name is shown in the assets list and in the instance properties panel.
+              </div>
+            </Section>
             <Section title="Size">
               <div className="fb-size-section" style={{ marginBottom: 6 }}>
                 <div className="fb-size-section__rows fb-size-section__rows--compact">
@@ -3390,10 +3609,9 @@ export default function PropertiesPanel() {
                     : 'This variant inherits from Primary until you override its size here. Instances on the main canvas can still be resized independently.'}
               </div>
             </Section>
-              {componentControlAuthoringSection}
             {isDefaultVariant(selectedEditorVariant) ? (
               <Section title="Transition">
-                {selectedEditorTransitionTarget ? (
+                {selectedRootTransitionSource ? (
                   <>
                     <div className="fb-prop-row">
                       <span className="fb-prop-label">Type</span>
@@ -3401,15 +3619,31 @@ export default function PropertiesPanel() {
                         type="button"
                         className="fb-secondary-btn fb-prop-action-btn"
                         onContextMenu={openTransitionContextMenu}
-                        onClick={() => setTransitionModalState({ variantId: selectedEditorVariant.id })}
+                        onClick={() => setTransitionModalState(
+                          selectedRootTransitionSource.kind === 'variant-child'
+                            ? {
+                                kind: 'variant-child',
+                                variantId: selectedRootTransitionSource.variantId,
+                                targetName: childInteractionCountForSelectedVariant === 1
+                                  ? (selectedRootTransitionTarget?.name || 'Connected child variant')
+                                  : `${childInteractionCountForSelectedVariant} child connections`,
+                              }
+                            : { kind: 'variant', variantId: selectedRootTransitionSource.variantId }
+                        )}
                       >
-                        {getTransitionSummary(selectedEditorVariant?.interaction)}
+                        {getTransitionSummary({ targetVariantId: selectedRootTransitionSource.targetVariantId || 'child', transition: selectedRootTransitionSource.transition })}
                       </button>
                     </div>
                     <div className="fb-artboard-bp-note">
-                      Animates {selectedEditorVariant?.name || 'this variant'} to {selectedEditorTransitionTarget.name || 'the target variant'} on component change.
+                      {selectedRootTransitionSource.kind === 'variant-child'
+                        ? `Applies this transition style to all child connections in ${selectedRootTransitionSource.sourceName || 'this variant'}.`
+                        : `Animates ${selectedRootTransitionSource.sourceName || 'this variant'} to ${selectedRootTransitionTarget?.name || 'the target variant'} on component change.`}
                     </div>
                   </>
+                ) : childInteractionCountForSelectedVariant > 0 && element.componentRoot ? (
+                  <div className="fb-artboard-bp-note">
+                    This variant has {childInteractionCountForSelectedVariant} connected child transition{childInteractionCountForSelectedVariant === 1 ? '' : 's'}. Select a connected layer to edit one.
+                  </div>
                 ) : (
                   <div className="fb-artboard-bp-note">
                     Connect this variant to another variant first. Then you can edit how the change animates here.
@@ -3419,20 +3653,31 @@ export default function PropertiesPanel() {
             ) : null}
           </div>
         </aside>
-        {transitionModalState && transitionEditorVariant && transitionEditorTarget && typeof document !== 'undefined' ? createPortal(
+        {transitionModalState && transitionEditorSource && transitionEditorTarget && typeof document !== 'undefined' ? createPortal(
           <VariantTransitionModal
-            sourceName={transitionEditorVariant.name}
+            sourceName={transitionEditorSource.sourceName}
             targetName={transitionEditorTarget.name}
-            initialTransition={transitionEditorVariant.interaction?.transition}
-            initialDelay={transitionEditorVariant.interaction?.delay ?? 0}
+            initialTransition={transitionEditorSource.kind === 'variant-child' ? transitionEditorSource.transition : transitionEditorSource.interaction?.transition}
+            initialDelay={transitionEditorSource.kind === 'variant-child' ? 0 : (transitionEditorSource.interaction?.delay ?? 0)}
             onCancel={() => setTransitionModalState(null)}
             onSave={({ transition, delay }) => {
-              updateComponentEditorVariantInteraction(transitionEditorVariant.id, {
-                targetVariantId: transitionEditorVariant.interaction?.targetVariantId,
-                trigger: transitionEditorVariant.interaction?.trigger ?? 'click',
-                delay,
-                transition,
-              });
+              if (transitionEditorSource.kind === 'variant-child') {
+                updateComponentEditorVariantChildTransition(transitionEditorSource.variant.id, transition);
+              } else if (transitionEditorSource._rootElementId) {
+                updateComponentEditorElementInteraction(transitionEditorSource._rootElementId, {
+                  targetVariantId: transitionEditorSource.interaction?.targetVariantId,
+                  trigger: transitionEditorSource.interaction?.trigger ?? 'click',
+                  delay,
+                  transition,
+                });
+              } else {
+                updateComponentEditorVariantInteraction(transitionEditorSource.variant.id, {
+                  targetVariantId: transitionEditorSource.interaction?.targetVariantId,
+                  trigger: transitionEditorSource.interaction?.trigger ?? 'click',
+                  delay,
+                  transition,
+                });
+              }
               commit();
               setTransitionModalState(null);
             }}
@@ -3473,16 +3718,16 @@ export default function PropertiesPanel() {
   const backgroundImageBinding = getBindingForProperty('styles.backgroundImage');
   const sourceBinding = getBindingForProperty('src');
   const zIndexBinding = getBindingForProperty('styles.zIndex');
-  const textBindingVariable = resolveBoundVariable(textBinding);
-  const fontFamilyBindingVariable = resolveBoundVariable(fontFamilyBinding);
-  const textColorBindingVariable = resolveBoundVariable(textColorBinding);
-  const iconColorBindingVariable = resolveBoundVariable(iconColorBinding);
-  const hiddenBindingVariable = resolveBoundVariable(hiddenBinding);
-  const linkUrlBindingVariable = resolveBoundVariable(linkUrlBinding);
-  const fillBindingVariable = resolveBoundVariable(fillBinding);
-  const backgroundImageBindingVariable = resolveBoundVariable(backgroundImageBinding);
-  const sourceBindingVariable = resolveBoundVariable(sourceBinding);
-  const zIndexBindingVariable = resolveBoundVariable(zIndexBinding);
+  const textBindingVariable = getInlineBoundVariable('text');
+  const fontFamilyBindingVariable = getInlineBoundVariable('styles.fontFamily');
+  const textColorBindingVariable = getInlineBoundVariable('styles.color');
+  const iconColorBindingVariable = getInlineBoundVariable('styles.color');
+  const hiddenBindingVariable = getInlineBoundVariable('hidden');
+  const linkUrlBindingVariable = getInlineBoundVariable('linkUrl');
+  const fillBindingVariable = getInlineBoundVariable('styles.backgroundColor');
+  const backgroundImageBindingVariable = getInlineBoundVariable('styles.backgroundImage');
+  const sourceBindingVariable = getInlineBoundVariable('src');
+  const zIndexBindingVariable = getInlineBoundVariable('styles.zIndex');
 
   return (
     <>
@@ -3512,6 +3757,10 @@ export default function PropertiesPanel() {
           />
         ) : null}
 
+        {activeSurface === 'component' && !isAssetStorageSurface && !element.componentRoot ? (
+          null
+        ) : null}
+
         {isComponentInstanceOnPage && componentMeta ? (
           <Section title="Component">
             <div className="fb-prop-row">
@@ -3535,10 +3784,16 @@ export default function PropertiesPanel() {
             </div>
             {(componentMeta.controls ?? []).map((control) => {
               const value = getComponentControlEffectiveValue(control, element.componentInstance?.props ?? {});
+              const variableDisplayName = getComponentVariableDisplayLabel(control);
+              const boundVariable = getComponentInstanceBoundVariable(control.id);
               return (
                 <div key={control.id} className="fb-prop-row" style={{ alignItems: control.type === 'textarea' ? 'flex-start' : 'center' }}>
-                  <span className="fb-prop-label">{control.label}</span>
-                  {control.type === 'boolean' ? (
+                  <VariableBindingLabel label={variableDisplayName}>
+                    {renderComponentInstanceBindingButton(control)}
+                  </VariableBindingLabel>
+                  {boundVariable ? (
+                    <BoundVariableCta variable={boundVariable} fallbackLabel={variableDisplayName} />
+                  ) : control.type === 'boolean' ? (
                     <Toggle
                       value={value === true}
                       onChange={(nextValue) => {
@@ -3597,8 +3852,6 @@ export default function PropertiesPanel() {
             })}
           </Section>
         ) : null}
-
-        {componentControlAuthoringSection}
 
         {saveAsAssetSection}
 
@@ -4001,14 +4254,13 @@ export default function PropertiesPanel() {
                 <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
                   <VariableBindingLabel label={shapeKind === 'polygon' ? 'Fill' : (shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen' ? 'Stroke' : 'Color')}>
                     {allowVariableBindings ? (
-                      <VariableBindingButton
-                        variables={getCompatibleBindingVariables('styles.color')}
-                        binding={iconColorBinding}
-                        onSelect={(binding) => commitBinding('styles.color', binding, (value) => updateStyles(element.id, bpId, shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen'
-                          ? { color: value || '#111827', strokeColor: value || '#111827' }
-                          : { color: value || '#111827' }))}
-                        onRemove={() => commitBinding('styles.color', null)}
-                      />
+                      renderInlineBindingButton('styles.color', (value) => updateStyles(element.id, bpId, shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen'
+                        ? { color: value || '#111827', strokeColor: value || '#111827' }
+                        : { color: value || '#111827' }), {
+                        label: `${shapeKind === 'polygon' ? 'Fill' : (shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen' ? 'Stroke' : 'Color')}`,
+                        fallbackLabel: shapeKind === 'polygon' ? 'Fill' : (shapeKind === 'line' || shapeKind === 'path' || shapeKind === 'pen' ? 'Stroke' : 'Color'),
+                        createMeta: 'Create a component color variable for this shape',
+                      })
                     ) : null}
                   </VariableBindingLabel>
                   <div style={{ width: '100%' }}>
@@ -4055,12 +4307,11 @@ export default function PropertiesPanel() {
                 <div className="fb-prop-row" style={{ marginBottom: 8 }}>
                   <VariableBindingLabel label="Content">
                     {allowVariableBindings ? (
-                      <VariableBindingButton
-                        variables={getCompatibleBindingVariables('text')}
-                        binding={textBinding}
-                        onSelect={(binding) => commitBinding('text', binding, (value) => updText(`${value ?? ''}`))}
-                        onRemove={() => commitBinding('text', null)}
-                      />
+                      renderInlineBindingButton('text', (value) => updText(`${value ?? ''}`), {
+                        label: 'Text Content',
+                        fallbackLabel: 'Content',
+                        createMeta: 'Create a component text variable for this layer',
+                      })
                     ) : null}
                   </VariableBindingLabel>
                   {textBindingVariable ? <BoundVariableCta variable={textBindingVariable} fallbackLabel="Text source" /> : <div className="fb-prop-value">Text source</div>}
@@ -4083,12 +4334,11 @@ export default function PropertiesPanel() {
             <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
               <VariableBindingLabel label="Font">
                 {allowVariableBindings ? (
-                  <VariableBindingButton
-                    variables={getCompatibleBindingVariables('styles.fontFamily')}
-                    binding={fontFamilyBinding}
-                    onSelect={(binding) => commitBinding('styles.fontFamily', binding, (value) => updateStyles(element.id, bpId, { fontFamily: `${value ?? ''}` }))}
-                    onRemove={() => commitBinding('styles.fontFamily', null)}
-                  />
+                  renderInlineBindingButton('styles.fontFamily', (value) => updateStyles(element.id, bpId, { fontFamily: `${value ?? ''}` }), {
+                    label: 'Font Family',
+                    fallbackLabel: 'Font',
+                    createMeta: 'Create a component font variable for this layer',
+                  })
                 ) : null}
               </VariableBindingLabel>
               {fontFamilyBindingVariable ? (
@@ -4140,12 +4390,11 @@ export default function PropertiesPanel() {
             <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
               <VariableBindingLabel label="Color">
                 {allowVariableBindings ? (
-                  <VariableBindingButton
-                    variables={getCompatibleBindingVariables('styles.color')}
-                    binding={textColorBinding}
-                    onSelect={(binding) => commitBinding('styles.color', binding, (value) => updateStyles(element.id, bpId, { color: value || '#000000' }))}
-                    onRemove={() => commitBinding('styles.color', null)}
-                  />
+                  renderInlineBindingButton('styles.color', (value) => updateStyles(element.id, bpId, { color: value || '#000000' }), {
+                    label: 'Text Color',
+                    fallbackLabel: 'Color',
+                    createMeta: 'Create a component color variable for this text layer',
+                  })
                 ) : null}
               </VariableBindingLabel>
               {textColorBindingVariable ? <BoundVariableCta variable={textColorBindingVariable} fallbackLabel="Color variable" /> : <FillPicker value={s.color ?? '#000000'} onChange={v => { updS('color', v); commit(); }} />}
@@ -4253,12 +4502,11 @@ export default function PropertiesPanel() {
             <div className="fb-prop-row" style={{ marginTop: 8, alignItems: 'flex-start' }}>
               <VariableBindingLabel label="Tint">
                 {allowVariableBindings ? (
-                  <VariableBindingButton
-                    variables={getCompatibleBindingVariables('styles.color')}
-                    binding={iconColorBinding}
-                    onSelect={(binding) => commitBinding('styles.color', binding, (value) => updateStyles(element.id, bpId, { color: value || '#111827' }))}
-                    onRemove={() => commitBinding('styles.color', null)}
-                  />
+                  renderInlineBindingButton('styles.color', (value) => updateStyles(element.id, bpId, { color: value || '#111827' }), {
+                    label: 'Icon Tint',
+                    fallbackLabel: 'Tint',
+                    createMeta: 'Create a component color variable for this icon',
+                  })
                 ) : null}
               </VariableBindingLabel>
               <div style={{ width: '100%' }}>
@@ -5553,12 +5801,11 @@ export default function PropertiesPanel() {
           <div className="fb-prop-row">
             <VariableBindingLabel label="Visible">
               {allowVariableBindings ? (
-                <VariableBindingButton
-                  variables={getCompatibleBindingVariables('hidden')}
-                  binding={hiddenBinding}
-                    onSelect={(binding) => commitBinding('hidden', binding, (value) => updateElementLayout(element.id, bpId, { hidden: !value }))}
-                  onRemove={() => commitBinding('hidden', null)}
-                />
+                renderInlineBindingButton('hidden', (value) => updateElementLayout(element.id, bpId, { hidden: !value }), {
+                  label: 'Visible',
+                  fallbackLabel: 'Visibility',
+                  createMeta: 'Create a component visibility variable for this layer',
+                })
               ) : null}
             </VariableBindingLabel>
             {hiddenBindingVariable ? (
@@ -5580,12 +5827,11 @@ export default function PropertiesPanel() {
               <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
                 <VariableBindingLabel label="URL">
                   {allowVariableBindings ? (
-                    <VariableBindingButton
-                      variables={getCompatibleBindingVariables('linkUrl')}
-                      binding={linkUrlBinding}
-                      onSelect={(binding) => commitBinding('linkUrl', binding, (value) => updateElementLayout(element.id, bpId, { linkUrl: `${value ?? ''}` }))}
-                      onRemove={() => commitBinding('linkUrl', null)}
-                    />
+                    renderInlineBindingButton('linkUrl', (value) => updateElementLayout(element.id, bpId, { linkUrl: `${value ?? ''}` }), {
+                      label: 'Link URL',
+                      fallbackLabel: 'URL',
+                      createMeta: 'Create a component link variable for this layer',
+                    })
                   ) : null}
                 </VariableBindingLabel>
                 <div style={{ width: '100%' }}>
@@ -5611,12 +5857,11 @@ export default function PropertiesPanel() {
           <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
             <VariableBindingLabel label="Fill">
               {allowVariableBindings && element.type !== 'image' ? (
-                <VariableBindingButton
-                  variables={getCompatibleBindingVariables('styles.backgroundColor')}
-                  binding={fillBinding}
-                  onSelect={(binding) => commitBinding('styles.backgroundColor', binding, (value) => updateStyles(element.id, bpId, { backgroundColor: value || '#000000' }))}
-                  onRemove={() => commitBinding('styles.backgroundColor', null)}
-                />
+                renderInlineBindingButton('styles.backgroundColor', (value) => updateStyles(element.id, bpId, { backgroundColor: value || '#000000' }), {
+                  label: 'Background Fill',
+                  fallbackLabel: 'Fill',
+                  createMeta: 'Create a component fill variable for this layer',
+                })
               ) : null}
             </VariableBindingLabel>
             <div style={{ width: '100%' }}>
@@ -5635,12 +5880,11 @@ export default function PropertiesPanel() {
             <div className="fb-prop-row">
               <VariableBindingLabel label="Image">
                 {allowVariableBindings ? (
-                  <VariableBindingButton
-                    variables={getCompatibleBindingVariables('styles.backgroundImage')}
-                    binding={backgroundImageBinding}
-                    onSelect={(binding) => commitBinding('styles.backgroundImage', binding, (value) => updateStyles(element.id, bpId, { backgroundImage: `${value ?? ''}` }))}
-                    onRemove={() => commitBinding('styles.backgroundImage', null)}
-                  />
+                  renderInlineBindingButton('styles.backgroundImage', (value) => updateStyles(element.id, bpId, { backgroundImage: `${value ?? ''}` }), {
+                    label: 'Background Image',
+                    fallbackLabel: 'Image',
+                    createMeta: 'Create a component image variable for this layer',
+                  })
                 ) : null}
               </VariableBindingLabel>
               {backgroundImageBindingVariable ? <BoundVariableCta variable={backgroundImageBindingVariable} fallbackLabel="Image variable" /> : <MediaPickerButton value={s.backgroundImage ?? ''} onChange={v => { updS('backgroundImage', v); commit(); }} mediaType="image" />}
@@ -5950,12 +6194,11 @@ export default function PropertiesPanel() {
           {!isComponentInstanceOnPage && element.type === 'image' && allowVariableBindings && (
             <div className="fb-prop-row">
               <VariableBindingLabel label="Source">
-                <VariableBindingButton
-                  variables={getCompatibleBindingVariables('src')}
-                  binding={sourceBinding}
-                  onSelect={(binding) => commitBinding('src', binding, (value) => updateElementLayout(element.id, bpId, { src: `${value ?? ''}` }))}
-                  onRemove={() => commitBinding('src', null)}
-                />
+                {renderInlineBindingButton('src', (value) => updateElementLayout(element.id, bpId, { src: `${value ?? ''}` }), {
+                  label: 'Image Source',
+                  fallbackLabel: 'Source',
+                  createMeta: 'Create a component image variable for this layer',
+                })}
               </VariableBindingLabel>
               {sourceBindingVariable ? <BoundVariableCta variable={sourceBindingVariable} fallbackLabel="Source variable" /> : <div className="fb-artboard-bp-note">Image source can be driven by an image variable.</div>}
             </div>
@@ -6065,12 +6308,11 @@ export default function PropertiesPanel() {
           <div className="fb-prop-row">
             <VariableBindingLabel label="Z Index">
               {allowVariableBindings ? (
-                <VariableBindingButton
-                  variables={getCompatibleBindingVariables('styles.zIndex')}
-                  binding={zIndexBinding}
-                  onSelect={(binding) => commitBinding('styles.zIndex', binding, (value) => updateStyles(element.id, bpId, { zIndex: Math.round(parseFloat(value) || 0) }))}
-                  onRemove={() => commitBinding('styles.zIndex', null)}
-                />
+                renderInlineBindingButton('styles.zIndex', (value) => updateStyles(element.id, bpId, { zIndex: Math.round(parseFloat(value) || 0) }), {
+                  label: 'Z Index',
+                  fallbackLabel: 'Z Index',
+                  createMeta: 'Create a component z-index variable for this layer',
+                })
               ) : null}
             </VariableBindingLabel>
             {zIndexBindingVariable ? (

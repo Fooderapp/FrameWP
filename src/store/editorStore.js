@@ -151,6 +151,7 @@ export function isAssetStorageComponentId(componentId) {
 }
 
 function deepClone(value) {
+  if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
 }
 
@@ -1164,7 +1165,7 @@ function normalizeIconFields(source = {}) {
     ? source.iconName.trim()
     : fallbackIcon.value;
   const presetMarkup = getIconPresetMarkup(iconName);
-  const svgMarkup = sanitizeSvgMarkup(source?.svgMarkup ?? '') || presetMarkup;
+  const svgMarkup = sanitizeSvgMarkup(source?.svgMarkup ?? '', { forceCurrentColor: iconSource !== 'custom' }) || presetMarkup;
   return {
     iconSource,
     iconName,
@@ -1620,6 +1621,11 @@ function applyComponentBindingValue(element, binding, control, value) {
     return;
   }
 
+  if (binding.property === 'linkUrl') {
+    element.base.linkUrl = typeof value === 'string' ? value : `${value ?? ''}`;
+    return;
+  }
+
   if (binding.property === 'hidden') {
     element.base.hidden = value === true;
     return;
@@ -1634,17 +1640,51 @@ function applyComponentBindingValue(element, binding, control, value) {
   setValueAtPath(element.base, ['styles', styleKey], nextValue);
 }
 
-function applyComponentControlPropsToSnapshot(snapshot, component, props = {}) {
+function normalizeComponentInstancePropBindings(bindings) {
+  if (!bindings || typeof bindings !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(bindings)
+      .map(([controlId, binding]) => [controlId, normalizeBindingDefinition(binding)])
+      .filter(([, binding]) => !!binding),
+  );
+}
+
+function resolveComponentInstanceBoundProps(component, propBindings = {}, pageVariables = [], globalVariables = []) {
+  if (!(component?.controls ?? []).length) return {};
+  const variableMaps = getVariableMap(pageVariables, globalVariables, []);
+  return Object.fromEntries(
+    (component.controls ?? []).flatMap((control) => {
+      const binding = propBindings?.[control.id] ?? null;
+      if (!binding) return [];
+      const variable = variableMaps[binding.scope]?.get(binding.variableId) ?? null;
+      if (!variable) return [];
+      return [[control.id, normalizeComponentControlValue(control.type, variable.value, control.options ?? [])]];
+    }),
+  );
+}
+
+function applyComponentControlPropsToSnapshot(snapshot, component, props = {}, propBindings = {}) {
   if (!Array.isArray(snapshot) || !snapshot.length || !(component?.controls ?? []).length) return deepClone(snapshot ?? []);
 
   const nextSnapshot = deepClone(snapshot);
   const elementMap = new Map(nextSnapshot.map((entry) => [entry.id, entry]));
+  const normalizedPropBindings = normalizeComponentInstancePropBindings(propBindings);
 
   component.controls.forEach((control) => {
     const value = getComponentControlValue(control, props);
+    const instanceBinding = normalizedPropBindings[control.id] ?? null;
     (control.bindings ?? []).forEach((binding) => {
       const target = elementMap.get(binding.elementId);
       if (!target) return;
+      if (instanceBinding && binding.property !== 'variant') {
+        const nextBindings = normalizeElementBindings(target.bindings);
+        nextBindings.desktop = {
+          ...(nextBindings.desktop ?? {}),
+          [binding.property]: instanceBinding,
+        };
+        target.bindings = nextBindings;
+        return;
+      }
       applyComponentBindingValue(target, binding, control, value);
     });
   });
@@ -1679,21 +1719,33 @@ function buildComponentInstanceSubtree(component, {
   bpId = 'desktop',
   variantId = null,
   props = null,
+  propBindings = null,
   role = 'instance',
+  getState = null,
 } = {}) {
   if (!component?.variants?.length) return { instantiated: [], root: null, variant: null, props: {} };
 
+  const state = typeof getState === 'function' ? getState() : {};
+  const currentPage = (state.pages ?? []).find((page) => page.id === state.currentPageId) ?? null;
   const nextProps = normalizeComponentInstanceProps(component, props ?? rootEl?.componentInstance?.props ?? {});
+  const nextPropBindings = normalizeComponentInstancePropBindings(propBindings ?? rootEl?.componentInstance?.bindings ?? {});
+  const boundProps = resolveComponentInstanceBoundProps(
+    component,
+    nextPropBindings,
+    Array.isArray(currentPage?.variables) ? currentPage.variables : [],
+    state.globalVariables ?? [],
+  );
+  const effectiveProps = { ...nextProps, ...boundProps };
   const nextVariantId = resolveComponentInstanceVariantId(
     component,
     variantId ?? rootEl?.componentInstance?.variantId ?? component.defaultVariantId,
-    nextProps,
+    effectiveProps,
   );
   const variant = getComponentVariant(component, nextVariantId);
   const composedSnapshot = composeVariantSnapshot(component, variant?.id ?? component?.defaultVariantId);
   if (!variant || !composedSnapshot.length) return { instantiated: [], root: null, variant: null, props: nextProps };
 
-  const resolvedSnapshot = applyComponentControlPropsToSnapshot(composedSnapshot, component, nextProps);
+  const resolvedSnapshot = applyComponentControlPropsToSnapshot(composedSnapshot, component, effectiveProps, nextPropBindings);
   const instantiated = instantiateComponentSnapshot(resolvedSnapshot, {
     targetRootId,
     targetParentId,
@@ -1705,6 +1757,7 @@ function buildComponentInstanceSubtree(component, {
       variantId: variant.id,
       role: rootEl?.componentInstance?.role ?? role,
       props: nextProps,
+      bindings: nextPropBindings,
     },
   });
   return {
@@ -1731,6 +1784,7 @@ function normalizeComponentVariant(variant, fallbackName = 'Variant', { primary 
       ? ensureComponentPrimaryRoot(variant?.snapshot ?? [])
       : deepClone(Array.isArray(variant?.snapshot) ? variant.snapshot : []),
     interaction: mode === 'default' ? normalizeComponentInteraction(variant?.interaction) : null,
+    childTransition: mode === 'default' ? normalizeComponentTransition(variant?.childTransition) : null,
   };
 }
 
@@ -4561,6 +4615,7 @@ export const useEditorStore = create((set, get) => {
         rootPosition: { x, y },
         bpId,
         role: 'instance',
+        getState: get,
       });
       if (!root) return null;
 
@@ -4594,6 +4649,7 @@ export const useEditorStore = create((set, get) => {
             variantId: rootEl.componentInstance?.variantId ?? component.defaultVariantId,
             props: rootEl.componentInstance?.props ?? {},
             role: rootEl.componentInstance?.role ?? 'instance',
+            getState: get,
           });
           if (!rootNext) return;
           const patched = instantiated.map(el => (
@@ -4620,6 +4676,7 @@ export const useEditorStore = create((set, get) => {
           variantId,
           props: rootEl.componentInstance?.props ?? {},
           role: rootEl.componentInstance?.role ?? 'instance',
+          getState: get,
         });
         if (!rootNext) return els;
         const patched = instantiated.map((el) => (
@@ -4660,7 +4717,42 @@ export const useEditorStore = create((set, get) => {
           targetParentId: rootEl.parentId ?? null,
           variantId: rootEl.componentInstance?.variantId ?? component.defaultVariantId,
           props: nextProps,
+          propBindings: rootEl.componentInstance?.bindings ?? {},
           role: rootEl.componentInstance?.role ?? 'instance',
+          getState: get,
+        });
+        if (!rootNext) return els;
+        const patched = instantiated.map((el) => (
+          el.id === rootNext.id ? preserveComponentRootPlacement(el, rootEl) : el
+        ));
+        return replaceSubtree(els, rootEl.id, patched);
+      });
+    },
+
+    setComponentInstancePropBinding(elementId, controlId, binding) {
+      const rootEl = findEl(getEls(), elementId);
+      const componentId = rootEl?.componentInstance?.componentId;
+      if (!rootEl || !componentId || typeof controlId !== 'string' || !controlId) return;
+
+      const component = get().components.find((item) => item.id === componentId);
+      const control = component?.controls?.find((entry) => entry.id === controlId) ?? null;
+      if (!component || !control) return;
+
+      const nextBindings = normalizeComponentInstancePropBindings(rootEl.componentInstance?.bindings ?? {});
+      const normalizedBinding = normalizeBindingDefinition(binding);
+      if (normalizedBinding) nextBindings[controlId] = normalizedBinding;
+      else delete nextBindings[controlId];
+
+      withPage((els) => {
+        const { instantiated, root: rootNext } = buildComponentInstanceSubtree(component, {
+          rootEl,
+          targetRootId: rootEl.id,
+          targetParentId: rootEl.parentId ?? null,
+          variantId: rootEl.componentInstance?.variantId ?? component.defaultVariantId,
+          props: rootEl.componentInstance?.props ?? {},
+          propBindings: nextBindings,
+          role: rootEl.componentInstance?.role ?? 'instance',
+          getState: get,
         });
         if (!rootNext) return els;
         const patched = instantiated.map((el) => (
@@ -4724,6 +4816,8 @@ export const useEditorStore = create((set, get) => {
         selection: state.selection,
         artboardSel: state.artboardSel,
         hoveredId: state.hoveredId,
+        activeCommentId: state.activeCommentId,
+        activeCanvasTool: state.activeCanvasTool,
         drilledContainerId: state.drilledContainerId,
         pendingDraw: state.pendingDraw,
         leftTab: state.leftTab,
@@ -4766,6 +4860,8 @@ export const useEditorStore = create((set, get) => {
         artboardSel: null,
         hoveredId: null,
         layerHoveredId: null,
+        activeCommentId: null,
+        activeCanvasTool: state.activeCanvasTool === 'comment' ? 'select' : state.activeCanvasTool,
         drilledContainerId: null,
         pendingDraw: null,
         componentEditor: nextComponentEditor,
@@ -4812,6 +4908,25 @@ export const useEditorStore = create((set, get) => {
       });
     },
 
+    updateComponentEditorVariantChildTransition(variantId, transition) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return state;
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            variants: (state.componentEditor.variants ?? []).map((variant) => {
+              if (variant.id !== variantId) return variant;
+              if (!isDefaultComponentVariant(variant)) return { ...variant, childTransition: null };
+              return {
+                ...variant,
+                childTransition: normalizeComponentTransition(transition),
+              };
+            }),
+          },
+        };
+      });
+    },
+
     addComponentEditorControl(initialControl = {}) {
       let createdId = null;
       set((state) => {
@@ -4849,6 +4964,68 @@ export const useEditorStore = create((set, get) => {
           componentEditor: {
             ...state.componentEditor,
             controls: nextControls,
+          },
+        };
+      });
+    },
+
+    bindComponentEditorControlToProperty(controlId, elementId, property) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen || !controlId || !elementId || !property) return state;
+        const controls = state.componentEditor.controls ?? [];
+        const index = controls.findIndex((control) => control.id === controlId);
+        if (index === -1) return state;
+        const nextControls = controls.map((control, controlIndex) => {
+          const filteredBindings = (control.bindings ?? []).filter((binding) => !(binding.elementId === elementId && binding.property === property));
+          const nextControl = control.id === controlId
+            ? { ...control, bindings: [...filteredBindings, { elementId, property }] }
+            : { ...control, bindings: filteredBindings };
+          return normalizeComponentControl(nextControl, controlIndex);
+        });
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            controls: nextControls,
+          },
+        };
+      });
+    },
+
+    clearComponentEditorControlBinding(elementId, property) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen || !elementId || !property) return state;
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            controls: (state.componentEditor.controls ?? []).map((control, controlIndex) => normalizeComponentControl({
+              ...control,
+              bindings: (control.bindings ?? []).filter((binding) => !(binding.elementId === elementId && binding.property === property)),
+            }, controlIndex)),
+          },
+        };
+      });
+    },
+
+    updateComponentEditorElementInteraction(elementId, interaction) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen || !elementId) return state;
+        return {
+          componentEditor: {
+            ...state.componentEditor,
+            page: {
+              ...state.componentEditor.page,
+              elements: (state.componentEditor.page?.elements ?? []).map((element) => (
+                element.id === elementId
+                  ? {
+                      ...element,
+                      base: {
+                        ...element.base,
+                        componentInteraction: normalizeComponentInteraction(interaction),
+                      },
+                    }
+                  : element
+              )),
+            },
           },
         };
       });
@@ -4981,6 +5158,8 @@ export const useEditorStore = create((set, get) => {
         artboardSel: current.uiRestore?.artboardSel ?? null,
         hoveredId: current.uiRestore?.hoveredId ?? null,
         layerHoveredId: null,
+        activeCommentId: current.uiRestore?.activeCommentId ?? null,
+        activeCanvasTool: current.uiRestore?.activeCanvasTool ?? 'select',
         drilledContainerId: current.uiRestore?.drilledContainerId ?? null,
         pendingDraw: current.uiRestore?.pendingDraw ?? null,
         leftTab: current.uiRestore?.leftTab ?? 'layers',
@@ -4991,6 +5170,28 @@ export const useEditorStore = create((set, get) => {
       });
       get().saveComponents(nextComponents);
       get().applyComponentToInstances(current.componentId);
+    },
+
+    updateEditingComponentMeta(updates = {}) {
+      set((state) => {
+        if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen || !state.componentEditor.componentId) return state;
+        if (!Object.prototype.hasOwnProperty.call(updates, 'name')) return state;
+        const resolvedName = `${updates.name ?? ''}`.trim() || 'Untitled Component';
+        return {
+          components: state.components.map((component) => (
+            component.id === state.componentEditor.componentId
+              ? { ...component, name: resolvedName, updatedAt: Date.now() }
+              : component
+          )),
+          componentEditor: {
+            ...state.componentEditor,
+            page: {
+              ...state.componentEditor.page,
+              title: resolvedName,
+            },
+          },
+        };
+      });
     },
 
     repairComponentEditorState() {

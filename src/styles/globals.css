@@ -3282,19 +3282,29 @@ html, body, #framebuilder-root {
 }
 
 .fb-component-editor-overlay__header {
-  height: 58px;
-  padding: 0 18px;
+  min-height: 58px;
+  padding: 10px 18px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
   border-bottom: 1px solid rgba(139, 92, 246, 0.22);
   background: rgba(21, 22, 30, 0.88);
+}
+
+.fb-component-editor-overlay__header > div:first-child {
+  flex: 1 1 320px;
+  min-width: 0;
 }
 
 .fb-component-editor-overlay__actions {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .fb-component-editor-overlay__eyebrow {
@@ -3365,6 +3375,26 @@ html, body, #framebuilder-root {
 .fb-component-editor-overlay__body {
   flex: 1;
   min-height: 0;
+}
+
+.fb-component-editor-overlay .fb-editor {
+  position: relative;
+  inset: auto;
+  height: 100%;
+}
+
+.fb-component-editor-overlay > .fb-bottom-toolbar-wrap {
+  left: 20px;
+  right: 20px;
+  bottom: 20px;
+  transform: none;
+  z-index: 120090;
+}
+
+.fb-component-editor-overlay > .fb-bottom-toolbar-wrap .fb-bottom-toolbar {
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
 }
 
 .fb-component-play-preview {
@@ -9108,6 +9138,126 @@ html, body, #framebuilder-root {
 .fb-app .fb-variant-transition-modal {
   padding: 16px 16px 18px !important;
   border-radius: 24px !important;
+}
+
+.fb-app .fb-component-variables-modal {
+  width: min(760px, calc(100vw - 40px)) !important;
+  max-height: min(82vh, 920px);
+  overflow: auto;
+}
+
+body > .fb-overlay-modal .fb-component-variables-modal {
+  width: min(760px, calc(100vw - 40px)) !important;
+  max-height: min(82vh, 920px);
+  overflow: auto;
+}
+
+.fb-component-variables-modal__intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.fb-component-variables-modal__eyebrow {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.48);
+  margin-bottom: 6px;
+}
+
+.fb-component-variables-modal__selected-name,
+.fb-component-variables-modal__editor-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 4px;
+}
+
+.fb-component-variables-modal__layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  gap: 16px;
+  min-height: 420px;
+}
+
+.fb-component-variables-modal__sidebar,
+.fb-component-variables-modal__editor {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.03);
+}
+
+.fb-component-variables-modal__sidebar {
+  padding: 10px;
+}
+
+.fb-component-variables-modal__sidebar-head {
+  padding: 8px 10px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.72);
+}
+
+.fb-component-variables-modal__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fb-component-variables-modal__item {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  color: #fff;
+  cursor: pointer;
+}
+
+.fb-component-variables-modal__item:hover,
+.fb-component-variables-modal__item.is-active {
+  border-color: rgba(123, 227, 0, 0.45);
+  background: rgba(123, 227, 0, 0.08);
+}
+
+.fb-component-variables-modal__item-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.fb-component-variables-modal__item-meta {
+  font-size: 11px;
+  color: rgba(255,255,255,0.56);
+}
+
+.fb-component-variables-modal__editor {
+  padding: 16px;
+}
+
+.fb-component-variables-modal__editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 860px) {
+  .fb-component-variables-modal__intro,
+  .fb-component-variables-modal__editor-head {
+    flex-direction: column;
+  }
+
+  .fb-component-variables-modal__layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 .fb-app .fb-variant-transition-modal__title {

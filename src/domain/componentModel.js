@@ -13,16 +13,41 @@ const COMPONENT_CONTROL_BINDABLE_PROPERTIES = new Set([
   'text',
   'src',
   'hidden',
+  'linkUrl',
   'variant',
   'styles.backgroundColor',
+  'styles.backgroundImage',
   'styles.color',
+  'styles.fontFamily',
   'styles.borderRadius',
   'styles.borderWidth',
   'styles.opacity',
+  'styles.zIndex',
 ]);
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function slugifyComponentControlName(value, fallback = 'variable') {
+  const normalized = `${value ?? ''}`
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return normalized || fallback;
+}
+
+function ensureUniqueComponentControlName(name, usedNames) {
+  const baseName = slugifyComponentControlName(name);
+  let nextName = baseName;
+  let suffix = 2;
+  while (usedNames.has(nextName)) {
+    nextName = `${baseName}_${suffix}`;
+    suffix += 1;
+  }
+  usedNames.add(nextName);
+  return nextName;
 }
 
 export function normalizeComponentControlOption(option, index = 0) {
@@ -86,6 +111,7 @@ export function normalizeComponentControl(control, index = 0) {
 
   return {
     id: typeof control?.id === 'string' && control.id.trim() ? control.id.trim() : makeId('cmp-ctrl'),
+    name: slugifyComponentControlName(control?.name || control?.label || `variable_${index + 1}`, `variable_${index + 1}`),
     type,
     label: typeof control?.label === 'string' && control.label.trim() ? control.label.trim() : `Control ${index + 1}`,
     defaultValue: normalizeComponentControlValue(type, control?.defaultValue, dedupedOptions),
@@ -96,8 +122,15 @@ export function normalizeComponentControl(control, index = 0) {
 
 export function normalizeComponentControls(controls) {
   const seen = new Set();
+  const usedNames = new Set();
   return (Array.isArray(controls) ? controls : [])
-    .map((control, index) => normalizeComponentControl(control, index))
+    .map((control, index) => {
+      const normalized = normalizeComponentControl(control, index);
+      return {
+        ...normalized,
+        name: ensureUniqueComponentControlName(normalized.name, usedNames),
+      };
+    })
     .filter((control) => {
       if (seen.has(control.id)) return false;
       seen.add(control.id);

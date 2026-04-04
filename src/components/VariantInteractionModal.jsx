@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import VariantTransitionModal from './VariantTransitionModal';
 
 const TRIGGER_OPTIONS = [
   { value: 'click', label: 'Click' },
@@ -8,13 +10,24 @@ const TRIGGER_OPTIONS = [
   { value: 'mouse-leave', label: 'Mouse Leave' },
 ];
 
-export default function VariantInteractionModal({ sourceName, targetName, initialInteraction, onCancel, onSave, onDisconnect }) {
+function getTransitionSummary(transition) {
+  if (!transition || transition.type === 'instant') return 'Instant';
+  if (transition.type === 'ease') return `Ease · ${Math.round((transition.duration ?? 0.3) * 10) / 10}s`;
+  return transition.springMode === 'physics'
+    ? `Realistic · Physics · ${Math.round((transition.physicsDuration ?? transition.duration ?? 0.3) * 10) / 10}s`
+    : `Realistic · ${Math.round((transition.duration ?? 0.3) * 10) / 10}s`;
+}
+
+export default function VariantInteractionModal({ sourceName, targetName, initialInteraction, onCancel, onSave, onDisconnect, showTransition = true }) {
   const [trigger, setTrigger] = useState(initialInteraction?.trigger ?? 'click');
   const [delay, setDelay] = useState(initialInteraction?.delay ?? 0);
+  const [transition, setTransition] = useState(initialInteraction?.transition ?? null);
+  const [transitionModalOpen, setTransitionModalOpen] = useState(false);
 
   useEffect(() => {
     setTrigger(initialInteraction?.trigger ?? 'click');
     setDelay(initialInteraction?.delay ?? 0);
+    setTransition(initialInteraction?.transition ?? null);
   }, [initialInteraction]);
 
   return (
@@ -58,6 +71,15 @@ export default function VariantInteractionModal({ sourceName, targetName, initia
               </div>
             </div>
           </div>
+
+          {showTransition ? (
+            <div className="fb-prop-row">
+              <span className="fb-prop-label">Transition</span>
+              <button type="button" className="fb-secondary-btn fb-prop-action-btn" onClick={() => setTransitionModalOpen(true)}>
+                {getTransitionSummary(transition)}
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="fb-overlay-modal__actions fb-variant-interaction-modal__actions">
           {onDisconnect ? (
@@ -67,12 +89,27 @@ export default function VariantInteractionModal({ sourceName, targetName, initia
           <button
             type="button"
             className="fb-primary-btn"
-            onClick={() => onSave({ trigger, delay: Math.max(0, Math.round((delay ?? 0) * 10) / 10) })}
+            onClick={() => onSave({ trigger, delay: Math.max(0, Math.round((delay ?? 0) * 10) / 10), ...(showTransition ? { transition } : {}) })}
           >
             Save
           </button>
         </div>
       </div>
+      {showTransition && transitionModalOpen && typeof document !== 'undefined' ? createPortal(
+        <VariantTransitionModal
+          sourceName={sourceName}
+          targetName={targetName}
+          initialTransition={transition}
+          initialDelay={delay}
+          onCancel={() => setTransitionModalOpen(false)}
+          onSave={({ transition: nextTransition, delay: nextDelay }) => {
+            setTransition(nextTransition);
+            setDelay(nextDelay);
+            setTransitionModalOpen(false);
+          }}
+        />,
+        document.body,
+      ) : null}
     </div>
   );
 }

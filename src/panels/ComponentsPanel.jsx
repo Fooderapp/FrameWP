@@ -71,7 +71,7 @@ function RenameableAssetCard({
       draggable={draggable}
       onDragStart={onDragStart}
       onDoubleClick={() => { if (!editing) onOpen?.(); }}
-      onClick={() => { if (!editing) onOpen?.(); }}
+      onClick={draggable ? undefined : () => { if (!editing) onOpen?.(); }}
     >
       <div className="fb-asset-card__icon">{icon}</div>
       <div className="fb-asset-card__meta">
