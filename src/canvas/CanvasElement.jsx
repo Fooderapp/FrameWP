@@ -865,7 +865,7 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
     filter:           elementFilter,
     backdropFilter:   (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
     WebkitBackdropFilter: (styles?.backdropBlur ?? 0) > 0 ? `blur(${styles.backdropBlur}px)` : undefined,
-    zIndex:           isDragPreviewActive ? 10001 : (isSelected ? 9999 : (styles?.zIndex ?? undefined)),
+    zIndex:           isDragPreviewActive ? 10001 : (styles?.zIndex ?? undefined),
     // Background size/position/repeat for image fills
     backgroundSize:     (backgroundImageUrl || styles?.backgroundColor?.includes('gradient('))
       ? (styles?.backgroundSize ?? (backgroundImageUrl ? 'cover' : undefined))

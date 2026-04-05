@@ -1232,8 +1232,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
 
     // Phase 5: Animate
     if (hasAnimatedPairs) {
-      current.style.opacity = '0';
-      next.style.opacity = '1';
+      // Keep next invisible until all fromTo tweens set "from" positions
 
       // Save original inline styles before GSAP modifies them
       savedNextStyles = {};
@@ -1271,7 +1270,8 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
         newStylesMap[nid] = sObj;
       }
 
-      // PASS 2: Build tweens using pre-captured rects
+      // PASS 2: Pin shared elements at OLD positions with direct inline styles,
+      // then build gsap.to tweens to animate to NEW positions.
       for (const pair of sharedPairs) {
         const nid = pair.nextNode.dataset.fbNodeId;
         const oldR = oldRects[nid];
@@ -1281,8 +1281,8 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
 
         const newRotation = newRotationsMap[nid] || 0;
 
-        const dx = oldR.x - newR.x;
-        const dy = oldR.y - newR.y;
+        const dx = newR.x - oldR.x;
+        const dy = newR.y - oldR.y;
         const dw = Math.abs(oldR.w - newR.w);
         const dh = Math.abs(oldR.h - newR.h);
         const dRot = oldR.rotation - newRotation;
@@ -1305,31 +1305,44 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
 
         if (!hasPosChange && !hasSizeChange && !hasRotChange && !hasStyleChange) continue;
 
-        const fromVals = {};
-        const toVals = { duration: totalDuration, ease };
+        // Pin element at OLD position with direct inline styles
+        const node = pair.nextNode;
+        node.style.position = 'absolute';
+        node.style.left = oldR.x + 'px';
+        node.style.top = oldR.y + 'px';
+        node.style.width = oldR.w + 'px';
+        node.style.height = oldR.h + 'px';
+        node.style.margin = '0';
+        // Apply old visual styles inline
+        for (const fk in fromStyles) {
+          node.style[fk] = fromStyles[fk];
+        }
+        if (dRot) {
+          node.style.transform = `rotate(${oldR.rotation}deg)`;
+        }
 
+        // Build gsap.to tween to animate from old → new
+        const toVals = { duration: totalDuration, ease };
         if (hasPosChange) {
-          fromVals.x = dx;
-          fromVals.y = dy;
-          toVals.x = 0;
-          toVals.y = 0;
+          toVals.left = newR.x;
+          toVals.top = newR.y;
         }
         if (hasSizeChange) {
-          fromVals.width = oldR.w;
-          fromVals.height = oldR.h;
           toVals.width = newR.w;
           toVals.height = newR.h;
         }
         if (hasRotChange) {
-          fromVals.rotation = dRot;
-          toVals.rotation = 0;
+          toVals.rotation = newRotation;
         }
-        for (const fk in fromStyles) { fromVals[fk] = fromStyles[fk]; }
         for (const tk in toStyles) { toVals[tk] = toStyles[tk]; }
 
-        tl.add(gsap.fromTo(pair.nextNode, fromVals, toVals), 0);
+        tl.add(gsap.to(node, toVals), 0);
         tweenCount++;
       }
+
+      // Reveal variants now that all elements are at old positions
+      current.style.opacity = '0';
+      next.style.opacity = '1';
 
       // Fade in unmatched elements in next variant
       const nextEls = next.querySelectorAll('[data-fb-node-id]');

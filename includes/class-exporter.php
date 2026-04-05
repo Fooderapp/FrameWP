@@ -6432,8 +6432,7 @@ class FrameBuilder_Exporter {
 
 		/* ── PHASE 5: Animate per-element with gsap.fromTo ── */
 		if (hasAnimatedPairs) {
-			current.style.opacity = '0';
-			next.style.opacity = '1';
+			/* Keep next invisible until all fromTo tweens set "from" positions */
 
 			/* Save original inline styles before GSAP modifies them */
 			savedNextStyles = {};
@@ -6471,7 +6470,10 @@ class FrameBuilder_Exporter {
 				newStyles[mNid] = nsObj;
 			}
 
-			/* PASS 2: Build tweens using pre-captured rects */
+			/* PASS 2: Pin all shared elements at their OLD positions using
+			   direct inline styles (not GSAP), then build gsap.to tweens
+			   to animate to NEW positions. Inline styles are synchronous
+			   so elements appear at old positions before the first paint. */
 			for (var b = 0; b < sharedPairs.length; b++) {
 				var animPair = sharedPairs[b];
 				var nid = animPair.nextNode.dataset.fbNodeId;
@@ -6482,8 +6484,8 @@ class FrameBuilder_Exporter {
 
 				var newRotation = newRotations[nid] || 0;
 
-				var dx = oldR.x - newR.x;
-				var dy = oldR.y - newR.y;
+				var dx = newR.x - oldR.x;
+				var dy = newR.y - oldR.y;
 				var dw = Math.abs(oldR.w - newR.w);
 				var dh = Math.abs(oldR.h - newR.h);
 				var dRot = oldR.rotation - newRotation;
@@ -6507,31 +6509,44 @@ class FrameBuilder_Exporter {
 
 				if (!hasPosChange && !hasSizeChange && !hasRotChange && !hasStyleChange) continue;
 
-				var fromVals = {};
-				var toVals = { duration: totalDuration, ease: ease };
+				/* Pin element at OLD position with direct inline styles */
+				var node = animPair.nextNode;
+				node.style.position = 'absolute';
+				node.style.left = oldR.x + 'px';
+				node.style.top = oldR.y + 'px';
+				node.style.width = oldR.w + 'px';
+				node.style.height = oldR.h + 'px';
+				node.style.margin = '0';
+				/* Apply old visual styles inline so element looks like old variant */
+				for (var fk in fromStyles) {
+					if (fromStyles.hasOwnProperty(fk)) node.style[fk] = fromStyles[fk];
+				}
+				if (dRot) {
+					node.style.transform = 'rotate(' + oldR.rotation + 'deg)';
+				}
 
+				/* Build gsap.to tween to animate from old → new */
+				var toVals = { duration: totalDuration, ease: ease };
 				if (hasPosChange) {
-					fromVals.x = dx;
-					fromVals.y = dy;
-					toVals.x = 0;
-					toVals.y = 0;
+					toVals.left = newR.x;
+					toVals.top = newR.y;
 				}
 				if (hasSizeChange) {
-					fromVals.width = oldR.w;
-					fromVals.height = oldR.h;
 					toVals.width = newR.w;
 					toVals.height = newR.h;
 				}
 				if (hasRotChange) {
-					fromVals.rotation = dRot;
-					toVals.rotation = 0;
+					toVals.rotation = newRotation;
 				}
-				for (var fk in fromStyles) { if (fromStyles.hasOwnProperty(fk)) fromVals[fk] = fromStyles[fk]; }
 				for (var tk in toStyles) { if (toStyles.hasOwnProperty(tk)) toVals[tk] = toStyles[tk]; }
 
-				tl.add(gsap.fromTo(animPair.nextNode, fromVals, toVals), 0);
+				tl.add(gsap.to(node, toVals), 0);
 				tweenCount++;
 			}
+
+			/* Reveal variants now that all elements are pinned at old positions */
+			current.style.opacity = '0';
+			next.style.opacity = '1';
 
 			/* Fade in unmatched elements in next variant */
 			var nextEls = next.querySelectorAll('[data-fb-node-id]');

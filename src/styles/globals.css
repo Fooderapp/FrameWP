@@ -3375,12 +3375,12 @@ html, body, #framebuilder-root {
 .fb-component-editor-overlay__body {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .fb-component-editor-overlay .fb-editor {
   position: relative;
   inset: auto;
-  height: 100%;
 }
 
 .fb-component-editor-overlay > .fb-bottom-toolbar-wrap {

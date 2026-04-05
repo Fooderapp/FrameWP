@@ -1549,7 +1549,7 @@ function CanvasContextMenu({ menu, hasClipboard, hasStyleClipboard, onClose, onC
         type="button"
         className="fb-context-menu__item"
         onClick={() => { menu.onCreateComponent?.(); onClose(); }}
-        disabled={!menu.elementId}
+        disabled={!menu.elementId || menu.insideComponent}
       >
         Create Component
       </button>
@@ -2053,7 +2053,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
   const overlayHandles = (isFontResizeTextElement(el, resolved) ? ['se'] : OVERLAY_HANDLES)
     .filter((handle) => !(isActiveComponentVariantRoot && handle === 'e'));
   const rotateHandles = ['nw', 'ne', 'se', 'sw'];
-  const overlayCapturesPointer = canMoveOverlay && el.type !== 'text' && !hasAnyElementRotation(resolved);
+  const overlayCapturesPointer = canMoveOverlay && el.type !== 'text' && !hasAnyElementRotation(resolved) && !canDrill;
 
   let worldX = metrics?.modelWorldX ?? bp.x;
   let worldY = metrics?.modelWorldY ?? bp.y;
@@ -2520,6 +2520,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
       <div
         className={`fb-sel-overlay${el.componentInstance ? ' fb-sel-overlay--component' : ''}`}
         style={overlayBoxStyle}
+        data-id={el.id}
         onMouseDown={(e) => {
           if (!overlayCapturesPointer || e.target !== e.currentTarget) return;
           e.stopPropagation();
@@ -4188,12 +4189,27 @@ export default function InfiniteCanvas() {
     const selectionIds = getSelectionElementIds(useEditorStore.getState().selection);
     const canWrapSelection = !!elementId && selectionIds.length > 1 && selectionIds.includes(elementId);
 
+    const allElements = useEditorStore.getState().getAllElements();
+    const clickedElement = elementId ? allElements.find(el => el.id === elementId) : null;
+    const isInsideOrIsComponent = !!clickedElement && (
+      !!clickedElement.componentInstance
+      || (() => {
+        let cur = clickedElement;
+        while (cur?.parentId) {
+          cur = allElements.find(el => el.id === cur.parentId) ?? null;
+          if (cur?.componentInstance) return true;
+        }
+        return false;
+      })()
+    );
+
     setContextMenu({
       clientX: e.clientX,
       clientY: e.clientY,
       bpId,
       elementId,
       canWrapSelection,
+      insideComponent: useEditorStore.getState().activeSurface === 'component' || isInsideOrIsComponent,
       canPasteIntoFrame: canPasteIntoFrame(bpId, elementId),
       localX,
       localY,
