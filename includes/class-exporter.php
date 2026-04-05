@@ -6476,6 +6476,43 @@ class FrameBuilder_Exporter {
 			});
 			saTimeline = flipTl;
 
+			/* Prevent text/icon content from stretching during Flip scale animation.
+			   Walk up from each text/icon element to the variant wrapper,
+			   accumulating scaleX/scaleY from ALL scaled ancestors, then
+			   apply the combined inverse scale so text stays crisp. */
+			var textEls = next.querySelectorAll('.fb-text-content, .fb-icon-content');
+			if (textEls.length) {
+				flipTl.eventCallback('onUpdate', function() {
+					for (var ti = 0; ti < textEls.length; ti++) {
+						var el = textEls[ti];
+						var totalSx = 1, totalSy = 1;
+						var ancestor = el.parentElement;
+						while (ancestor && ancestor !== next) {
+							if (ancestor.dataset && ancestor.dataset.flipId) {
+								var asx = gsap.getProperty(ancestor, 'scaleX');
+								var asy = gsap.getProperty(ancestor, 'scaleY');
+								if (typeof asx === 'number' && asx) totalSx *= asx;
+								if (typeof asy === 'number' && asy) totalSy *= asy;
+							}
+							ancestor = ancestor.parentElement;
+						}
+						if (Math.abs(totalSx - 1) > 0.002 || Math.abs(totalSy - 1) > 0.002) {
+							el.style.transform = 'scaleX(' + (1 / totalSx) + ') scaleY(' + (1 / totalSy) + ')';
+						} else {
+							if (el.style.transform) el.style.transform = '';
+						}
+					}
+				});
+				var saOrigFinish = finish;
+				finish = function() {
+					for (var ti = 0; ti < textEls.length; ti++) {
+						textEls[ti].style.transform = '';
+					}
+					saOrigFinish();
+				};
+				flipTl.eventCallback('onComplete', finish);
+			}
+
 			/* Container size animation (run in parallel with Flip) */
 			if (nextW && nextH && (Math.abs(oldW - nextW) > 1 || Math.abs(oldH - nextH) > 1)) {
 				gsap.fromTo(instance,
