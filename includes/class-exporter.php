@@ -5984,19 +5984,18 @@ class FrameBuilder_Exporter {
 				window.clearTimeout(hoverState.restoreTimer);
 				hoverState.restoreTimer = null;
 			}
-			hoverState.isActive = active === true;
 			var hoverAnimation = getHoverAnimation();
 			if (!hoverAnimation) {
-				clearHoverAnimation(node);
-				updateScrollAnimations();
-				if (!resolveAnimationsForBreakpoint(readAnimations(), getCurrentBreakpoint()).find(function(entry) {
-					return entry && entry.type === 'scroll';
-				})) {
-					restoreAnimationBaseState(node);
+				if (hoverState.isActive) {
+					/* Was hovering with an animation that got removed (e.g. breakpoint change) */
+					hoverState.isActive = false;
+					clearHoverAnimation(node);
+					updateScrollAnimations();
+					updateLoopAnimation();
 				}
-				updateLoopAnimation();
 				return;
 			}
+			hoverState.isActive = active === true;
 			if (hoverState.isActive) {
 				clearLoopAnimation(node);
 				applyHoverAnimation(node, hoverAnimation, true);
@@ -6214,15 +6213,13 @@ class FrameBuilder_Exporter {
 		return timeline;
 	};
 	/* ══════════════════════════════════════════════════════════════
-	   Smart Animate Engine  (GSAP Flip — same approach as preview)
+	   Smart Animate Engine  (per-element gsap.fromTo)
 	   ──────────────────────────────────────────────────────────────
-	   Uses `Flip.getState()` + `Flip.from()` — the exact same method
-	   that powers the working in-editor preview.  Falls back to
-	   wrapper crossfade when Flip is unavailable or no targets found.
+	   Animates position via translate (x/y), size via actual
+	   width/height, styles directly. No scale transforms.
+	   Falls back to wrapper crossfade when no targets found.
 	   ══════════════════════════════════════════════════════════════ */
-	var SA_FLIP_PROPS = 'opacity,backgroundColor,color,borderRadius,borderColor,boxShadow,filter,backdropFilter';
 	var SA_STYLE_PROPS = ['backgroundColor','color','borderRadius','borderColor','boxShadow','opacity','filter','backdropFilter'];
-	var SA_CROSSFADE_PROPS = ['backgroundImage'];
 	var saTimeline = null;
 	var getRotationDeg = function(style) {
 		if (!style) return 0;
@@ -6262,68 +6259,45 @@ class FrameBuilder_Exporter {
 			if (!cr.width || !cr.height || !nr.width || !nr.height) continue;
 			pairs.push({
 				currentNode: curNode,
-				nextNode: nextEls[j],
-				deltaX: cr.left - nr.left,
-				deltaY: cr.top - nr.top,
-				scaleX: cr.width / nr.width,
-				scaleY: cr.height / nr.height
+				nextNode: nextEls[j]
 			});
 		}
 		return pairs;
-	};
-	/* Detect what changed for a matched pair */
-	var saGetChanges = function(currentNode, nextNode) {
-		var cr = currentNode.getBoundingClientRect();
-		var nr = nextNode.getBoundingClientRect();
-		var cs = getComputedStyle(currentNode);
-		var ns = getComputedStyle(nextNode);
-		var styleFrom = {};
-		var styleTo = {};
-		for (var i = 0; i < SA_STYLE_PROPS.length; i++) {
-			var prop = SA_STYLE_PROPS[i];
-			if (saHasStyleDifference(cs[prop], ns[prop])) {
-				styleFrom[prop] = cs[prop];
-				styleTo[prop] = ns[prop];
-			}
-		}
-		var needsCrossfade = false;
-		for (var c = 0; c < SA_CROSSFADE_PROPS.length; c++) {
-			if (saHasStyleDifference(cs[SA_CROSSFADE_PROPS[c]], ns[SA_CROSSFADE_PROPS[c]])) {
-				needsCrossfade = true; break;
-			}
-		}
-		if (!needsCrossfade && currentNode.textContent !== nextNode.textContent) needsCrossfade = true;
-		var dx = cr.left - nr.left;
-		var dy = cr.top - nr.top;
-		var sx = cr.width / Math.max(nr.width, 0.01);
-		var sy = cr.height / Math.max(nr.height, 0.01);
-		var rot = getRotationDeg(cs) - getRotationDeg(ns);
-		var geomChanged = Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5
-			|| Math.abs(sx - 1) > 0.01 || Math.abs(sy - 1) > 0.01
-			|| Math.abs(rot) > 0.5;
-		return {
-			geometryChanged: geomChanged,
-			styleChanged: Object.keys(styleTo).length > 0,
-			needsCrossfade: needsCrossfade
-		};
 	};
 	/* Filter pairs to only those that actually changed */
 	var saPrepareAnimatedPairs = function(pairs) {
 		var result = [];
 		for (var i = 0; i < pairs.length; i++) {
-			var changes = saGetChanges(pairs[i].currentNode, pairs[i].nextNode);
-			if (changes.geometryChanged || changes.styleChanged || changes.needsCrossfade) {
-				result.push({ pair: pairs[i], changes: changes });
+			var curNode = pairs[i].currentNode;
+			var nxtNode = pairs[i].nextNode;
+			var cr = curNode.getBoundingClientRect();
+			var nr = nxtNode.getBoundingClientRect();
+			var cs = getComputedStyle(curNode);
+			var ns = getComputedStyle(nxtNode);
+			var dx = cr.left - nr.left;
+			var dy = cr.top - nr.top;
+			var dw = Math.abs(cr.width - nr.width);
+			var dh = Math.abs(cr.height - nr.height);
+			var rot = getRotationDeg(cs) - getRotationDeg(ns);
+			var geomChanged = Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5 || dw > 0.5 || dh > 0.5 || Math.abs(rot) > 0.5;
+			var styleChanged = false;
+			for (var s = 0; s < SA_STYLE_PROPS.length; s++) {
+				if (saHasStyleDifference(cs[SA_STYLE_PROPS[s]], ns[SA_STYLE_PROPS[s]])) { styleChanged = true; break; }
+			}
+			if (geomChanged || styleChanged) {
+				result.push(pairs[i]);
 			}
 		}
 		return result;
 	};
-	/* Full cleanup */
+	/* Full cleanup — kill timeline + all tweens on variants and children */
 	var saReset = function(instance, next) {
 		if (saTimeline) { saTimeline.kill(); saTimeline = null; }
 		if (gsap) {
-			gsap.killTweensOf(instance);
-			instance.querySelectorAll('.fb-component-variant').forEach(function(v) { gsap.killTweensOf(v); });
+			instance.querySelectorAll('.fb-component-variant').forEach(function(v) {
+				gsap.killTweensOf(v);
+				v.querySelectorAll('[data-fb-node-id]').forEach(function(el) { gsap.killTweensOf(el); });
+			});
 		}
 		instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
 			node.classList.remove('is-present');
@@ -6365,9 +6339,12 @@ class FrameBuilder_Exporter {
 			if (onComplete) onComplete();
 			return;
 		}
-		/* Kill prior animation */
+		/* Kill prior animation — timeline + all tweens on variants and children */
 		if (saTimeline) { saTimeline.kill(); saTimeline = null; }
-		gsap.killTweensOf(instance.querySelectorAll('.fb-component-variant'));
+		instance.querySelectorAll('.fb-component-variant').forEach(function(v) {
+			gsap.killTweensOf(v);
+			v.querySelectorAll('[data-fb-node-id]').forEach(function(el) { gsap.killTweensOf(el); });
+		});
 
 		var totalDuration = durationMs / 1000;
 		var ease = saGetEase(transition);
@@ -6376,9 +6353,22 @@ class FrameBuilder_Exporter {
 		var oldW = instance.offsetWidth;
 		var oldH = instance.offsetHeight;
 
+		/* Will hold original inline styles for restoration in finish() */
+		var savedNextStyles = null;
+
 		/* Cleanup function — called on animation complete */
 		var finish = function() {
 			saTimeline = null;
+			/* Restore original inline styles on animated children (undo GSAP inline overrides) */
+			if (savedNextStyles) {
+				next.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
+					var nid = el.dataset.fbNodeId;
+					if (nid && savedNextStyles.hasOwnProperty(nid)) {
+						if (savedNextStyles[nid]) el.setAttribute('style', savedNextStyles[nid]);
+						else el.removeAttribute('style');
+					}
+				});
+			}
 			instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
 				var isActive = node === next;
 				node.classList.toggle('is-active', isActive);
@@ -6404,37 +6394,35 @@ class FrameBuilder_Exporter {
 		/* ── PHASE 2: Diff elements between variants ── */
 		var sharedPairs = saCollectSharedPairs(instance, current, next);
 		var animatedPairs = saPrepareAnimatedPairs(sharedPairs);
-
-		/* Build set of all matched node IDs and changed node IDs */
+		var hasAnimatedPairs = animatedPairs.length > 0;
 		var matchedIds = {};
 		for (var m = 0; m < sharedPairs.length; m++) {
 			var mid = sharedPairs[m].nextNode.dataset.fbNodeId;
 			if (mid) matchedIds[mid] = true;
 		}
-		var changedIds = {};
-		for (var c = 0; c < animatedPairs.length; c++) {
-			var cid = animatedPairs[c].pair.nextNode.dataset.fbNodeId;
-			if (cid) changedIds[cid] = true;
+
+		/* ── PHASE 3: Capture old rects + styles + rotation relative to instance ── */
+		var instanceRect = instance.getBoundingClientRect();
+		var oldRects = {};
+		var oldStyles = {};
+		for (var p = 0; p < sharedPairs.length; p++) {
+			var pair = sharedPairs[p];
+			var nodeId = pair.currentNode.dataset.fbNodeId;
+			var cr = pair.currentNode.getBoundingClientRect();
+			var cs = getComputedStyle(pair.currentNode);
+			oldRects[nodeId] = {
+				x: cr.left - instanceRect.left,
+				y: cr.top - instanceRect.top,
+				w: cr.width,
+				h: cr.height,
+				rotation: getRotationDeg(cs)
+			};
+			var sObj = {};
+			for (var si = 0; si < SA_STYLE_PROPS.length; si++) {
+				sObj[SA_STYLE_PROPS[si]] = cs[SA_STYLE_PROPS[si]];
+			}
+			oldStyles[nodeId] = sObj;
 		}
-
-		/* Filter flip targets: only changed + unmatched elements */
-		var flipIdRelevant = function(el) {
-			var flipId = el.dataset.flipId || '';
-			var baseId = flipId.indexOf('__') !== -1 ? flipId.slice(0, flipId.indexOf('__')) : flipId;
-			return changedIds[baseId] || !matchedIds[baseId];
-		};
-
-		/* ── PHASE 3: Capture Flip state from CURRENT variant ── */
-		var currentFlipTargets = Array.prototype.filter.call(
-			current.querySelectorAll('[data-flip-id]'), flipIdRelevant
-		);
-		var state = (Flip && currentFlipTargets.length)
-			? Flip.getState(currentFlipTargets, { props: SA_FLIP_PROPS, simple: false })
-			: null;
-		var nextFlipTargets = Array.prototype.filter.call(
-			next.querySelectorAll('[data-flip-id]'), flipIdRelevant
-		);
-		var hasFlipTargets = state && nextFlipTargets.length > 0;
 
 		/* ── PHASE 4: Swap active state ── */
 		current.classList.remove('is-active');
@@ -6442,78 +6430,138 @@ class FrameBuilder_Exporter {
 		next.classList.add('is-active');
 		current.style.pointerEvents = 'none';
 
-		/* ── PHASE 5: Animate ── */
-		if (hasFlipTargets) {
-			/* Flip handles per-element morphing */
+		/* ── PHASE 5: Animate per-element with gsap.fromTo ── */
+		if (hasAnimatedPairs) {
 			current.style.opacity = '0';
 			next.style.opacity = '1';
 
-			var flipTl = Flip.from(state, {
-				targets: nextFlipTargets,
-				nested: true,
-				scale: true,
-				simple: false,
-				props: SA_FLIP_PROPS,
-				duration: totalDuration,
-				ease: ease,
-				onEnter: function(elements) {
-					return gsap.fromTo(elements, { opacity: 0 }, {
-						opacity: 1,
-						duration: totalDuration * 0.5,
-						ease: ease,
-						clearProps: 'opacity'
-					});
-				},
-				onLeave: function(elements) {
-					return gsap.to(elements, {
-						opacity: 0,
-						duration: totalDuration * 0.5,
-						ease: ease,
-						clearProps: 'opacity'
-					});
-				},
-				onComplete: finish
+			/* Save original inline styles before GSAP modifies them */
+			savedNextStyles = {};
+			next.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
+				savedNextStyles[el.dataset.fbNodeId] = el.getAttribute('style') || '';
 			});
-			saTimeline = flipTl;
 
-			/* Prevent text/icon content from stretching during Flip scale animation.
-			   Walk up from each text/icon element to the variant wrapper,
-			   accumulating scaleX/scaleY from ALL scaled ancestors, then
-			   apply the combined inverse scale so text stays crisp. */
-			var textEls = next.querySelectorAll('.fb-text-content, .fb-icon-content');
-			if (textEls.length) {
-				flipTl.eventCallback('onUpdate', function() {
-					for (var ti = 0; ti < textEls.length; ti++) {
-						var el = textEls[ti];
-						var totalSx = 1, totalSy = 1;
-						var ancestor = el.parentElement;
-						while (ancestor && ancestor !== next) {
-							if (ancestor.dataset && ancestor.dataset.flipId) {
-								var asx = gsap.getProperty(ancestor, 'scaleX');
-								var asy = gsap.getProperty(ancestor, 'scaleY');
-								if (typeof asx === 'number' && asx) totalSx *= asx;
-								if (typeof asy === 'number' && asy) totalSy *= asy;
-							}
-							ancestor = ancestor.parentElement;
-						}
-						if (Math.abs(totalSx - 1) > 0.002 || Math.abs(totalSy - 1) > 0.002) {
-							el.style.transform = 'scaleX(' + (1 / totalSx) + ') scaleY(' + (1 / totalSy) + ')';
-						} else {
-							if (el.style.transform) el.style.transform = '';
-						}
-					}
-				});
-				var saOrigFinish = finish;
-				finish = function() {
-					for (var ti = 0; ti < textEls.length; ti++) {
-						textEls[ti].style.transform = '';
-					}
-					saOrigFinish();
+			var tl = gsap.timeline({ onComplete: finish });
+			saTimeline = tl;
+			var newInstanceRect = instance.getBoundingClientRect();
+			var tweenCount = 0;
+
+			/* PASS 1: Capture ALL new rects + styles BEFORE any GSAP tweens
+			   (GSAP.fromTo sets inline styles that shift sibling positions in flex layouts) */
+			var newRects = {};
+			var newStyles = {};
+			var newRotations = {};
+			for (var a = 0; a < sharedPairs.length; a++) {
+				var mPair = sharedPairs[a];
+				var mNid = mPair.nextNode.dataset.fbNodeId;
+				if (!mNid || !oldRects[mNid]) continue;
+				var mBCR = mPair.nextNode.getBoundingClientRect();
+				newRects[mNid] = {
+					x: mBCR.left - newInstanceRect.left,
+					y: mBCR.top - newInstanceRect.top,
+					w: mBCR.width,
+					h: mBCR.height
 				};
-				flipTl.eventCallback('onComplete', finish);
+				newRotations[mNid] = getRotationDeg(getComputedStyle(mPair.nextNode));
+				var nsObj = {};
+				var mCS = getComputedStyle(mPair.nextNode);
+				for (var msi = 0; msi < SA_STYLE_PROPS.length; msi++) {
+					nsObj[SA_STYLE_PROPS[msi]] = mCS[SA_STYLE_PROPS[msi]];
+				}
+				newStyles[mNid] = nsObj;
 			}
 
-			/* Container size animation (run in parallel with Flip) */
+			/* PASS 2: Build tweens using pre-captured rects */
+			for (var b = 0; b < sharedPairs.length; b++) {
+				var animPair = sharedPairs[b];
+				var nid = animPair.nextNode.dataset.fbNodeId;
+				var oldR = oldRects[nid];
+				var oldS = oldStyles[nid];
+				var newR = newRects[nid];
+				if (!oldR || !newR) continue;
+
+				var newRotation = newRotations[nid] || 0;
+
+				var dx = oldR.x - newR.x;
+				var dy = oldR.y - newR.y;
+				var dw = Math.abs(oldR.w - newR.w);
+				var dh = Math.abs(oldR.h - newR.h);
+				var dRot = oldR.rotation - newRotation;
+
+				var hasPosChange = Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5;
+				var hasSizeChange = dw > 0.5 || dh > 0.5;
+				var hasRotChange = Math.abs(dRot) > 0.5;
+
+				/* Style changes */
+				var ns = newStyles[nid] || {};
+				var fromStyles = {};
+				var toStyles = {};
+				for (var sp = 0; sp < SA_STYLE_PROPS.length; sp++) {
+					var sProp = SA_STYLE_PROPS[sp];
+					if (oldS && saHasStyleDifference(oldS[sProp], ns[sProp])) {
+						fromStyles[sProp] = oldS[sProp];
+						toStyles[sProp] = ns[sProp];
+					}
+				}
+				var hasStyleChange = Object.keys(toStyles).length > 0;
+
+				if (!hasPosChange && !hasSizeChange && !hasRotChange && !hasStyleChange) continue;
+
+				var fromVals = {};
+				var toVals = { duration: totalDuration, ease: ease };
+
+				if (hasPosChange) {
+					fromVals.x = dx;
+					fromVals.y = dy;
+					toVals.x = 0;
+					toVals.y = 0;
+				}
+				if (hasSizeChange) {
+					fromVals.width = oldR.w;
+					fromVals.height = oldR.h;
+					toVals.width = newR.w;
+					toVals.height = newR.h;
+				}
+				if (hasRotChange) {
+					fromVals.rotation = dRot;
+					toVals.rotation = 0;
+				}
+				for (var fk in fromStyles) { if (fromStyles.hasOwnProperty(fk)) fromVals[fk] = fromStyles[fk]; }
+				for (var tk in toStyles) { if (toStyles.hasOwnProperty(tk)) toVals[tk] = toStyles[tk]; }
+
+				tl.add(gsap.fromTo(animPair.nextNode, fromVals, toVals), 0);
+				tweenCount++;
+			}
+
+			/* Fade in unmatched elements in next variant */
+			var nextEls = next.querySelectorAll('[data-fb-node-id]');
+			for (var u = 0; u < nextEls.length; u++) {
+				var uid = nextEls[u].dataset.fbNodeId;
+				if (!uid || matchedIds[uid]) continue;
+				tl.add(gsap.fromTo(nextEls[u],
+					{ opacity: 0 },
+					{ opacity: 1, duration: totalDuration * 0.5, ease: ease }
+				), 0);
+				tweenCount++;
+			}
+
+			/* If no per-element tweens added, fall back to crossfade */
+			if (tweenCount === 0) {
+				tl.kill();
+				saTimeline = null;
+				savedNextStyles = null;
+				current.style.opacity = '1';
+				next.style.opacity = '0';
+				var fallbackTl = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
+				if (fallbackTl) {
+					saTimeline = fallbackTl;
+					fallbackTl.eventCallback('onComplete', finish);
+				} else {
+					finish();
+				}
+			}
+
+			/* Container size animation (run in parallel) */
 			if (nextW && nextH && (Math.abs(oldW - nextW) > 1 || Math.abs(oldH - nextH) > 1)) {
 				gsap.fromTo(instance,
 					{ width: oldW, height: oldH },
@@ -6521,7 +6569,7 @@ class FrameBuilder_Exporter {
 				);
 			}
 		} else {
-			/* No Flip targets — use wrapper crossfade fallback */
+			/* No animated pairs — use wrapper crossfade fallback */
 			current.style.opacity = '1';
 			next.style.opacity = '0';
 			var wrapperTimeline = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });

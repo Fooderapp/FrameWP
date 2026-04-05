@@ -1081,6 +1081,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
   const [activeVariantId, setActiveVariantId] = useState(initialBaseVariantId);
   const stageRef = useRef(null);
   const timersRef = useRef([]);
+  const saTimelineRef = useRef(null);
 
   useEffect(() => {
     setActiveVariantId(initialBaseVariantId);
@@ -1143,8 +1144,31 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
       return;
     }
 
-    gsap.killTweensOf(stage.querySelectorAll('.fb-component-play-preview__variant'));
+    // Kill prior animation (timeline + all tweens on variants and children)
+    if (saTimelineRef.current) {
+      saTimelineRef.current.kill();
+      saTimelineRef.current = null;
+    }
+    stage.querySelectorAll('.fb-component-play-preview__variant').forEach((v) => {
+      gsap.killTweensOf(v);
+      v.querySelectorAll('[data-fb-node-id]').forEach((el) => gsap.killTweensOf(el));
+    });
+
+    // Will hold original inline styles for restoration in finish()
+    let savedNextStyles = null;
+
     const finish = () => {
+      saTimelineRef.current = null;
+      // Restore original inline styles on animated children (undo GSAP inline overrides)
+      if (savedNextStyles) {
+        next.querySelectorAll('[data-fb-node-id]').forEach((el) => {
+          const nid = el.dataset.fbNodeId;
+          if (nid && Object.prototype.hasOwnProperty.call(savedNextStyles, nid)) {
+            if (savedNextStyles[nid]) el.setAttribute('style', savedNextStyles[nid]);
+            else el.removeAttribute('style');
+          }
+        });
+      }
       stage.querySelectorAll('.fb-component-play-preview__variant').forEach((node) => {
         const isActive = node === next;
         node.classList.toggle('is-active', isActive);
@@ -1164,72 +1188,183 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
         : `back.out(${1 + transition.bounce * 1.2})`)
       : getTransitionEasing(transition);
 
-    // --- GSAP Flip auto-animate (Figma/Framer style) ---
+    // --- Per-element property interpolation (Figma smart-animate style) ---
 
-    // 1. Both variants visible so we can diff elements
+    // Phase 1: Both variants visible so we can diff elements
     next.classList.add('is-present');
     next.style.visibility = 'visible';
     next.style.pointerEvents = 'none';
     next.style.opacity = '0';
 
-    // 2. Diff: find which elements actually changed between variants
+    // Phase 2: Diff elements between variants
     const sharedPairs = collectSharedElementPairs(stage, current, next);
     const animatedPairs = prepareAnimatedPairs(sharedPairs);
+    const hasAnimatedPairs = animatedPairs.length > 0;
     const matchedIds = new Set(sharedPairs.map((entry) => entry.nextNode.dataset.fbNodeId).filter(Boolean));
 
-    // 3. Build set of node IDs that actually changed – only these plus unmatched go through Flip
-    const changedNodeIds = new Set(animatedPairs.map((entry) => entry.pair.nextNode.dataset.fbNodeId).filter(Boolean));
-    const flipIdRelevant = (el) => {
-      const flipId = el.dataset.flipId ?? '';
-      const baseId = flipId.includes('__') ? flipId.slice(0, flipId.indexOf('__')) : flipId;
-      return changedNodeIds.has(baseId) || !matchedIds.has(baseId);
-    };
+    // Phase 3: Capture old rects + styles + rotation relative to stage
+    const stageRect = stage.getBoundingClientRect();
+    const oldRects = {};
+    const oldStyles = {};
+    for (const pair of sharedPairs) {
+      const nodeId = pair.currentNode.dataset.fbNodeId;
+      const cr = pair.currentNode.getBoundingClientRect();
+      const cs = getComputedStyle(pair.currentNode);
+      oldRects[nodeId] = {
+        x: cr.left - stageRect.left,
+        y: cr.top - stageRect.top,
+        w: cr.width,
+        h: cr.height,
+        rotation: getRotationFromComputedStyle(cs),
+      };
+      const sObj = {};
+      for (const prop of ANIMATABLE_STYLE_PROPS) {
+        sObj[prop] = cs[prop];
+      }
+      oldStyles[nodeId] = sObj;
+    }
 
-    // 4. Capture Flip state from changed + unmatched elements
-    const currentFlipTargets = Array.from(current.querySelectorAll('[data-flip-id]')).filter(flipIdRelevant);
-    const state = currentFlipTargets.length ? Flip.getState(currentFlipTargets, { props: FLIP_PROPS, simple: false }) : null;
-    const nextFlipTargets = Array.from(next.querySelectorAll('[data-flip-id]')).filter(flipIdRelevant);
-    const hasFlipTargets = state && nextFlipTargets.length > 0;
-
-    // 5. Swap active state
+    // Phase 4: Swap active state
     current.classList.remove('is-active');
     current.classList.add('is-present');
     next.classList.add('is-active');
     current.style.pointerEvents = 'none';
 
-    if (hasFlipTargets) {
-      // Flip handles per-element morphing – always hide current, Flip onEnter/onLeave handles unmatched
+    // Phase 5: Animate
+    if (hasAnimatedPairs) {
       current.style.opacity = '0';
       next.style.opacity = '1';
 
-      Flip.from(state, {
-        targets: nextFlipTargets,
-        nested: true,
-        scale: true,
-        simple: false,
-        props: FLIP_PROPS,
-        duration: totalDuration,
-        ease,
-        onEnter: (elements) => gsap.fromTo(elements, { opacity: 0 }, {
-          opacity: 1,
-          duration: totalDuration * 0.5,
-          ease,
-          clearProps: 'opacity',
-        }),
-        onLeave: (elements) => gsap.to(elements, {
-          opacity: 0,
-          duration: totalDuration * 0.5,
-          ease,
-          clearProps: 'opacity',
-        }),
-        onComplete: finish,
+      // Save original inline styles before GSAP modifies them
+      savedNextStyles = {};
+      next.querySelectorAll('[data-fb-node-id]').forEach((el) => {
+        savedNextStyles[el.dataset.fbNodeId] = el.getAttribute('style') || '';
       });
+
+      const tl = gsap.timeline({ onComplete: finish });
+      saTimelineRef.current = tl;
+      const newStageRect = stage.getBoundingClientRect();
+      let tweenCount = 0;
+
+      // PASS 1: Capture ALL new rects + styles BEFORE any GSAP tweens
+      // (GSAP.fromTo sets inline styles that shift sibling positions in flex layouts)
+      const newRectsMap = {};
+      const newStylesMap = {};
+      const newRotationsMap = {};
+      for (const pair of sharedPairs) {
+        const nid = pair.nextNode.dataset.fbNodeId;
+        const oldR = oldRects[nid];
+        if (!nid || !oldR) continue;
+        const bcr = pair.nextNode.getBoundingClientRect();
+        newRectsMap[nid] = {
+          x: bcr.left - newStageRect.left,
+          y: bcr.top - newStageRect.top,
+          w: bcr.width,
+          h: bcr.height,
+        };
+        newRotationsMap[nid] = getRotationFromComputedStyle(getComputedStyle(pair.nextNode));
+        const sObj = {};
+        const mCS = getComputedStyle(pair.nextNode);
+        for (const prop of ANIMATABLE_STYLE_PROPS) {
+          sObj[prop] = mCS[prop];
+        }
+        newStylesMap[nid] = sObj;
+      }
+
+      // PASS 2: Build tweens using pre-captured rects
+      for (const pair of sharedPairs) {
+        const nid = pair.nextNode.dataset.fbNodeId;
+        const oldR = oldRects[nid];
+        const oldS = oldStyles[nid];
+        const newR = newRectsMap[nid];
+        if (!oldR || !newR) continue;
+
+        const newRotation = newRotationsMap[nid] || 0;
+
+        const dx = oldR.x - newR.x;
+        const dy = oldR.y - newR.y;
+        const dw = Math.abs(oldR.w - newR.w);
+        const dh = Math.abs(oldR.h - newR.h);
+        const dRot = oldR.rotation - newRotation;
+
+        const hasPosChange = Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5;
+        const hasSizeChange = dw > 0.5 || dh > 0.5;
+        const hasRotChange = Math.abs(dRot) > 0.5;
+
+        // Style changes
+        const ns = newStylesMap[nid] || {};
+        const fromStyles = {};
+        const toStyles = {};
+        for (const prop of ANIMATABLE_STYLE_PROPS) {
+          if (oldS && hasStyleDifference(oldS[prop], ns[prop])) {
+            fromStyles[prop] = oldS[prop];
+            toStyles[prop] = ns[prop];
+          }
+        }
+        const hasStyleChange = Object.keys(toStyles).length > 0;
+
+        if (!hasPosChange && !hasSizeChange && !hasRotChange && !hasStyleChange) continue;
+
+        const fromVals = {};
+        const toVals = { duration: totalDuration, ease };
+
+        if (hasPosChange) {
+          fromVals.x = dx;
+          fromVals.y = dy;
+          toVals.x = 0;
+          toVals.y = 0;
+        }
+        if (hasSizeChange) {
+          fromVals.width = oldR.w;
+          fromVals.height = oldR.h;
+          toVals.width = newR.w;
+          toVals.height = newR.h;
+        }
+        if (hasRotChange) {
+          fromVals.rotation = dRot;
+          toVals.rotation = 0;
+        }
+        for (const fk in fromStyles) { fromVals[fk] = fromStyles[fk]; }
+        for (const tk in toStyles) { toVals[tk] = toStyles[tk]; }
+
+        tl.add(gsap.fromTo(pair.nextNode, fromVals, toVals), 0);
+        tweenCount++;
+      }
+
+      // Fade in unmatched elements in next variant
+      const nextEls = next.querySelectorAll('[data-fb-node-id]');
+      for (const uel of nextEls) {
+        const uid = uel.dataset.fbNodeId;
+        if (!uid || matchedIds.has(uid)) continue;
+        tl.add(gsap.fromTo(uel,
+          { opacity: 0 },
+          { opacity: 1, duration: totalDuration * 0.5, ease },
+        ), 0);
+        tweenCount++;
+      }
+
+      // If no per-element tweens added, fall back to crossfade
+      if (tweenCount === 0) {
+        tl.kill();
+        saTimelineRef.current = null;
+        savedNextStyles = null;
+        current.style.opacity = '1';
+        next.style.opacity = '0';
+        const fallbackTimeline = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
+        if (fallbackTimeline) {
+          saTimelineRef.current = fallbackTimeline;
+          fallbackTimeline.eventCallback('onComplete', finish);
+        } else {
+          finish();
+        }
+      }
     } else {
-      // No Flip-worthy changes – use wrapper animation as fallback
+      // No animated pairs — use wrapper crossfade fallback
       current.style.opacity = '1';
       next.style.opacity = '0';
       const wrapperTimeline = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
       if (wrapperTimeline) {
+        saTimelineRef.current = wrapperTimeline;
         wrapperTimeline.eventCallback('onComplete', finish);
       } else {
         finish();
