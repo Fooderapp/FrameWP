@@ -2053,6 +2053,8 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
   const overlayHandles = (isFontResizeTextElement(el, resolved) ? ['se'] : OVERLAY_HANDLES)
     .filter((handle) => !(isActiveComponentVariantRoot && handle === 'e'));
   const rotateHandles = ['nw', 'ne', 'se', 'sw'];
+  const elChildren = allElements.filter(e => e.parentId === el.id);
+  const canDrill   = elChildren.length > 0;
   const overlayCapturesPointer = canMoveOverlay && el.type !== 'text' && !hasAnyElementRotation(resolved) && !canDrill;
 
   let worldX = metrics?.modelWorldX ?? bp.x;
@@ -2190,8 +2192,6 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
     guides.push({ key: 'bottom', style: { left: midX, top: bottomStart, width: 0, height: Math.max(0, containerWorldTop + containerWorldHeight - bottomStart) } });
   }
 
-  const elChildren = allElements.filter(e => e.parentId === el.id);
-  const canDrill   = elChildren.length > 0;
   const svgWidth = Math.max(...Object.values(bpDefs).map((entry) => entry.x + entry.width), worldX + overlayW) + 400;
   const svgHeight = Math.max(...Object.values(bpDefs).map((entry) => entry.y + entry.height), worldY + overlayH) + 400;
   const useComponentSelectionAccent = activeSurface === 'component' || el.componentInstance;
