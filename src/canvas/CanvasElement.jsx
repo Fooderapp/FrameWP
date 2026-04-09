@@ -544,6 +544,30 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
 
     if (!selectedAncestorId) return;
 
+    // Double-click on a child inside a selected container → drill into the container
+    if (e.detail >= 2) {
+      e.preventDefault();
+      e.stopPropagation();
+      const ancestor = elsById[selectedAncestorId];
+      if (ancestor?.componentInstance?.componentId) {
+        setSelection({ elementId: selectedAncestorId, bpId });
+        openComponentEditor(ancestor.componentInstance.componentId);
+      } else {
+        // Find the direct child of the ancestor that is (or contains) this element
+        let directChild = el;
+        while (directChild && directChild.parentId !== selectedAncestorId) {
+          directChild = elsById[directChild.parentId] ?? null;
+        }
+        setDrilledContainerId(selectedAncestorId);
+        if (directChild) {
+          setSelection({ elementId: directChild.id, bpId });
+        } else {
+          setSelection({ elementId: selectedAncestorId, bpId });
+        }
+      }
+      return;
+    }
+
     e.preventDefault();
     e.stopPropagation();
     setPrimarySelection(selectedAncestorId);

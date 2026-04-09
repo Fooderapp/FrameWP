@@ -3585,6 +3585,7 @@ export default function InfiniteCanvas() {
       if (node.closest('.fb-context-menu, .fb-right, .fb-left, .fb-topbar, .fb-overlay-modal, .fb-shadow-popup, .fb-fill-popover')) return null;
       const target = node.closest?.('[data-id]');
       if (!target || !container.contains(target)) continue;
+      if (target.classList.contains('fb-sel-overlay')) continue;
       return target.dataset.id ?? null;
     }
     return null;

@@ -6221,6 +6221,7 @@ class FrameBuilder_Exporter {
 	   ══════════════════════════════════════════════════════════════ */
 	var SA_STYLE_PROPS = ['backgroundColor','color','borderRadius','borderColor','boxShadow','opacity','filter','backdropFilter'];
 	var saTimeline = null;
+	var saSourceVariantId = null;
 	var getRotationDeg = function(style) {
 		if (!style) return 0;
 		var r = style.rotate;
@@ -6321,6 +6322,14 @@ class FrameBuilder_Exporter {
 	/* ── Main animation function ── */
 	var animateVariantSwitch = function(instance, current, next, transition, onComplete) {
 		if (!next) return;
+
+		/* Interrupt & reverse: if going back to source variant while timeline is active, just reverse */
+		var nextVid = next.dataset.fbVariantId || '';
+		if (saTimeline && !saTimeline.reversed() && saTimeline.isActive() && saSourceVariantId === nextVid) {
+			saTimeline.reverse();
+			return;
+		}
+
 		/* Instant / reduced-motion / no-transition path */
 		if (!current || current === next || prefersReducedMotion || !transition || transition.type === 'instant') {
 			saReset(instance, next);
@@ -6355,22 +6364,31 @@ class FrameBuilder_Exporter {
 
 		/* Will hold original inline styles for restoration in finish() */
 		var savedNextStyles = null;
+		var savedCurrentStyles = null;
+		var savedCurrentVariantId = current ? (current.dataset.fbVariantId || '') : '';
 
-		/* Cleanup function — called on animation complete */
+		/* Cleanup function — called on animation complete or reverse-complete */
 		var finish = function() {
+			var reversed = saTimeline && typeof saTimeline.reversed === 'function' && saTimeline.reversed();
 			saTimeline = null;
-			/* Restore original inline styles on animated children (undo GSAP inline overrides) */
-			if (savedNextStyles) {
-				next.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
+			saSourceVariantId = null;
+
+			var winner = reversed ? current : next;
+			var loser = reversed ? next : current;
+
+			/* Restore original inline styles on animated children */
+			var stylesToRestore = reversed ? savedCurrentStyles : savedNextStyles;
+			if (stylesToRestore) {
+				winner.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
 					var nid = el.dataset.fbNodeId;
-					if (nid && savedNextStyles.hasOwnProperty(nid)) {
-						if (savedNextStyles[nid]) el.setAttribute('style', savedNextStyles[nid]);
+					if (nid && stylesToRestore.hasOwnProperty(nid)) {
+						if (stylesToRestore[nid]) el.setAttribute('style', stylesToRestore[nid]);
 						else el.removeAttribute('style');
 					}
 				});
 			}
 			instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
-				var isActive = node === next;
+				var isActive = node === winner;
 				node.classList.toggle('is-active', isActive);
 				node.classList.remove('is-present');
 				node.style.opacity = '';
@@ -6378,11 +6396,14 @@ class FrameBuilder_Exporter {
 				node.style.visibility = '';
 				node.style.pointerEvents = '';
 			});
-			if (nextW && nextH) {
+			if (!reversed && nextW && nextH) {
 				instance.style.width = nextW + 'px';
 				instance.style.height = nextH + 'px';
+			} else if (reversed && oldW && oldH) {
+				instance.style.width = oldW + 'px';
+				instance.style.height = oldH + 'px';
 			}
-			if (onComplete) onComplete();
+			if (!reversed && onComplete) onComplete();
 		};
 
 		/* ── PHASE 1: Make next visible so we can diff ── */
@@ -6439,9 +6460,14 @@ class FrameBuilder_Exporter {
 			next.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
 				savedNextStyles[el.dataset.fbNodeId] = el.getAttribute('style') || '';
 			});
+			savedCurrentStyles = {};
+			current.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
+				savedCurrentStyles[el.dataset.fbNodeId] = el.getAttribute('style') || '';
+			});
 
-			var tl = gsap.timeline({ onComplete: finish });
+			var tl = gsap.timeline({ onComplete: finish, onReverseComplete: finish });
 			saTimeline = tl;
+			saSourceVariantId = savedCurrentVariantId;
 			var newInstanceRect = instance.getBoundingClientRect();
 			var tweenCount = 0;
 
@@ -6470,10 +6496,44 @@ class FrameBuilder_Exporter {
 				newStyles[mNid] = nsObj;
 			}
 
-			/* PASS 2: Pin all shared elements at their OLD positions using
-			   direct inline styles (not GSAP), then build gsap.to tweens
-			   to animate to NEW positions. Inline styles are synchronous
-			   so elements appear at old positions before the first paint. */
+			/* PASS 2: Animate shared elements using CSS transforms (preserves flex flow).
+			   Phase A: Pre-apply old-state sizes so children reflow to match old layout.
+			   Save original inline w/h so we can restore them after measurement. */
+			var sizedNodes = [];
+			for (var sz = 0; sz < sharedPairs.length; sz++) {
+				var szNode = sharedPairs[sz].nextNode;
+				var szNid = szNode.dataset.fbNodeId;
+				var szOld = oldRects[szNid];
+				var szNew = newRects[szNid];
+				if (!szOld || !szNew) continue;
+				if (Math.abs(szOld.w - szNew.w) > 0.5 || Math.abs(szOld.h - szNew.h) > 0.5) {
+					sizedNodes.push({ el: szNode, origW: szNode.style.width, origH: szNode.style.height });
+					szNode.style.width = szOld.w + 'px';
+					szNode.style.height = szOld.h + 'px';
+				}
+			}
+
+			/* Force reflow & measure positions with old parent sizes applied */
+			void instance.offsetHeight;
+			var reflowInstanceRect = instance.getBoundingClientRect();
+			var reflowedRects = {};
+			for (var rf = 0; rf < sharedPairs.length; rf++) {
+				var rfNid = sharedPairs[rf].nextNode.dataset.fbNodeId;
+				if (!oldRects[rfNid] || !newRects[rfNid]) continue;
+				var rfBCR = sharedPairs[rf].nextNode.getBoundingClientRect();
+				reflowedRects[rfNid] = {
+					x: rfBCR.left - reflowInstanceRect.left,
+					y: rfBCR.top - reflowInstanceRect.top
+				};
+			}
+
+			/* Restore original inline sizes (not blank — preserve rendered values) */
+			for (var si = 0; si < sizedNodes.length; si++) {
+				sizedNodes[si].el.style.width = sizedNodes[si].origW;
+				sizedNodes[si].el.style.height = sizedNodes[si].origH;
+			}
+
+			/* Phase B: Build tweens using reflowed positions for correct deltas. */
 			for (var b = 0; b < sharedPairs.length; b++) {
 				var animPair = sharedPairs[b];
 				var nid = animPair.nextNode.dataset.fbNodeId;
@@ -6482,10 +6542,12 @@ class FrameBuilder_Exporter {
 				var newR = newRects[nid];
 				if (!oldR || !newR) continue;
 
+				var reflR = reflowedRects[nid];
 				var newRotation = newRotations[nid] || 0;
 
-				var dx = newR.x - oldR.x;
-				var dy = newR.y - oldR.y;
+				/* Delta from reflowed position to old position */
+				var dx = oldR.x - reflR.x;
+				var dy = oldR.y - reflR.y;
 				var dw = Math.abs(oldR.w - newR.w);
 				var dh = Math.abs(oldR.h - newR.h);
 				var dRot = oldR.rotation - newRotation;
@@ -6509,38 +6571,44 @@ class FrameBuilder_Exporter {
 
 				if (!hasPosChange && !hasSizeChange && !hasRotChange && !hasStyleChange) continue;
 
-				/* Pin element at OLD position with direct inline styles */
 				var node = animPair.nextNode;
-				node.style.position = 'absolute';
-				node.style.left = oldR.x + 'px';
-				node.style.top = oldR.y + 'px';
-				node.style.width = oldR.w + 'px';
-				node.style.height = oldR.h + 'px';
-				node.style.margin = '0';
-				/* Apply old visual styles inline so element looks like old variant */
-				for (var fk in fromStyles) {
-					if (fromStyles.hasOwnProperty(fk)) node.style[fk] = fromStyles[fk];
-				}
-				if (dRot) {
-					node.style.transform = 'rotate(' + oldR.rotation + 'deg)';
+				var fromVals = {};
+				var toVals = { duration: totalDuration, ease: ease };
+
+				/* Read existing transform values so we don't clobber constraint
+				   transforms (e.g. translateX(-50%) for centered elements) */
+				var baseX = gsap.getProperty(node, 'x') || 0;
+				var baseY = gsap.getProperty(node, 'y') || 0;
+
+				/* Use GSAP x/y (CSS transforms) for position — doesn't break flex flow */
+				if (hasPosChange) {
+					fromVals.x = baseX + dx;
+					fromVals.y = baseY + dy;
+					toVals.x = baseX;
+					toVals.y = baseY;
 				}
 
-				/* Build gsap.to tween to animate from old → new */
-				var toVals = { duration: totalDuration, ease: ease };
-				if (hasPosChange) {
-					toVals.left = newR.x;
-					toVals.top = newR.y;
-				}
-				if (hasSizeChange) {
+				/* Animate width/height directly */
+				if (dw > 0.5) {
+					fromVals.width = oldR.w;
 					toVals.width = newR.w;
+				}
+				if (dh > 0.5) {
+					fromVals.height = oldR.h;
 					toVals.height = newR.h;
 				}
+
+				/* Rotation via GSAP transform */
 				if (hasRotChange) {
+					fromVals.rotation = oldR.rotation;
 					toVals.rotation = newRotation;
 				}
+
+				/* Visual style properties */
+				for (var fk in fromStyles) { if (fromStyles.hasOwnProperty(fk)) fromVals[fk] = fromStyles[fk]; }
 				for (var tk in toStyles) { if (toStyles.hasOwnProperty(tk)) toVals[tk] = toStyles[tk]; }
 
-				tl.add(gsap.to(node, toVals), 0);
+				tl.add(gsap.fromTo(node, fromVals, toVals), 0);
 				tweenCount++;
 			}
 

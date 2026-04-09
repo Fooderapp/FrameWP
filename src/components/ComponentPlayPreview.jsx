@@ -1082,6 +1082,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
   const stageRef = useRef(null);
   const timersRef = useRef([]);
   const saTimelineRef = useRef(null);
+  const saSourceVariantRef = useRef(null);  // variant ID we animated FROM (for reverse)
 
   useEffect(() => {
     setActiveVariantId(initialBaseVariantId);
@@ -1130,6 +1131,14 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
       return;
     }
 
+    // Interrupt & reverse: if we're going back to the variant we came from
+    // and the timeline is still running, just reverse it smoothly.
+    const tl = saTimelineRef.current;
+    if (tl && !tl.reversed() && tl.isActive() && saSourceVariantRef.current === targetVariantId) {
+      tl.reverse();
+      return;
+    }
+
     const transition = normalizeTransition(interaction?.transition);
     const duration = getTransitionDurationMs(transition);
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || !duration || transition.type === 'instant') {
@@ -1156,21 +1165,30 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
 
     // Will hold original inline styles for restoration in finish()
     let savedNextStyles = null;
+    let savedCurrentStyles = null;
 
     const finish = () => {
+      const reversed = saTimelineRef.current?.reversed?.() ?? false;
       saTimelineRef.current = null;
+      saSourceVariantRef.current = null;
+
+      // Choose which variant ends up active
+      const winner = reversed ? current : next;
+      const loser = reversed ? next : current;
+
       // Restore original inline styles on animated children (undo GSAP inline overrides)
-      if (savedNextStyles) {
-        next.querySelectorAll('[data-fb-node-id]').forEach((el) => {
+      const stylesToRestore = reversed ? savedCurrentStyles : savedNextStyles;
+      if (stylesToRestore) {
+        winner.querySelectorAll('[data-fb-node-id]').forEach((el) => {
           const nid = el.dataset.fbNodeId;
-          if (nid && Object.prototype.hasOwnProperty.call(savedNextStyles, nid)) {
-            if (savedNextStyles[nid]) el.setAttribute('style', savedNextStyles[nid]);
+          if (nid && Object.prototype.hasOwnProperty.call(stylesToRestore, nid)) {
+            if (stylesToRestore[nid]) el.setAttribute('style', stylesToRestore[nid]);
             else el.removeAttribute('style');
           }
         });
       }
       stage.querySelectorAll('.fb-component-play-preview__variant').forEach((node) => {
-        const isActive = node === next;
+        const isActive = node === winner;
         node.classList.toggle('is-active', isActive);
         node.classList.remove('is-present');
         node.style.opacity = '';
@@ -1178,7 +1196,7 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
         node.style.visibility = '';
         node.style.pointerEvents = '';
       });
-      setActiveVariantId(targetVariantId);
+      setActiveVariantId(reversed ? activeVariantId : targetVariantId);
     };
 
     const totalDuration = getTransitionDurationMs(transition) / 1000;
@@ -1239,9 +1257,14 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
       next.querySelectorAll('[data-fb-node-id]').forEach((el) => {
         savedNextStyles[el.dataset.fbNodeId] = el.getAttribute('style') || '';
       });
+      savedCurrentStyles = {};
+      current.querySelectorAll('[data-fb-node-id]').forEach((el) => {
+        savedCurrentStyles[el.dataset.fbNodeId] = el.getAttribute('style') || '';
+      });
 
-      const tl = gsap.timeline({ onComplete: finish });
+      const tl = gsap.timeline({ onComplete: finish, onReverseComplete: finish });
       saTimelineRef.current = tl;
+      saSourceVariantRef.current = activeVariantId;
       const newStageRect = stage.getBoundingClientRect();
       let tweenCount = 0;
 
@@ -1270,8 +1293,47 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
         newStylesMap[nid] = sObj;
       }
 
-      // PASS 2: Pin shared elements at OLD positions with direct inline styles,
-      // then build gsap.to tweens to animate to NEW positions.
+      // PASS 2: Animate shared elements using CSS transforms (preserves flex flow).
+      // Phase A: Pre-apply old-state sizes so children reflow to match old layout.
+      // Save original inline w/h so we can restore them after measurement.
+      const sizedNodes = [];
+      for (const pair of sharedPairs) {
+        const nid = pair.nextNode.dataset.fbNodeId;
+        const oR = oldRects[nid];
+        const nR = newRectsMap[nid];
+        if (!oR || !nR) continue;
+        if (Math.abs(oR.w - nR.w) > 0.5 || Math.abs(oR.h - nR.h) > 0.5) {
+          sizedNodes.push({
+            el: pair.nextNode,
+            origW: pair.nextNode.style.width,
+            origH: pair.nextNode.style.height,
+          });
+          pair.nextNode.style.width = oR.w + 'px';
+          pair.nextNode.style.height = oR.h + 'px';
+        }
+      }
+
+      // Force reflow & measure positions with old parent sizes applied
+      void stage.offsetHeight;
+      const reflowStageRect = stage.getBoundingClientRect();
+      const reflowedRects = {};
+      for (const pair of sharedPairs) {
+        const nid = pair.nextNode.dataset.fbNodeId;
+        if (!oldRects[nid] || !newRectsMap[nid]) continue;
+        const bcr = pair.nextNode.getBoundingClientRect();
+        reflowedRects[nid] = {
+          x: bcr.left - reflowStageRect.left,
+          y: bcr.top - reflowStageRect.top,
+        };
+      }
+
+      // Restore original inline sizes (not blank — preserve React-rendered values)
+      for (const entry of sizedNodes) {
+        entry.el.style.width = entry.origW;
+        entry.el.style.height = entry.origH;
+      }
+
+      // Phase B: Build tweens using reflowed positions for correct deltas.
       for (const pair of sharedPairs) {
         const nid = pair.nextNode.dataset.fbNodeId;
         const oldR = oldRects[nid];
@@ -1279,10 +1341,13 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
         const newR = newRectsMap[nid];
         if (!oldR || !newR) continue;
 
+        const reflR = reflowedRects[nid];
         const newRotation = newRotationsMap[nid] || 0;
 
-        const dx = newR.x - oldR.x;
-        const dy = newR.y - oldR.y;
+        // Delta from reflowed position (where element IS after parent size change)
+        // to old position (where it SHOULD be at t=0)
+        const dx = oldR.x - reflR.x;
+        const dy = oldR.y - reflR.y;
         const dw = Math.abs(oldR.w - newR.w);
         const dh = Math.abs(oldR.h - newR.h);
         const dRot = oldR.rotation - newRotation;
@@ -1305,38 +1370,44 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
 
         if (!hasPosChange && !hasSizeChange && !hasRotChange && !hasStyleChange) continue;
 
-        // Pin element at OLD position with direct inline styles
         const node = pair.nextNode;
-        node.style.position = 'absolute';
-        node.style.left = oldR.x + 'px';
-        node.style.top = oldR.y + 'px';
-        node.style.width = oldR.w + 'px';
-        node.style.height = oldR.h + 'px';
-        node.style.margin = '0';
-        // Apply old visual styles inline
-        for (const fk in fromStyles) {
-          node.style[fk] = fromStyles[fk];
-        }
-        if (dRot) {
-          node.style.transform = `rotate(${oldR.rotation}deg)`;
+        const fromVals = {};
+        const toVals = { duration: totalDuration, ease };
+
+        // Read existing transform values so we don't clobber constraint
+        // transforms (e.g. translateX(-50%) for centered elements)
+        const baseX = gsap.getProperty(node, 'x') || 0;
+        const baseY = gsap.getProperty(node, 'y') || 0;
+
+        // Use GSAP x/y (CSS transforms) for position — doesn't break flex flow
+        if (hasPosChange) {
+          fromVals.x = baseX + dx;
+          fromVals.y = baseY + dy;
+          toVals.x = baseX;
+          toVals.y = baseY;
         }
 
-        // Build gsap.to tween to animate from old → new
-        const toVals = { duration: totalDuration, ease };
-        if (hasPosChange) {
-          toVals.left = newR.x;
-          toVals.top = newR.y;
-        }
-        if (hasSizeChange) {
+        // Animate width/height directly
+        if (dw > 0.5) {
+          fromVals.width = oldR.w;
           toVals.width = newR.w;
+        }
+        if (dh > 0.5) {
+          fromVals.height = oldR.h;
           toVals.height = newR.h;
         }
+
+        // Rotation via GSAP transform
         if (hasRotChange) {
+          fromVals.rotation = oldR.rotation;
           toVals.rotation = newRotation;
         }
+
+        // Visual style properties
+        for (const fk in fromStyles) { fromVals[fk] = fromStyles[fk]; }
         for (const tk in toStyles) { toVals[tk] = toStyles[tk]; }
 
-        tl.add(gsap.to(node, toVals), 0);
+        tl.add(gsap.fromTo(node, fromVals, toVals), 0);
         tweenCount++;
       }
 
