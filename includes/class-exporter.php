@@ -6222,6 +6222,8 @@ class FrameBuilder_Exporter {
 	var SA_STYLE_PROPS = ['backgroundColor','color','borderRadius','borderColor','boxShadow','opacity','filter','backdropFilter'];
 	var saTimeline = null;
 	var saSourceVariantId = null;
+	var saSavedStyles = null;
+	var saIsTransient = false;
 	var getRotationDeg = function(style) {
 		if (!style) return 0;
 		var r = style.rotate;
@@ -6320,14 +6322,20 @@ class FrameBuilder_Exporter {
 		return getEaseValue(transition);
 	};
 	/* ── Main animation function ── */
-	var animateVariantSwitch = function(instance, current, next, transition, onComplete) {
+	var animateVariantSwitch = function(instance, current, next, transition, onComplete, transient) {
 		if (!next) return;
 
-		/* Interrupt & reverse: if going back to source variant while timeline is active, just reverse */
+		/* Interrupt & reverse / re-forward: handle toggling direction on active timeline */
 		var nextVid = next.dataset.fbVariantId || '';
-		if (saTimeline && !saTimeline.reversed() && saTimeline.isActive() && saSourceVariantId === nextVid) {
-			saTimeline.reverse();
-			return;
+		if (saTimeline && saTimeline.isActive()) {
+			if (!saTimeline.reversed() && saSourceVariantId === nextVid) {
+				saTimeline.reverse();
+				return;
+			}
+			if (saTimeline.reversed() && saSourceVariantId !== nextVid) {
+				saTimeline.play();
+				return;
+			}
 		}
 
 		/* Instant / reduced-motion / no-transition path */
@@ -6348,11 +6356,41 @@ class FrameBuilder_Exporter {
 			if (onComplete) onComplete();
 			return;
 		}
-		/* Kill prior animation — timeline + all tweens on variants and children */
+		/* Kill prior animation — timeline + all tweens on variants, children and instance */
 		if (saTimeline) { saTimeline.kill(); saTimeline = null; }
+		saSourceVariantId = null;
+		saIsTransient = false;
+		gsap.killTweensOf(instance);
 		instance.querySelectorAll('.fb-component-variant').forEach(function(v) {
 			gsap.killTweensOf(v);
 			v.querySelectorAll('[data-fb-node-id]').forEach(function(el) { gsap.killTweensOf(el); });
+		});
+		/* Restore original inline styles from the killed animation (stale GSAP overrides) */
+		if (saSavedStyles) {
+			var ssPairs = [[saSavedStyles.nextEl, saSavedStyles.nextStyles], [saSavedStyles.currentEl, saSavedStyles.currentStyles]];
+			for (var ss = 0; ss < ssPairs.length; ss++) {
+				var ssVariant = ssPairs[ss][0];
+				var ssStyles = ssPairs[ss][1];
+				if (!ssVariant || !ssStyles) continue;
+				ssVariant.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
+					var nid = el.dataset.fbNodeId;
+					if (nid && ssStyles.hasOwnProperty(nid)) {
+						if (ssStyles[nid]) el.setAttribute('style', ssStyles[nid]);
+						else el.removeAttribute('style');
+					}
+				});
+			}
+			saSavedStyles = null;
+		}
+		/* Reset all variant wrappers to clean state */
+		var activeVid = current ? (current.dataset.fbVariantId || '') : '';
+		instance.querySelectorAll('.fb-component-variant').forEach(function(node) {
+			node.classList.toggle('is-active', (node.dataset.fbVariantId || '') === activeVid);
+			node.classList.remove('is-present');
+			node.style.opacity = '';
+			node.style.transform = '';
+			node.style.visibility = '';
+			node.style.pointerEvents = '';
 		});
 
 		var totalDuration = durationMs / 1000;
@@ -6372,17 +6410,24 @@ class FrameBuilder_Exporter {
 			var reversed = saTimeline && typeof saTimeline.reversed === 'function' && saTimeline.reversed();
 			saTimeline = null;
 			saSourceVariantId = null;
+			saSavedStyles = null;
+			saIsTransient = false;
 
 			var winner = reversed ? current : next;
 			var loser = reversed ? next : current;
 
-			/* Restore original inline styles on animated children */
-			var stylesToRestore = reversed ? savedCurrentStyles : savedNextStyles;
-			if (stylesToRestore) {
-				winner.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
+			/* Restore original inline styles on BOTH variants' children (undo GSAP inline overrides).
+			   The loser also needs cleanup — GSAP fromTo leaves inline styles on next's children,
+			   and if reversed those stale styles would corrupt measurements on the next forward animation. */
+			var restorePairs = [[winner, reversed ? savedCurrentStyles : savedNextStyles], [loser, reversed ? savedNextStyles : savedCurrentStyles]];
+			for (var rp = 0; rp < restorePairs.length; rp++) {
+				var rpVariant = restorePairs[rp][0];
+				var rpStyles = restorePairs[rp][1];
+				if (!rpStyles) continue;
+				rpVariant.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
 					var nid = el.dataset.fbNodeId;
-					if (nid && stylesToRestore.hasOwnProperty(nid)) {
-						if (stylesToRestore[nid]) el.setAttribute('style', stylesToRestore[nid]);
+					if (nid && rpStyles.hasOwnProperty(nid)) {
+						if (rpStyles[nid]) el.setAttribute('style', rpStyles[nid]);
 						else el.removeAttribute('style');
 					}
 				});
@@ -6464,10 +6509,12 @@ class FrameBuilder_Exporter {
 			current.querySelectorAll('[data-fb-node-id]').forEach(function(el) {
 				savedCurrentStyles[el.dataset.fbNodeId] = el.getAttribute('style') || '';
 			});
+			saSavedStyles = { nextEl: next, nextStyles: savedNextStyles, currentEl: current, currentStyles: savedCurrentStyles };
 
 			var tl = gsap.timeline({ onComplete: finish, onReverseComplete: finish });
 			saTimeline = tl;
 			saSourceVariantId = savedCurrentVariantId;
+			saIsTransient = !!transient;
 			var newInstanceRect = instance.getBoundingClientRect();
 			var tweenCount = 0;
 
@@ -6638,18 +6685,27 @@ class FrameBuilder_Exporter {
 				var fallbackTl = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
 				if (fallbackTl) {
 					saTimeline = fallbackTl;
+					saIsTransient = !!transient;
 					fallbackTl.eventCallback('onComplete', finish);
+					fallbackTl.eventCallback('onReverseComplete', finish);
+					/* Container size (on the fallback timeline so it reverses properly) */
+					if (nextW && nextH && (Math.abs(oldW - nextW) > 1 || Math.abs(oldH - nextH) > 1)) {
+						fallbackTl.add(gsap.fromTo(instance,
+							{ width: oldW, height: oldH },
+							{ width: nextW, height: nextH, duration: totalDuration, ease: ease }
+						), 0);
+					}
 				} else {
 					finish();
 				}
-			}
-
-			/* Container size animation (run in parallel) */
-			if (nextW && nextH && (Math.abs(oldW - nextW) > 1 || Math.abs(oldH - nextH) > 1)) {
-				gsap.fromTo(instance,
-					{ width: oldW, height: oldH },
-					{ width: nextW, height: nextH, duration: totalDuration, ease: ease }
-				);
+			} else {
+				/* Container size animation (on the timeline so it reverses properly) */
+				if (nextW && nextH && (Math.abs(oldW - nextW) > 1 || Math.abs(oldH - nextH) > 1)) {
+					tl.add(gsap.fromTo(instance,
+						{ width: oldW, height: oldH },
+						{ width: nextW, height: nextH, duration: totalDuration, ease: ease }
+					), 0);
+				}
 			}
 		} else {
 			/* No animated pairs — use wrapper crossfade fallback */
@@ -6658,13 +6714,16 @@ class FrameBuilder_Exporter {
 			var wrapperTimeline = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
 			if (wrapperTimeline) {
 				saTimeline = wrapperTimeline;
+				saSourceVariantId = savedCurrentVariantId;
+				saIsTransient = !!transient;
 				wrapperTimeline.eventCallback('onComplete', finish);
-				/* Container size */
+				wrapperTimeline.eventCallback('onReverseComplete', finish);
+				/* Container size (on the timeline so it reverses properly) */
 				if (nextW && nextH && (Math.abs(oldW - nextW) > 1 || Math.abs(oldH - nextH) > 1)) {
-					gsap.fromTo(instance,
+					wrapperTimeline.add(gsap.fromTo(instance,
 						{ width: oldW, height: oldH },
 						{ width: nextW, height: nextH, duration: totalDuration, ease: ease }
-					);
+					), 0);
 				}
 			} else {
 				finish();
@@ -6753,20 +6812,24 @@ class FrameBuilder_Exporter {
 				? !!options.queueAppear
 				: setBase;
 			var nextBaseVariantId = setBase ? getBaseVariantId(variantId) : (baseVariantId || getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || ''));
+			var isTransient = options && options.transient;
 			animateVariantSwitch(instance, current, next, transition || parseTransition(current || next), function() {
 				activeVariantId = variantId;
 				baseVariantId = nextBaseVariantId || baseVariantId;
 				instance.dataset.fbActiveVariant = activeVariantId;
 				instance.dataset.fbBaseVariant = baseVariantId;
 				if (queueAfter) queueAppear();
-			});
+			}, isTransient);
 		};
 		var applyVisualState = function(mode) {
 			var baseId = baseVariantId || instance.dataset.fbBaseVariant || getBaseVariantId(activeVariantId || instance.dataset.fbActiveVariant || '');
 			if (!baseId) return;
 			var targetNode = mode ? findStateVariant(baseId, mode) : findVariant(instance, baseId);
 			var targetId = targetNode ? targetNode.dataset.fbVariantId : baseId;
-			if (!targetId || targetId === activeVariantId) return;
+			if (!targetId) return;
+			/* Don't interrupt non-transient (click/appear) animations with visual state changes */
+			if (saTimeline && saTimeline.isActive() && !saIsTransient) return;
+			saIsTransient = true;
 			showVariant(targetId, {
 				type: 'ease',
 				duration: 0.18,
@@ -6777,7 +6840,7 @@ class FrameBuilder_Exporter {
 				damping: 24,
 				mass: 1,
 				bezier: { x1: 0.4, y1: 0, x2: 0.2, y2: 1 }
-			}, { setBase: false, queueAppear: false });
+			}, { setBase: false, queueAppear: false, transient: true });
 		};
 		var queueAppear = function() {
 			clearTimers();
@@ -6810,16 +6873,18 @@ class FrameBuilder_Exporter {
 			if (!target) return false;
 			var delay = Math.max(0, parseNumber(node.dataset.fbDelay, 0) * 1000);
 			var transition = parseTransition(node);
+			var isMouseTrigger = expected === 'mouse-enter' || expected === 'mouse-leave';
+			var opts = isMouseTrigger ? { transient: true } : undefined;
 			clearTimers();
 			if (delay > 0) {
 				var timerId = window.setTimeout(function() {
-					showVariant(target, transition);
+					showVariant(target, transition, opts);
 					timers = timers.filter(function(entry) { return entry !== timerId; });
 				}, delay);
 				timers.push(timerId);
 				return true;
 			}
-			showVariant(target, transition);
+			showVariant(target, transition, opts);
 			return true;
 		};
 		var runTrigger = function(expected) {
@@ -6829,16 +6894,18 @@ class FrameBuilder_Exporter {
 			if (!target) return;
 			var delay = Math.max(0, parseNumber(active.dataset.fbDelay, 0) * 1000);
 			var transition = parseTransition(active);
+			var isMouseTrigger = expected === 'mouse-enter' || expected === 'mouse-leave';
+			var opts = isMouseTrigger ? { transient: true } : undefined;
 			clearTimers();
 			if (delay > 0) {
 				var timerId = window.setTimeout(function() {
-					showVariant(target, transition);
+					showVariant(target, transition, opts);
 					timers = timers.filter(function(entry) { return entry !== timerId; });
 				}, delay);
 				timers.push(timerId);
 				return;
 			}
-			showVariant(target, transition);
+			showVariant(target, transition, opts);
 		};
 		instance.querySelectorAll('[data-fb-node-id][data-fb-target-variant-id]').forEach(function(node) {
 			if (node.classList.contains('fb-component-instance')) return;

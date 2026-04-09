@@ -1083,6 +1083,8 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
   const timersRef = useRef([]);
   const saTimelineRef = useRef(null);
   const saSourceVariantRef = useRef(null);  // variant ID we animated FROM (for reverse)
+  const saSavedStylesRef = useRef(null);    // { next, nextStyles, current, currentStyles } for kill-cleanup
+  const saIsTransientRef = useRef(false);   // true when animation is hover/pressed (can be interrupted by applyVisualState)
 
   useEffect(() => {
     setActiveVariantId(initialBaseVariantId);
@@ -1122,20 +1124,30 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
   }, { width: 320, height: 220 }), [variantStates]);
 
   const switchVariant = useCallback((targetVariantId, interaction, options = {}) => {
-    if (!targetVariantId || targetVariantId === activeVariantId) return;
+    if (!targetVariantId) return;
+
+    // Interrupt & reverse: if we're going back to the variant we came from
+    // and the timeline is still running, just reverse it smoothly.
+    // Re-forward: if the timeline is already reversing and the user re-enters,
+    // just play it forward again instead of killing and rebuilding.
+    const tl = saTimelineRef.current;
+    if (tl && tl.isActive()) {
+      if (!tl.reversed() && saSourceVariantRef.current === targetVariantId) {
+        tl.reverse();
+        return;
+      }
+      if (tl.reversed() && saSourceVariantRef.current !== targetVariantId) {
+        tl.play();
+        return;
+      }
+    }
+
+    if (targetVariantId === activeVariantId) return;
     const stage = stageRef.current;
     const next = stage?.querySelector(`[data-variant-id="${targetVariantId}"]`);
     const current = stage?.querySelector('.fb-component-play-preview__variant.is-active');
     if (!stage || !next || next === current) {
       setActiveVariantId(targetVariantId);
-      return;
-    }
-
-    // Interrupt & reverse: if we're going back to the variant we came from
-    // and the timeline is still running, just reverse it smoothly.
-    const tl = saTimelineRef.current;
-    if (tl && !tl.reversed() && tl.isActive() && saSourceVariantRef.current === targetVariantId) {
-      tl.reverse();
       return;
     }
 
@@ -1158,9 +1170,35 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
       saTimelineRef.current.kill();
       saTimelineRef.current = null;
     }
+    saSourceVariantRef.current = null;
+    saIsTransientRef.current = false;
     stage.querySelectorAll('.fb-component-play-preview__variant').forEach((v) => {
       gsap.killTweensOf(v);
       v.querySelectorAll('[data-fb-node-id]').forEach((el) => gsap.killTweensOf(el));
+    });
+    // Restore original inline styles from the killed animation (stale GSAP overrides)
+    const savedRef = saSavedStylesRef.current;
+    if (savedRef) {
+      for (const [variant, styles] of [[savedRef.next, savedRef.nextStyles], [savedRef.current, savedRef.currentStyles]]) {
+        if (!variant || !styles) continue;
+        variant.querySelectorAll('[data-fb-node-id]').forEach((el) => {
+          const nid = el.dataset.fbNodeId;
+          if (nid && Object.prototype.hasOwnProperty.call(styles, nid)) {
+            if (styles[nid]) el.setAttribute('style', styles[nid]);
+            else el.removeAttribute('style');
+          }
+        });
+      }
+      saSavedStylesRef.current = null;
+    }
+    // Reset all variant wrappers to clean state matching activeVariantId
+    stage.querySelectorAll('.fb-component-play-preview__variant').forEach((node) => {
+      node.classList.toggle('is-active', node.dataset.variantId === activeVariantId);
+      node.classList.remove('is-present');
+      node.style.opacity = '';
+      node.style.transform = '';
+      node.style.visibility = '';
+      node.style.pointerEvents = '';
     });
 
     // Will hold original inline styles for restoration in finish()
@@ -1171,18 +1209,26 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
       const reversed = saTimelineRef.current?.reversed?.() ?? false;
       saTimelineRef.current = null;
       saSourceVariantRef.current = null;
+      saSavedStylesRef.current = null;
+      saIsTransientRef.current = false;
 
       // Choose which variant ends up active
       const winner = reversed ? current : next;
       const loser = reversed ? next : current;
 
-      // Restore original inline styles on animated children (undo GSAP inline overrides)
-      const stylesToRestore = reversed ? savedCurrentStyles : savedNextStyles;
-      if (stylesToRestore) {
-        winner.querySelectorAll('[data-fb-node-id]').forEach((el) => {
+      // Restore original inline styles on BOTH variants' children (undo GSAP inline overrides).
+      // The loser variant also needs cleanup — GSAP fromTo leaves inline styles on next's children,
+      // and if reversed those stale styles would corrupt measurements on the next forward animation.
+      const restorePairs = [
+        [winner, reversed ? savedCurrentStyles : savedNextStyles],
+        [loser,  reversed ? savedNextStyles : savedCurrentStyles],
+      ];
+      for (const [variant, styles] of restorePairs) {
+        if (!styles) continue;
+        variant.querySelectorAll('[data-fb-node-id]').forEach((el) => {
           const nid = el.dataset.fbNodeId;
-          if (nid && Object.prototype.hasOwnProperty.call(stylesToRestore, nid)) {
-            if (stylesToRestore[nid]) el.setAttribute('style', stylesToRestore[nid]);
+          if (nid && Object.prototype.hasOwnProperty.call(styles, nid)) {
+            if (styles[nid]) el.setAttribute('style', styles[nid]);
             else el.removeAttribute('style');
           }
         });
@@ -1261,10 +1307,12 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
       current.querySelectorAll('[data-fb-node-id]').forEach((el) => {
         savedCurrentStyles[el.dataset.fbNodeId] = el.getAttribute('style') || '';
       });
+      saSavedStylesRef.current = { next, nextStyles: savedNextStyles, current, currentStyles: savedCurrentStyles };
 
       const tl = gsap.timeline({ onComplete: finish, onReverseComplete: finish });
       saTimelineRef.current = tl;
       saSourceVariantRef.current = activeVariantId;
+      saIsTransientRef.current = !!options.transient;
       const newStageRect = stage.getBoundingClientRect();
       let tweenCount = 0;
 
@@ -1437,7 +1485,9 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
         const fallbackTimeline = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
         if (fallbackTimeline) {
           saTimelineRef.current = fallbackTimeline;
+          saIsTransientRef.current = !!options.transient;
           fallbackTimeline.eventCallback('onComplete', finish);
+          fallbackTimeline.eventCallback('onReverseComplete', finish);
         } else {
           finish();
         }
@@ -1449,7 +1499,10 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
       const wrapperTimeline = animateVariantWrappers(current, next, transition, { crossfadeVariants: true });
       if (wrapperTimeline) {
         saTimelineRef.current = wrapperTimeline;
+        saSourceVariantRef.current = activeVariantId;
+        saIsTransientRef.current = !!options.transient;
         wrapperTimeline.eventCallback('onComplete', finish);
+        wrapperTimeline.eventCallback('onReverseComplete', finish);
       } else {
         finish();
       }
@@ -1462,7 +1515,10 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
     const targetVariantId = mode
       ? (findStateVariant(variants ?? [], baseVariantId, mode)?.id ?? baseVariantId)
       : baseVariantId;
-    if (!targetVariantId || targetVariantId === activeVariantId) return;
+    if (!targetVariantId) return;
+    // Don't interrupt non-transient (click/appear) animations with visual state changes
+    if (saTimelineRef.current?.isActive?.() && !saIsTransientRef.current) return;
+    // Allow call even if targetVariantId === activeVariantId — switchVariant handles the reverse check
     switchVariant(targetVariantId, { transition: getStateTransition() }, { transient: true });
   }, [activeVariantId, switchVariant, variants]);
 
@@ -1473,12 +1529,13 @@ export default function ComponentPlayPreview({ componentName, variants, initialV
 
   const queueInteraction = useCallback((interaction, fallbackTransition = null) => {
     if (!interaction?.targetVariantId) return false;
+    const isMouseTrigger = interaction.trigger === 'mouse-enter' || interaction.trigger === 'mouse-leave';
     const delay = Math.max(0, Number(interaction.delay) || 0) * 1000;
     const timerId = window.setTimeout(() => {
       switchVariant(interaction.targetVariantId, {
         ...interaction,
         transition: interaction?.transition ?? fallbackTransition ?? null,
-      });
+      }, isMouseTrigger ? { transient: true } : {});
       timersRef.current = timersRef.current.filter((entry) => entry !== timerId);
     }, delay);
     timersRef.current.push(timerId);
