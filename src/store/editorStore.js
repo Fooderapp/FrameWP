@@ -3186,7 +3186,7 @@ export function normalizeVectorShapeData(data, fallbackKind = 'path') {
   const kind = data?.kind === 'line' || fallbackKind === 'line' ? 'line' : 'path';
   const rawPoints = Array.isArray(data?.points) ? data.points : [];
   const fallbackPoints = kind === 'line'
-    ? [{ x: 0, y: 12 }, { x: 160, y: 12 }]
+    ? [{ x: 0, y: 0 }, { x: 160, y: 0 }]
     : [{ x: 10, y: 90 }, { x: 84, y: 34 }, { x: 150, y: 24 }];
   const points = (rawPoints.length ? rawPoints : fallbackPoints).map((point, index) => {
     const fallbackPoint = fallbackPoints[Math.min(index, fallbackPoints.length - 1)] ?? fallbackPoints[0];
@@ -3407,15 +3407,13 @@ export function scaleVectorShapeToBounds(vectorData, nextBounds) {
   };
 }
 
-export function createVectorLineData(width = 160, height = 24) {
+export function createVectorLineData(width = 160, height = 1) {
   const safeWidth = Math.max(1, roundVectorNumber(width, 160));
-  const safeHeight = Math.max(1, roundVectorNumber(height, 24));
-  const midY = roundVectorNumber(safeHeight / 2, 12);
   return normalizeVectorShapeData({
     kind: 'line',
     points: [
-      { x: 0, y: midY },
-      { x: safeWidth, y: midY },
+      { x: 0, y: 0 },
+      { x: safeWidth, y: 0 },
     ],
   }, 'line');
 }
@@ -3531,20 +3529,45 @@ export function buildVectorShapeSvgMarkup(vectorData, options = {}) {
   const pathD = getVectorShapePathD(data);
   const fill = typeof options.fill === 'string' ? options.fill : 'none';
   const stroke = typeof options.stroke === 'string' ? options.stroke : '#111827';
-  const strokeWidth = Math.max(0, roundVectorNumber(options.strokeWidth, data.kind === 'line' ? 2 : 1.5));
+  const strokeWidth = Math.max(0, roundVectorNumber(options.strokeWidth, 1.5));
   const lineCap = options.lineCap ?? 'round';
   const lineJoin = options.lineJoin ?? 'round';
   return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"><path d="${pathD}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}"/></svg>`;
 }
 
+// ── Line tool (Figma-style: rotation-based, no viewBox distortion) ──────
+
+export function buildLineSvgMarkup(options = {}) {
+  const stroke = typeof options.stroke === 'string' ? options.stroke : '#111827';
+  const strokeWidth = Math.max(0.5, options.strokeWidth ?? 2);
+  const lineCap = options.lineCap ?? 'round';
+  return `<svg width="100%" height="100%" overflow="visible" xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="50%" x2="100%" y2="50%" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}"/></svg>`;
+}
+
+export function getLineEndpoints(element) {
+  const x = element?.x ?? element?.base?.x ?? 0;
+  const y = element?.y ?? element?.base?.y ?? 0;
+  const w = element?.width ?? element?.base?.width ?? 100;
+  const h = element?.height ?? element?.base?.height ?? 1;
+  const rotDeg = element?.rotation ?? element?.base?.rotation ?? 0;
+  const rad = rotDeg * Math.PI / 180;
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  // Rotate the left-edge and right-edge midpoints around center.
+  // These match the SVG <line x1="0" y1="50%" x2="100%" y2="50%"> endpoints.
+  return [
+    { x: cx - (w / 2) * Math.cos(rad), y: cy - (w / 2) * Math.sin(rad) },
+    { x: cx + (w / 2) * Math.cos(rad), y: cy + (w / 2) * Math.sin(rad) },
+  ];
+}
+
 export function getVectorShapeData(element = null) {
   if (!element || typeof element !== 'object') return null;
   const shapeKind = getShapePresetKind(element);
-  if (!shapeKind || !['line', 'path', 'pen'].includes(shapeKind)) return null;
+  if (!shapeKind || !['path', 'pen'].includes(shapeKind)) return null;
 
   const raw = element.vectorData ?? element.base?.vectorData ?? null;
-  if (raw) return normalizeVectorShapeData(raw, shapeKind === 'line' ? 'line' : 'path');
-  if (shapeKind === 'line') return createVectorLineData(element.width ?? element.base?.width ?? 160, element.height ?? element.base?.height ?? 24);
+  if (raw) return normalizeVectorShapeData(raw, 'path');
   return createDefaultBezierPathData(shapeKind === 'pen' ? 'pen' : 'path');
 }
 
@@ -3615,20 +3638,19 @@ export function createShapePreset(shapeType, x = 80, y = 80) {
   }
 
   if (shapeType === 'line') {
-    const vectorData = createVectorLineData(160, 24);
+    const lineMarkup = buildLineSvgMarkup({ stroke: '#111827', strokeWidth: 2, lineCap: 'round' });
     const element = createCustomShapeIcon({
       x,
       y,
       name: 'Line',
       width: 160,
-      height: 24,
+      height: 1,
       color: 'transparent',
       strokeWidth: 2,
       strokeColor: '#111827',
-      markup: buildVectorShapeSvgMarkup(vectorData, { width: 160, height: 24, fill: 'none', stroke: '#111827', strokeWidth: 2 }),
+      markup: lineMarkup,
     });
     element.base.shapeType = 'line';
-    element.base.vectorData = vectorData;
     element.base.styles = {
       ...element.base.styles,
       backgroundColor: 'transparent',
@@ -5935,11 +5957,14 @@ export const useEditorStore = create((set, get) => {
     updateElementsStyles(elementIds, bpId, styleUpdates) {
       const targetIds = new Set((elementIds ?? []).filter(Boolean));
       if (!targetIds.size) return;
+      const vectorStyleKeys = ['strokeWidth', 'strokeColor', 'lineCap', 'backgroundColor'];
+      const needsVectorSync = vectorStyleKeys.some((k) => Object.prototype.hasOwnProperty.call(styleUpdates, k));
       withPage((els) => els.map((el) => {
         if (!targetIds.has(el.id)) return el;
         const textFieldUpdates = getTextStyleDrivenFieldUpdates(el, bpId, styleUpdates);
+        let next;
         if (bpId === 'desktop') {
-          return pruneElementBreakpointOverrides({
+          next = pruneElementBreakpointOverrides({
             ...el,
             base: {
               ...el.base,
@@ -5947,15 +5972,54 @@ export const useEditorStore = create((set, get) => {
               styles: { ...el.base.styles, ...styleUpdates },
             },
           });
+        } else {
+          const ov = el.overrides?.[bpId] ?? {};
+          next = pruneElementBreakpointOverrides({
+            ...el,
+            overrides: {
+              ...el.overrides,
+              [bpId]: { ...ov, ...textFieldUpdates, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
+            },
+          });
         }
-        const ov = el.overrides?.[bpId] ?? {};
-        return pruneElementBreakpointOverrides({
-          ...el,
-          overrides: {
-            ...el.overrides,
-            [bpId]: { ...ov, ...textFieldUpdates, styles: { ...(ov.styles ?? {}), ...styleUpdates } },
-          },
-        });
+        // Rebuild svgMarkup for vector shapes when stroke styles change.
+        if (needsVectorSync) {
+          const shapeKind = getShapePresetKind(next);
+          if (shapeKind && ['line', 'path', 'pen'].includes(shapeKind)) {
+            const resolved = bpId === 'desktop' ? next.base : { ...next.base, ...(next.overrides?.[bpId] ?? {}), styles: { ...(next.base.styles ?? {}), ...(next.overrides?.[bpId]?.styles ?? {}) } };
+            const mergedStyles = resolved.styles ?? {};
+            let freshMarkup;
+            if (shapeKind === 'line') {
+              const sw = Math.max(0.5, mergedStyles.strokeWidth || 2);
+              const sc = mergedStyles.strokeColor ?? '#111827';
+              const lc = mergedStyles.lineCap ?? 'round';
+              freshMarkup = buildLineSvgMarkup({ stroke: sc, strokeWidth: sw, lineCap: lc });
+            } else {
+              const vectorData = getVectorShapeData(resolved) || getVectorShapeData(next);
+              if (vectorData) {
+                const sw = Math.max(0.5, mergedStyles.strokeWidth || 1.5);
+                const sc = mergedStyles.strokeColor ?? '#2563eb';
+                const lc = mergedStyles.lineCap ?? 'round';
+                const w = resolved.width ?? next.base.width ?? 100;
+                const h = resolved.height ?? next.base.height ?? 100;
+                const fillValue = vectorData.closed
+                  && typeof mergedStyles.backgroundColor === 'string'
+                  && !mergedStyles.backgroundColor.includes('gradient(')
+                  && mergedStyles.backgroundColor !== 'transparent'
+                  ? mergedStyles.backgroundColor : 'none';
+                freshMarkup = buildVectorShapeSvgMarkup(vectorData, { width: w, height: h, fill: fillValue, stroke: sc, strokeWidth: sw, lineCap: lc });
+              }
+            }
+            if (freshMarkup) {
+              if (bpId === 'desktop') {
+                next = { ...next, base: { ...next.base, svgMarkup: freshMarkup } };
+              } else {
+                next = { ...next, overrides: { ...next.overrides, [bpId]: { ...(next.overrides?.[bpId] ?? {}), svgMarkup: freshMarkup } } };
+              }
+            }
+          }
+        }
+        return next;
       }));
     },
 

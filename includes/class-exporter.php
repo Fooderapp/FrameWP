@@ -286,6 +286,88 @@ class FrameBuilder_Exporter {
 		];
 	}
 
+	/**
+	 * Build SVG markup from vectorData for line/path/pen shapes.
+	 * PHP equivalent of JS buildVectorShapeSvgMarkup().
+	 */
+	private function build_vector_shape_svg( array $vector_data, array $options = [] ): string {
+		$kind   = $vector_data['kind'] ?? 'path';
+		$points = $vector_data['points'] ?? [];
+		if ( empty( $points ) ) return '';
+
+		// Normalize points.
+		$normalized = [];
+		foreach ( $points as $p ) {
+			$x = (float) ( $p['x'] ?? 0 );
+			$y = (float) ( $p['y'] ?? 0 );
+			$normalized[] = [
+				'x'    => $x,
+				'y'    => $y,
+				'inX'  => (float) ( $p['inX']  ?? $x ),
+				'inY'  => (float) ( $p['inY']  ?? $y ),
+				'outX' => (float) ( $p['outX'] ?? $x ),
+				'outY' => (float) ( $p['outY'] ?? $y ),
+			];
+		}
+
+		// Build path D.
+		$commands = [];
+		foreach ( $normalized as $i => $pt ) {
+			if ( $i === 0 ) {
+				$commands[] = 'M ' . round( $pt['x'], 3 ) . ' ' . round( $pt['y'], 3 );
+				continue;
+			}
+			$prev = $normalized[ $i - 1 ];
+			$has_curve = $kind !== 'line'
+				&& ( abs( $prev['outX'] - $prev['x'] ) > 0.001 || abs( $prev['outY'] - $prev['y'] ) > 0.001
+				  || abs( $pt['inX'] - $pt['x'] ) > 0.001 || abs( $pt['inY'] - $pt['y'] ) > 0.001 );
+			if ( $has_curve ) {
+				$commands[] = 'C '
+					. round( $prev['outX'], 3 ) . ' ' . round( $prev['outY'], 3 ) . ' '
+					. round( $pt['inX'], 3 )   . ' ' . round( $pt['inY'], 3 )   . ' '
+					. round( $pt['x'], 3 )     . ' ' . round( $pt['y'], 3 );
+			} else {
+				$commands[] = 'L ' . round( $pt['x'], 3 ) . ' ' . round( $pt['y'], 3 );
+			}
+		}
+		$closed = ! empty( $vector_data['closed'] ) && $kind !== 'line';
+		if ( $closed && count( $normalized ) > 1 ) {
+			$last  = end( $normalized );
+			$first = $normalized[0];
+			$has_close_curve = abs( $last['outX'] - $last['x'] ) > 0.001 || abs( $last['outY'] - $last['y'] ) > 0.001
+				|| abs( $first['inX'] - $first['x'] ) > 0.001 || abs( $first['inY'] - $first['y'] ) > 0.001;
+			if ( $has_close_curve ) {
+				$commands[] = 'C '
+					. round( $last['outX'], 3 )  . ' ' . round( $last['outY'], 3 )  . ' '
+					. round( $first['inX'], 3 )  . ' ' . round( $first['inY'], 3 )  . ' '
+					. round( $first['x'], 3 )    . ' ' . round( $first['y'], 3 );
+			} else {
+				$commands[] = 'L ' . round( $first['x'], 3 ) . ' ' . round( $first['y'], 3 );
+			}
+			$commands[] = 'Z';
+		}
+		$path_d = implode( ' ', $commands );
+
+		// Bounds.
+		$xs = array_column( $normalized, 'x' );
+		$ys = array_column( $normalized, 'y' );
+		$w  = max( 1, round( max( $xs ) - min( $xs ), 3 ) );
+		$h  = max( 1, round( max( $ys ) - min( $ys ), 3 ) );
+		if ( isset( $options['width'] ) && (float) $options['width'] > 0 )  $w = (float) $options['width'];
+		if ( isset( $options['height'] ) && (float) $options['height'] > 0 ) $h = (float) $options['height'];
+
+		$fill         = esc_attr( $options['fill'] ?? 'none' );
+		$stroke       = esc_attr( $options['stroke'] ?? '#111827' );
+		$stroke_width = max( 0, (float) ( $options['strokeWidth'] ?? ( $kind === 'line' ? 2 : 1.5 ) ) );
+		$line_cap     = esc_attr( $options['lineCap'] ?? 'round' );
+		$line_join    = esc_attr( $options['lineJoin'] ?? 'round' );
+
+		return '<svg viewBox="0 0 ' . $w . ' ' . $h . '" preserveAspectRatio="none" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+			. '<path d="' . esc_attr( $path_d ) . '" fill="' . $fill . '" stroke="' . $stroke
+			. '" stroke-width="' . $stroke_width . '" stroke-linecap="' . $line_cap
+			. '" stroke-linejoin="' . $line_join . '"/></svg>';
+	}
+
 	private function sanitize_svg_markup( $markup ): string {
 		if ( ! is_string( $markup ) || trim( $markup ) === '' ) return '';
 
@@ -304,6 +386,7 @@ class FrameBuilder_Exporter {
 				'xmlns' => true,
 				'xmlns:xlink' => true,
 				'preserveaspectratio' => true,
+				'overflow' => true,
 				'role' => true,
 				'aria-hidden' => true,
 				'focusable' => true,
@@ -342,7 +425,18 @@ class FrameBuilder_Exporter {
 		$clean = preg_replace( '/\son[a-z-]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', '', $clean );
 		$clean = preg_replace( '/\s(?:href|xlink:href)\s*=\s*("|\')\s*javascript:[^\1]*\1/i', '', $clean );
 		if ( ! is_string( $clean ) || trim( $clean ) === '' ) return '';
-		return preg_replace( '/<svg\b/i', '<svg width="100%" height="100%" preserveAspectRatio="xMidYMid meet"', $clean, 1 ) ?? '';
+		// Only add width/height if not already present; preserve original preserveAspectRatio.
+		$has_width  = preg_match( '/\bwidth\s*=/i', $clean );
+		$has_height = preg_match( '/\bheight\s*=/i', $clean );
+		$has_par    = preg_match( '/\bpreserveAspectRatio\s*=/i', $clean );
+		$inject = '';
+		if ( ! $has_width )  $inject .= ' width="100%"';
+		if ( ! $has_height ) $inject .= ' height="100%"';
+		if ( ! $has_par )    $inject .= ' preserveAspectRatio="xMidYMid meet"';
+		if ( $inject !== '' ) {
+			$clean = preg_replace( '/<svg\b/i', '<svg' . $inject, $clean, 1 ) ?? $clean;
+		}
+		return $clean;
 	}
 
 	private function sanitize_embed_html( $markup ): string {
@@ -958,6 +1052,9 @@ class FrameBuilder_Exporter {
 		$this->css[] = ".{$bid} .fb-text-content, .{$bid} .fb-text-content :is(span, strong, em, u, b, i, a, mark, small, sub, sup) { white-space: inherit; -webkit-text-stroke-width: var(--fb-text-stroke-width, 0px); -webkit-text-stroke-color: var(--fb-text-stroke-color, currentColor); -webkit-text-fill-color: currentColor; paint-order: stroke fill; }";
 		$this->css[] = ".{$bid} .fb-icon-content svg { width:100%; height:100%; }";
 		$this->css[] = ".{$bid} .fb-icon-content--stroked svg :is(path, circle, rect, line, polyline, polygon, ellipse) { stroke: var(--fb-icon-stroke-color); stroke-width: var(--fb-icon-stroke-width); paint-order: stroke fill; }";
+		$this->css[] = ".{$bid} .fb-el--vector-line { overflow:visible !important; }";
+		$this->css[] = ".{$bid} .fb-el--vector-line .fb-icon-content { overflow:visible; }";
+		$this->css[] = ".{$bid} .fb-el--vector-line .fb-icon-content svg { overflow:visible; }";
 		$this->css[] = ".{$bid} input.fb-form-control:not([type=checkbox]):not([type=radio]), .{$bid} select.fb-form-control, .{$bid} textarea.fb-form-control { margin:0 !important; min-width:0 !important; max-width:none !important; width:100% !important; height:auto !important; text-transform:none !important; border:0 !important; outline:none !important; background:transparent !important; box-shadow:none !important; border-radius:0 !important; appearance:none; -webkit-appearance:none; display:block !important; vertical-align:middle; }";
 		$this->css[] = ".{$bid} input.fb-form-control[type=checkbox]:not(.fb-form-choice__input), .{$bid} input.fb-form-control[type=radio]:not(.fb-form-choice__input), .{$bid} input[type=checkbox]:not(.fb-form-choice__input), .{$bid} input[type=radio]:not(.fb-form-choice__input) { appearance:auto; -webkit-appearance:auto; width:auto !important; min-width:auto !important; max-width:none !important; height:auto !important; background:initial !important; border-radius:initial !important; display:inline-block !important; vertical-align:middle; }";
 		$this->css[] = ".{$bid} select.fb-form-control { background-image:none !important; }";
@@ -1019,8 +1116,11 @@ class FrameBuilder_Exporter {
 
 		$id     = preg_replace( '/[^a-zA-Z0-9_-]/', '', $el['id'] ?? '' );
 		$class  = 'fb-el fb-el-' . $id;
-		$class  = 'fb-el fb-el-' . $id;
 		$styles = $resolved['styles'] ?? [];
+		// Add vector-line class for line shapes.
+		if ( ( $resolved['shapeType'] ?? '' ) === 'line' ) {
+			$class .= ' fb-el--vector-line';
+		}
 		$explicit_align_self = isset( $styles['alignSelf'] ) && in_array( $styles['alignSelf'], [ 'auto', 'flex-start', 'center', 'flex-end', 'stretch' ], true )
 			? $styles['alignSelf']
 			: null;
@@ -1547,15 +1647,51 @@ class FrameBuilder_Exporter {
 		}
 
 		if ( 'icon' === $element_type ) {
-			$icon_markup = $this->sanitize_svg_markup( $resolved['svgMarkup'] ?? '' );
 			$icon_color = $this->sanitize_css_value( $styles['color'] ?? '#111827' );
 			$icon_stroke_width = isset( $styles['strokeWidth'] ) ? max( 0, (float) $styles['strokeWidth'] ) : 0;
 			$icon_stroke_color = $this->sanitize_css_value( $this->get_gradient_fallback_color( $styles['strokeColor'] ?? '', $styles['color'] ?? '#111827' ) );
+			$shape_type = $resolved['shapeType'] ?? '';
+
+			// For vector shapes, rebuild SVG from vectorData with current styles (always fresh).
+			$vector_data = $resolved['vectorData'] ?? null;
+			if ( $shape_type === 'line' ) {
+				$el_width   = max( 1, (float) ( $resolved['width'] ?? 100 ) );
+				$stroke_val = esc_attr( $this->sanitize_css_value( $styles['strokeColor'] ?? '#111827' ) );
+				$sw_val     = max( 0.5, isset( $styles['strokeWidth'] ) ? (float) $styles['strokeWidth'] : 2 );
+				$lc_val     = esc_attr( $styles['lineCap'] ?? 'round' );
+				$icon_markup = '<svg width="100%" height="100%" style="overflow:visible" xmlns="http://www.w3.org/2000/svg">'
+					. '<line x1="0" y1="50%" x2="100%" y2="50%" stroke="' . $stroke_val
+					. '" stroke-width="' . $sw_val . '" stroke-linecap="' . $lc_val . '"/></svg>';
+			} elseif ( is_array( $vector_data ) && in_array( $shape_type, [ 'path', 'pen' ], true ) ) {
+				$el_width  = max( 1, (float) ( $resolved['width'] ?? 100 ) );
+				$el_height = max( 1, (float) ( $resolved['height'] ?? 100 ) );
+				$vs_fill = 'none';
+				if ( $shape_type !== 'line' && ! empty( $vector_data['closed'] ) ) {
+					$bg = $styles['backgroundColor'] ?? 'transparent';
+					if ( $bg !== 'transparent' && is_string( $bg ) && strpos( $bg, 'gradient(' ) === false ) {
+						$vs_fill = $bg;
+					}
+				}
+				$icon_markup = $this->build_vector_shape_svg( $vector_data, [
+					'width'       => $el_width,
+					'height'      => $el_height,
+					'fill'        => $vs_fill,
+					'stroke'      => $this->sanitize_css_value( $styles['strokeColor'] ?? '#111827' ),
+					'strokeWidth' => isset( $styles['strokeWidth'] ) ? max( 0, (float) $styles['strokeWidth'] ) : ( $shape_type === 'line' ? 2 : 1.5 ),
+					'lineCap'     => $styles['lineCap'] ?? 'round',
+				] );
+			} else {
+				$icon_markup = $this->sanitize_svg_markup( $resolved['svgMarkup'] ?? '' );
+			}
+
 			if ( $icon_markup !== '' ) {
 				$icon_class = 'fb-icon-content' . ( $icon_stroke_width > 0 ? ' fb-icon-content--stroked' : '' );
 				$icon_style = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:' . esc_attr( $icon_color ) . ';pointer-events:none;user-select:none;';
 				if ( $icon_stroke_width > 0 ) {
 					$icon_style .= '--fb-icon-stroke-width:' . esc_attr( $icon_stroke_width . 'px' ) . ';--fb-icon-stroke-color:' . esc_attr( $icon_stroke_color ) . ';';
+				}
+				if ( $shape_type === 'line' ) {
+					$icon_style .= 'overflow:visible;';
 				}
 				$html .= '<div class="' . esc_attr( $icon_class ) . '" data-flip-id="' . esc_attr( $id . '__content' ) . '" style="' . $icon_style . '">' . $icon_markup . '</div>';
 			}

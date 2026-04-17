@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, getSelectionElementIds, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup, getLoopItemPreviewVariables, loopTemplateRootHasContent } from '../store/editorStore';
+import { useEditorStore, resolveElement, resolveElementAnimations, resolveElementWithVariables, resolvePageLayout, isElementSelected, getSelectionElementIds, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, getShapePresetKind, getVectorShapeData, buildVectorShapeSvgMarkup, buildLineSvgMarkup, getLoopItemPreviewVariables, loopTemplateRootHasContent } from '../store/editorStore';
 import { canAssetApplyToElement, parseAssetDragPayload } from '../store/assetStyles';
 import { ensureGoogleFontLoaded, familyToFontStack } from '../components/googleFonts';
 import { getEmbedPreview } from '../components/embedUtils';
@@ -521,6 +521,32 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
       else setSelection({ elementId: id, bpId });
       return;
     }
+    // Double-click on a selected container — check for a line child near cursor & drill in
+    if (isSelected && e.detail >= 2 && elementRef.current) {
+      const allEls = useEditorStore.getState().getAllElements();
+      const childLines = elementRef.current.querySelectorAll('.fb-el--vector-line');
+      const hitDist = 6;
+      for (const lineDom of childLines) {
+        const svgLine = lineDom.querySelector('line');
+        if (!svgLine) continue;
+        const ctm = svgLine.closest('svg')?.getScreenCTM();
+        if (!ctm) continue;
+        const a = new DOMPoint(svgLine.x1.baseVal.value, svgLine.y1.baseVal.value).matrixTransform(ctm);
+        const b = new DOMPoint(svgLine.x2.baseVal.value, svgLine.y2.baseVal.value).matrixTransform(ctm);
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const lenSq = dx * dx + dy * dy;
+        if (lenSq < 1) continue;
+        const t = Math.max(0, Math.min(1, ((e.clientX - a.x) * dx + (e.clientY - a.y) * dy) / lenSq));
+        const px = a.x + t * dx, py = a.y + t * dy;
+        const dist = Math.sqrt((e.clientX - px) ** 2 + (e.clientY - py) ** 2);
+        if (dist <= hitDist) {
+          e.preventDefault();
+          setDrilledContainerId(id);
+          setSelection({ elementId: lineDom.dataset.id, bpId });
+          return;
+        }
+      }
+    }
     onStartElementDrag && onStartElementDrag(e, bpId, { id });
   };
 
@@ -1018,7 +1044,12 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
   } : null;
   const iconMarkup = el.type === 'icon' ? sanitizeSvgMarkup(resolved?.svgMarkup ?? '', { forceCurrentColor: false }) : '';
   const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
-  const vectorShapeData = ['line', 'path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(el) : null;
+  const lineMarkup = shapeKind === 'line' ? buildLineSvgMarkup({
+    stroke: strokeColor || '#111827',
+    strokeWidth: Math.max(0.5, strokeWidth || 2),
+    lineCap: styles?.lineCap ?? 'round',
+  }) : '';
+  const vectorShapeData = ['path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(el) : null;
   const vectorFillValue = vectorShapeData?.kind !== 'line' && vectorShapeData?.closed
     ? (styles?.backgroundColor ?? 'transparent')
     : 'transparent';
@@ -1040,6 +1071,7 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
           : 'none',
         stroke: strokeColor,
         strokeWidth: Math.max(0.5, strokeWidth || (shapeKind === 'line' ? 2 : 1.5)),
+        lineCap: styles?.lineCap ?? 'round',
       })
     : '';
   const builderVideoAutoplay = el.type === 'video'
@@ -1885,7 +1917,7 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
           )}
         </>
       )}
-      {el.type === 'icon' && ((vectorShapeMarkup || iconMarkup) ? (
+      {el.type === 'icon' && ((lineMarkup || vectorShapeMarkup || iconMarkup) ? (
         <div
           className={`fb-icon-content${strokeWidth > 0 ? ' fb-icon-content--stroked' : ''}`}
           style={{
@@ -1895,6 +1927,7 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
             alignItems: 'center',
             justifyContent: 'center',
             color: styles?.color ?? '#111827',
+            overflow: shapeKind === 'line' ? 'visible' : undefined,
             '--fb-icon-stroke-width': strokeWidth > 0 ? `${strokeWidth}px` : undefined,
             '--fb-icon-stroke-color': strokeWidth > 0 ? strokeColor : undefined,
             pointerEvents: 'none',
@@ -1919,7 +1952,7 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
               }}
             />
           ) : null}
-          <div style={{ position: 'absolute', inset: 0 }} dangerouslySetInnerHTML={{ __html: vectorShapeMarkup || iconMarkup }} />
+          <div style={{ position: 'absolute', inset: 0 }} dangerouslySetInnerHTML={{ __html: lineMarkup || vectorShapeMarkup || iconMarkup }} />
         </div>
       ) : (
         <div style={{

@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { useEditorStore, createFrame, createLoop, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementClipboard, writeStoredElementClipboard, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
+import { useEditorStore, createFrame, createLoop, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, buildLineSvgMarkup, getLineEndpoints, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementClipboard, writeStoredElementClipboard, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
 import { getAssetStyleUpdatesForElement, parseAssetDragPayload } from '../store/assetStyles';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
@@ -14,6 +14,7 @@ const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
 const SNAP_THRESHOLD_PX = 6;
 const COMMENT_CURSOR = "url(\"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M6 4h10a4 4 0 0 1 4 4v8H6a2 2 0 0 0-2 2V6a2 2 0 0 1 2-2Z%27 fill=%27%237BE300%27/%3E%3Cpath d=%27M4 18V8%27 stroke=%27%237BE300%27 stroke-width=%274%27 stroke-linecap=%27round%27/%3E%3C/svg%3E\") 6 6, crosshair";
+const ROTATE_CURSOR = "url(\"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%23B7BEC5%27 stroke-width=%271.8%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27M8 6H4v4%27/%3E%3Cpath d=%27M4 10a8 8 0 0 1 13.7-5.7L20 6%27/%3E%3Cpath d=%27M16 18h4v-4%27/%3E%3Cpath d=%27M20 14a8 8 0 0 1-13.7 5.7L4 18%27/%3E%3C/svg%3E\") 12 12, grab";
 const PEN_CLOSE_SNAP_PX = 16;
 const TELEPORT_MARKER = 'FRAMEWP_TELEPORT';
 const EDITOR_CLIPBOARD_MARKER = 'FRAMEWP_CLIPBOARD';
@@ -1833,9 +1834,71 @@ function CommentCanvasCard({ containerRef, commentDraft, onSubmitDraft, onDiscar
   );
 }
 
+/** Renders an SVG hover highlight along the actual line (not bounding box). */
+function LineHoverOverlay() {
+  // Minimal subscriptions: primitives only, so we don't re-render on every store update.
+  const hoveredId = useEditorStore(s => s.hoveredId);
+  const layerHoveredId = useEditorStore(s => s.layerHoveredId);
+  const selectionElementId = useEditorStore(s => s.selection?.elementId);
+  const selectionBpId = useEditorStore(s => s.selection?.bpId);
+  const viewportScale = useEditorStore(s => s.viewport.scale);
+
+  const targetId = hoveredId || layerHoveredId;
+  if (!targetId) return null;
+  if (selectionElementId === targetId) return null;
+
+  // Read heavier data lazily via getState — no subscription.
+  const state = useEditorStore.getState();
+  const el = state.getAllElements().find(e => e.id === targetId);
+  if (!el) return null;
+  const bpDefs = state.breakpointDefs;
+  const bpId = selectionBpId || Object.keys(bpDefs)[0];
+  const resolved = resolveElement(el, bpId);
+  const shapeKind = getShapePresetKind(resolved) || getShapePresetKind(el);
+  if (shapeKind !== 'line') return null;
+
+  const bp = bpDefs[bpId];
+  if (!bp) return null;
+  const scale = Math.max(MIN_SCALE, Number.isFinite(viewportScale) ? viewportScale : 1);
+  const boardDom = document.querySelector(`.fb-artboard[data-bp="${bp.id}"]`);
+  const lineDom = boardDom?.querySelector(`[data-id="${el.id}"]`);
+  const boardRect = boardDom?.getBoundingClientRect();
+  if (!lineDom || !boardRect) return null;
+
+  const svgLine = lineDom.querySelector('line');
+  if (!svgLine) return null;
+  const svgEl = svgLine.closest('svg');
+  const ctm = svgEl?.getScreenCTM();
+  if (!ctm) return null;
+
+  const sp1 = new DOMPoint(svgLine.x1.baseVal.value, svgLine.y1.baseVal.value).matrixTransform(ctm);
+  const sp2 = new DOMPoint(svgLine.x2.baseVal.value, svgLine.y2.baseVal.value).matrixTransform(ctm);
+  const p0 = { x: bp.x + (sp1.x - boardRect.left) / scale, y: bp.y + (sp1.y - boardRect.top) / scale };
+  const p1 = { x: bp.x + (sp2.x - boardRect.left) / scale, y: bp.y + (sp2.y - boardRect.top) / scale };
+
+  const svgWidth = Math.max(...Object.values(bpDefs).map(b => b.x + b.width), p1.x) + 400;
+  const svgHeight = Math.max(...Object.values(bpDefs).map(b => b.y + b.height), p1.y) + 400;
+  const isComponent = !!el.componentInstance;
+  const color = isComponent ? 'rgba(154,108,255,0.96)' : 'rgba(123,227,0,0.96)';
+
+  return (
+    <svg
+      className="fb-sel-overlay-svg"
+      width={svgWidth}
+      height={svgHeight}
+      style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 9998 }}
+    >
+      <line x1={p0.x} y1={p0.y} x2={p1.x} y2={p1.y} stroke={color} strokeWidth={1.5 / scale} vectorEffect="non-scaling-stroke" pointerEvents="none" />
+      {[p0, p1].map((pt, i) => (
+        <circle key={`hover-ep-${i}`} cx={pt.x} cy={pt.y} r={6 / scale} fill="#fff" stroke={color} strokeWidth={1.5 / scale} vectorEffect="non-scaling-stroke" pointerEvents="none" />
+      ))}
+    </svg>
+  );
+}
+
 /** Renders a bounding-box overlay in world-space, as a sibling of artboards.
  *  Not clipped by artboard's overflow:hidden, so it shows even for overflowing elements. */
-function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onStartGradientDrag, onStartVectorPointDrag, onInsertVectorPoint, dragOverlay, gradientDragOverlay }) {
+function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onStartGradientDrag, onStartVectorPointDrag, onStartLineEndpointDrag, onInsertVectorPoint, dragOverlay, gradientDragOverlay }) {
   const selection              = useEditorStore(s => s.selection);
   const bpDefs                 = useEditorStore(s => s.breakpointDefs);
   const allElements            = useEditorStore(s => s.getAllElements());
@@ -2326,7 +2389,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
         { key: 'w', start: tl, end: bl, handle: 'w', enabled: overlayHandles.includes('w') },
       ].filter((edge) => edge.enabled)
     : [];
-  const vectorShapeData = ['line', 'path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(el) : null;
+  const vectorShapeData = ['path', 'pen'].includes(shapeKind ?? '') ? getVectorShapeData(resolved) || getVectorShapeData(el) : null;
 
   const vectorEditingOverlay = vectorShapeData && shapeKind !== 'line' ? (
     <>
@@ -2445,16 +2508,41 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
     </>
   ) : null;
 
-  if (vectorShapeData && shapeKind === 'line') {
-    const pathD = buildWorldVectorPathD(vectorShapeData, worldX, worldY);
-    const vectorPoints = vectorShapeData.points.map((point) => ({
-      x: point.x + worldX,
-      y: point.y + worldY,
-      inX: point.inX + worldX,
-      inY: point.inY + worldY,
-      outX: point.outX + worldX,
-      outY: point.outY + worldY,
-    }));
+  if (shapeKind === 'line') {
+    // Measure actual SVG <line> endpoints from the DOM via getScreenCTM().
+    // This guarantees pixel-perfect alignment because we read where the
+    // browser actually rendered the line, avoiding any coordinate-space
+    // conversion errors between CSS transforms and our overlay SVG.
+    let p0 = null, p1 = null;
+    const lineDom = boardDom?.querySelector(`[data-id="${el.id}"]`);
+    const lineBoardRect = boardDom?.getBoundingClientRect();
+    if (lineDom && lineBoardRect) {
+      const svgLine = lineDom.querySelector('line');
+      if (svgLine) {
+        const svgEl = svgLine.closest('svg');
+        const ctm = svgEl?.getScreenCTM();
+        if (ctm) {
+          // SVG <line> uses x1="0" y1="50%" x2="100%" y2="50%".
+          // baseVal.value resolves percentages to user units.
+          const sp1 = new DOMPoint(svgLine.x1.baseVal.value, svgLine.y1.baseVal.value).matrixTransform(ctm);
+          const sp2 = new DOMPoint(svgLine.x2.baseVal.value, svgLine.y2.baseVal.value).matrixTransform(ctm);
+          p0 = {
+            x: bp.x + (sp1.x - lineBoardRect.left) / scale,
+            y: bp.y + (sp1.y - lineBoardRect.top) / scale,
+          };
+          p1 = {
+            x: bp.x + (sp2.x - lineBoardRect.left) / scale,
+            y: bp.y + (sp2.y - lineBoardRect.top) / scale,
+          };
+        }
+      }
+    }
+    // Fallback: math-based endpoints if DOM measurement unavailable
+    if (!p0 || !p1) {
+      const lineEps = getLineEndpoints({ x: worldX, y: worldY, width: overlayW, height: overlayH, rotation: selectionRotation });
+      p0 = lineEps[0];
+      p1 = lineEps[1];
+    }
     return (
       <svg
         className="fb-sel-overlay-svg"
@@ -2462,12 +2550,12 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
         height={svgHeight}
         style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 10000 }}
       >
-        <path
-          d={pathD}
-          fill="none"
+        {/* Invisible hit area for move */}
+        <line
+          x1={p0.x} y1={p0.y} x2={p1.x} y2={p1.y}
           stroke="rgba(0,0,0,0.001)"
-          strokeWidth={Math.max(18 / scale, overlayH + 12 / scale)}
-          vectorEffect="non-scaling-stroke"
+          strokeWidth={Math.max(18 / scale, 12 / scale)}
+          strokeLinecap="round"
           pointerEvents="stroke"
           style={{ cursor: el.locked ? 'default' : 'move' }}
           onMouseDown={(event) => {
@@ -2477,33 +2565,79 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
             onStartMove(event, selection.bpId, el);
           }}
         />
-        <path
-          d={pathD}
-          fill="none"
+        {/* Visible blue line */}
+        <line
+          x1={p0.x} y1={p0.y} x2={p1.x} y2={p1.y}
           stroke={outlineColor}
-          strokeWidth={2 / scale}
+          strokeWidth={1.5 / scale}
           vectorEffect="non-scaling-stroke"
-          style={{ filter: outlineShadow !== 'transparent' ? `drop-shadow(0 0 ${1 / scale}px ${outlineShadow})` : undefined }}
+          pointerEvents="none"
         />
-        {vectorPoints.map((point, index) => (
+        {/* Endpoint circles */}
+        {[p0, p1].map((pt, index) => (
           <circle
-            key={`anchor-${index}`}
-            cx={point.x}
-            cy={point.y}
-            r={(shapeKind === 'line' ? 6 : 5.5) / scale}
-            fill={shapeKind === 'line' ? '#fff' : '#3b82f6'}
+            key={`line-ep-${index}`}
+            cx={pt.x} cy={pt.y}
+            r={6 / scale}
+            fill="#fff"
             stroke={outlineColor}
             strokeWidth={1.5 / scale}
             vectorEffect="non-scaling-stroke"
             pointerEvents={el.locked ? 'none' : 'all'}
             style={{ cursor: el.locked ? 'default' : 'grab' }}
-              onMouseDown={(event) => {
+            onMouseDown={(event) => {
               event.stopPropagation();
               event.preventDefault();
-                onStartVectorPointDrag(event, selection.bpId, el, index, 'anchor', worldX, worldY);
+              onStartLineEndpointDrag(event, selection.bpId, el, index, worldX, worldY);
             }}
           />
         ))}
+        {/* Rotation handles — at center of line, offset perpendicular on both sides */}
+        {!el.locked && (() => {
+          const dx = p1.x - p0.x;
+          const dy = p1.y - p0.y;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          const off = 24 / scale;
+          const hitSize = 18 / scale;
+          const cx = (p0.x + p1.x) / 2;
+          const cy = (p0.y + p1.y) / 2;
+          const rotCenters = [
+            { x: cx + nx * off, y: cy + ny * off },
+            { x: cx - nx * off, y: cy - ny * off },
+          ];
+          return rotCenters.map((rc, i) => (
+            <g key={`line-rotate-${i}`}>
+              {/* Visible rotation indicator */}
+              <circle
+                cx={rc.x} cy={rc.y}
+                r={4 / scale}
+                fill="none"
+                stroke={outlineColor}
+                strokeWidth={1 / scale}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+                opacity={0.6}
+              />
+              {/* Invisible hit area */}
+              <rect
+                x={rc.x - hitSize / 2}
+                y={rc.y - hitSize / 2}
+                width={hitSize}
+                height={hitSize}
+                fill="rgba(0,0,0,0.001)"
+                pointerEvents="all"
+                style={{ cursor: ROTATE_CURSOR }}
+                onMouseDown={(event) => {
+                  event.stopPropagation();
+                  event.preventDefault();
+                  onStartResize(event, selection.bpId, el, `rotate-${i === 0 ? 'nw' : 'se'}`, resizePayload);
+                }}
+              />
+            </g>
+          ));
+        })()}
       </svg>
     );
   }
@@ -2610,7 +2744,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
               height={rotateHandleSize}
               fill="rgba(0,0,0,0.001)"
               pointerEvents="all"
-              style={{ cursor: 'grab' }}
+              style={{ cursor: ROTATE_CURSOR }}
               onMouseDown={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
@@ -2737,6 +2871,34 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
       </svg>
     </>
   );
+}
+
+/** Check proximity of a screen-space point to all line elements inside a container.
+ *  Returns the data-id of the closest line within hitDist screen pixels, or null. */
+function findNearestLineAtScreenPoint(container, clientX, clientY, hitDist = 6) {
+  if (!container) return null;
+  const lineDoms = container.querySelectorAll('.fb-el--vector-line');
+  let best = null;
+  let bestDist = hitDist;
+  for (const lineDom of lineDoms) {
+    const svgLine = lineDom.querySelector('line');
+    if (!svgLine) continue;
+    const ctm = svgLine.closest('svg')?.getScreenCTM();
+    if (!ctm) continue;
+    const a = new DOMPoint(svgLine.x1.baseVal.value, svgLine.y1.baseVal.value).matrixTransform(ctm);
+    const b = new DOMPoint(svgLine.x2.baseVal.value, svgLine.y2.baseVal.value).matrixTransform(ctm);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1) continue;
+    const t = Math.max(0, Math.min(1, ((clientX - a.x) * dx + (clientY - a.y) * dy) / lenSq));
+    const px = a.x + t * dx, py = a.y + t * dy;
+    const dist = Math.sqrt((clientX - px) ** 2 + (clientY - py) ** 2);
+    if (dist <= bestDist) {
+      bestDist = dist;
+      best = lineDom.dataset.id ?? null;
+    }
+  }
+  return best;
 }
 
 export default function InfiniteCanvas() {
@@ -3580,6 +3742,9 @@ export default function InfiniteCanvas() {
     }
     const topNode = document.elementFromPoint(clientX, clientY);
     if (!topNode || !container.contains(topNode)) return null;
+    // Always check line proximity first — lines are 1px tall and almost impossible to hit directly
+    const lineId = findNearestLineAtScreenPoint(container, clientX, clientY);
+    if (lineId) return lineId;
     for (const node of document.elementsFromPoint(clientX, clientY)) {
       if (!container.contains(node)) continue;
       if (node.closest('.fb-context-menu, .fb-right, .fb-left, .fb-topbar, .fb-overlay-modal, .fb-shadow-popup, .fb-fill-popover')) return null;
@@ -3801,6 +3966,7 @@ export default function InfiniteCanvas() {
     const shapeKind = getShapePresetKind(resolvedElement);
     const strokeColor = resolvedElement?.styles?.strokeColor ?? resolvedElement?.styles?.color ?? (shapeKind === 'line' ? '#111827' : '#2563eb');
     const strokeWidth = Math.max(0.5, resolvedElement?.styles?.strokeWidth || (shapeKind === 'line' ? 2 : 1.5));
+    const lineCap = resolvedElement?.styles?.lineCap ?? 'round';
     const fillValue = reframed.vectorData.kind !== 'line' && reframed.vectorData.closed && typeof resolvedElement?.styles?.backgroundColor === 'string' && !resolvedElement.styles.backgroundColor.includes('gradient(')
       ? resolvedElement.styles.backgroundColor
       : 'none';
@@ -3818,6 +3984,7 @@ export default function InfiniteCanvas() {
         fill: fillValue,
         stroke: strokeColor,
         strokeWidth,
+        lineCap,
       }),
     });
     return reframed;
@@ -4155,6 +4322,19 @@ export default function InfiniteCanvas() {
       return;
     }
     if (e.button === 0 && e.target === e.currentTarget) {
+      // Check if clicking near a line element before deselecting
+      const lineId = findNearestLineAtScreenPoint(containerRef.current, e.clientX, e.clientY);
+      if (lineId) {
+        const allEls = useEditorStore.getState().getAllElements();
+        const lineEl = allEls.find(el => el.id === lineId);
+        if (lineEl) {
+          const bpId = useEditorStore.getState().selection?.bpId || Object.keys(useEditorStore.getState().breakpointDefs)[0];
+          setSelection({ elementId: lineId, bpId });
+          setArtboardSel(null);
+          setDrilled(null);
+          return;
+        }
+      }
       setSelection(null);
       setArtboardSel(null);
       setDrilled(null);
@@ -4288,13 +4468,25 @@ export default function InfiniteCanvas() {
     // ── Draw rubber-band preview ────────────────────────────
     if (drag.current.type === 'draw') {
       const rect = containerRef.current.getBoundingClientRect();
-      const rawW = e.clientX - drag.current.startMX;
-      const rawH = e.clientY - drag.current.startMY;
+      let rawW = e.clientX - drag.current.startMX;
+      let rawH = e.clientY - drag.current.startMY;
+      if (e.shiftKey && drag.current.drawType === 'line') {
+        const len = Math.sqrt(rawW * rawW + rawH * rawH);
+        const angle = Math.atan2(rawH, rawW);
+        const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        rawW = Math.cos(snapped) * len;
+        rawH = Math.sin(snapped) * len;
+      }
       setDrawRect({
-        left:   rect.left + Math.min(drag.current.startMX, e.clientX) - rect.left,
-        top:    rect.top  + Math.min(drag.current.startMY, e.clientY) - rect.top,
+        left:   Math.min(drag.current.startMX, drag.current.startMX + rawW) - rect.left,
+        top:    Math.min(drag.current.startMY, drag.current.startMY + rawH) - rect.top,
         width:  Math.abs(rawW),
         height: Math.abs(rawH),
+        drawType: drag.current.drawType,
+        lineX1: drag.current.startMX - rect.left,
+        lineY1: drag.current.startMY - rect.top,
+        lineX2: (drag.current.startMX + rawW) - rect.left,
+        lineY2: (drag.current.startMY + rawH) - rect.top,
       });
       return;
     }
@@ -4397,7 +4589,18 @@ export default function InfiniteCanvas() {
       const worldVectorData = getWorldVectorData(vectorShapeData, frameWorldX, frameWorldY);
       let nextWorldVectorData = worldVectorData;
       if (drag.current.handleMode === 'anchor') {
-        nextWorldVectorData = moveVectorAnchor(worldVectorData, drag.current.pointIndex, { x: pointer.worldX, y: pointer.worldY });
+        let target = { x: pointer.worldX, y: pointer.worldY };
+        if (e.shiftKey && worldVectorData.kind === 'line' && worldVectorData.points.length === 2) {
+          const otherIdx = drag.current.pointIndex === 0 ? 1 : 0;
+          const other = worldVectorData.points[otherIdx];
+          const dx = target.x - other.x;
+          const dy = target.y - other.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          const angle = Math.atan2(dy, dx);
+          const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+          target = { x: other.x + Math.cos(snapped) * len, y: other.y + Math.sin(snapped) * len };
+        }
+        nextWorldVectorData = moveVectorAnchor(worldVectorData, drag.current.pointIndex, target);
       } else if (drag.current.handleMode === 'in' || drag.current.handleMode === 'out') {
         nextWorldVectorData = updateVectorHandle(worldVectorData, drag.current.pointIndex, drag.current.handleMode, { x: pointer.worldX, y: pointer.worldY }, !e.altKey);
       }
@@ -4410,6 +4613,46 @@ export default function InfiniteCanvas() {
       drag.current.frameWorldY = reframed.offsetY;
       drag.current.localX = nextLocalX;
       drag.current.localY = nextLocalY;
+    } else if (type === 'line-endpoint') {
+      if (Math.abs(dxScreen) > 1 || Math.abs(dyScreen) > 1) drag.current.hasMoved = true;
+      const pointer = getProjectedWorldPoint(e.clientX, e.clientY, 0, 0);
+      const fixedPt = drag.current.fixedPoint;
+      let targetX = pointer.worldX;
+      let targetY = pointer.worldY;
+      if (e.shiftKey) {
+        const sdx = targetX - fixedPt.x;
+        const sdy = targetY - fixedPt.y;
+        const slen = Math.sqrt(sdx * sdx + sdy * sdy);
+        const sangle = Math.atan2(sdy, sdx);
+        const ssnapped = Math.round(sangle / (Math.PI / 4)) * (Math.PI / 4);
+        targetX = fixedPt.x + Math.cos(ssnapped) * slen;
+        targetY = fixedPt.y + Math.sin(ssnapped) * slen;
+      }
+      const startPt = drag.current.endpointIndex === 0 ? { x: targetX, y: targetY } : fixedPt;
+      const endPt = drag.current.endpointIndex === 0 ? fixedPt : { x: targetX, y: targetY };
+      const ldx = endPt.x - startPt.x;
+      const ldy = endPt.y - startPt.y;
+      const lineLength = Math.max(1, Math.sqrt(ldx * ldx + ldy * ldy));
+      const lineAngle = Math.atan2(ldy, ldx) * (180 / Math.PI);
+      const midX = (startPt.x + endPt.x) / 2;
+      const midY = (startPt.y + endPt.y) / 2;
+      const newWorldX = midX - lineLength / 2;
+      const newWorldY = midY - 0.5;
+      const localX = Math.round(newWorldX - drag.current.parentOffsetX);
+      const localY = Math.round(newWorldY - drag.current.parentOffsetY);
+      const st = useEditorStore.getState();
+      st.updateElementLayout(elementId, bpId, {
+        x: localX,
+        y: localY,
+        width: Math.round(lineLength),
+        height: 1,
+        rotation: Math.round(lineAngle * 100) / 100,
+        svgMarkup: buildLineSvgMarkup({
+          stroke: drag.current.resolvedStyles?.strokeColor ?? '#111827',
+          strokeWidth: Math.max(0.5, drag.current.resolvedStyles?.strokeWidth || 2),
+          lineCap: drag.current.resolvedStyles?.lineCap ?? 'round',
+        }),
+      });
     } else if (type === 'vector-resize') {
       if (Math.abs(dxScreen) > 1 || Math.abs(dyScreen) > 1) drag.current.hasMoved = true;
       const session = drag.current;
@@ -4707,10 +4950,17 @@ export default function InfiniteCanvas() {
       const rect = containerRef.current.getBoundingClientRect();
       const endWorldX = (e.clientX - rect.left - panX) / scale;
       const endWorldY = (e.clientY - rect.top  - panY) / scale;
-      const rawW = endWorldX - startWorldX;
-      const rawH = endWorldY - startWorldY;
-      const elX = Math.round(Math.min(startWorldX, endWorldX));
-      const elY = Math.round(Math.min(startWorldY, endWorldY));
+      let rawW = endWorldX - startWorldX;
+      let rawH = endWorldY - startWorldY;
+      if (e.shiftKey && drawType === 'line') {
+        const len = Math.sqrt(rawW * rawW + rawH * rawH);
+        const angle = Math.atan2(rawH, rawW);
+        const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        rawW = Math.cos(snapped) * len;
+        rawH = Math.sin(snapped) * len;
+      }
+      const elX = Math.round(Math.min(startWorldX, startWorldX + rawW));
+      const elY = Math.round(Math.min(startWorldY, startWorldY + rawH));
       const elW = Math.max(20, Math.round(Math.abs(rawW)));
       const elH = Math.max(20, Math.round(Math.abs(rawH)));
       // Detect which artboard: check which bp contains the DRAW-START point.
@@ -4736,8 +4986,13 @@ export default function InfiniteCanvas() {
       const page2 = useEditorStore.getState().getCurrentPage();
       const pageLayout2 = resolvePageLayout(page2?.layout, targetBpId);
       const pad2  = resolvePagePadding(page2?.padding, targetBpId);
-      let localX = Math.round(elX - targetBpDef.x - (pad2?.left ?? 0));
-      let localY = Math.round(elY - targetBpDef.y - (pad2?.top  ?? 0));
+      // originX/Y = the world-coordinate origin of the positioning context.
+      // For root-level elements: artboard position + page padding.
+      // For nested elements: parent's padding-edge position.
+      let originX = targetBpDef.x + (pad2?.left ?? 0);
+      let originY = targetBpDef.y + (pad2?.top  ?? 0);
+      let localX = Math.round(elX - originX);
+      let localY = Math.round(elY - originY);
       // Hit-test at the START of the draw to find the parent container
       let parentId = null;
       {
@@ -4754,10 +5009,13 @@ export default function InfiniteCanvas() {
           const cRect = domEl.getBoundingClientRect();
           const aRect = containerRef.current.getBoundingClientRect();
           const { x: panX2, y: panY2, scale: sc2 } = useEditorStore.getState().viewport;
-          const cWorldX = (cRect.left - aRect.left - panX2) / sc2;
-          const cWorldY = (cRect.top  - aRect.top  - panY2) / sc2;
-          localX = Math.round(elX - cWorldX);
-          localY = Math.round(elY - cWorldY);
+          // getBoundingClientRect() gives the border-box edge in screen pixels.
+          // position:absolute children are positioned relative to the padding edge,
+          // which is offset inward by clientLeft / clientTop (border widths).
+          originX = (cRect.left - aRect.left - panX2) / sc2 + domEl.clientLeft;
+          originY = (cRect.top  - aRect.top  - panY2) / sc2 + domEl.clientTop;
+          localX = Math.round(elX - originX);
+          localY = Math.round(elY - originY);
           break;
         }
       }
@@ -4770,27 +5028,24 @@ export default function InfiniteCanvas() {
         newEl.base.height = circleSize;
       } else {
         newEl.base.width = elW;
-        newEl.base.height = drawType === 'line' ? Math.max(2, Math.min(elH, 12)) : elH;
+        newEl.base.height = elH;
       }
       if (drawType === 'line') {
-        const lineWidth = Math.max(1, Math.round(Math.abs(rawW)));
-        const lineHeight = Math.max(1, Math.round(Math.abs(rawH)));
-        const vectorData = reframeVectorShapeData({
-          kind: 'line',
-          points: [
-            { x: rawW < 0 ? lineWidth : 0, y: rawH < 0 ? lineHeight : 0 },
-            { x: rawW < 0 ? 0 : lineWidth, y: rawH < 0 ? 0 : lineHeight },
-          ],
-        });
-        newEl.base.width = vectorData.width;
-        newEl.base.height = vectorData.height;
-        newEl.base.vectorData = vectorData.vectorData;
-        newEl.base.svgMarkup = buildVectorShapeSvgMarkup(vectorData.vectorData, {
-          width: vectorData.width,
-          height: vectorData.height,
-          fill: 'none',
+        const lineLength = Math.max(2, Math.round(Math.sqrt(rawW * rawW + rawH * rawH)));
+        const lineAngle = Math.atan2(rawH, rawW) * (180 / Math.PI);
+        const midWorldX = startWorldX + rawW / 2;
+        const midWorldY = startWorldY + rawH / 2;
+        // Compute local position DIRECTLY from the midpoint and the exact origin.
+        // This avoids accumulated rounding errors from the intermediate elX/localX path.
+        newEl.base.x = Math.round(midWorldX - originX - lineLength / 2);
+        newEl.base.y = Math.round(midWorldY - originY - 0.5);
+        newEl.base.width = lineLength;
+        newEl.base.height = 1;
+        newEl.base.rotation = Math.round(lineAngle * 100) / 100;
+        newEl.base.svgMarkup = buildLineSvgMarkup({
           stroke: newEl.base.styles?.strokeColor ?? '#111827',
           strokeWidth: Math.max(0.5, newEl.base.styles?.strokeWidth || 2),
+          lineCap: newEl.base.styles?.lineCap ?? 'round',
         });
       }
       if (drawType === 'path') {
@@ -4852,6 +5107,9 @@ export default function InfiniteCanvas() {
         shouldPushHistory = !!drag.current.hasMoved;
       }
       if (drag.current.type === 'vector-resize' || drag.current.type === 'vector-rotate') {
+        shouldPushHistory = !!drag.current.hasMoved;
+      }
+      if (drag.current.type === 'line-endpoint') {
         shouldPushHistory = !!drag.current.hasMoved;
       }
       if (drag.current.type === 'viewport-fold') {
@@ -5047,10 +5305,18 @@ export default function InfiniteCanvas() {
       const state = useEditorStore.getState();
       const drawType = state.pendingDraw; // always fresh
       const tool = state.activeCanvasTool;
-      if (e.button !== 0 || spaceDown.current) return;
+      if (e.button !== 0) return;
       if (!containerRef.current?.contains(e.target)) return;
       if (e.target.closest('.fb-artboard-header, .fb-right, .fb-left, .fb-topbar, .fb-bottom-toolbar-wrap, .fb-shadow-popup, .fb-fill-popover')) return;
       if (e.target.closest('.fb-comment-card')) return;
+      if (spaceDown.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        isPanning.current = true;
+        panOrigin.current = { x: e.clientX, y: e.clientY };
+        panStart.current = { x: state.viewport.x, y: state.viewport.y };
+        return;
+      }
       if (tool === 'pan') {
         e.preventDefault();
         e.stopPropagation();
@@ -5396,6 +5662,35 @@ export default function InfiniteCanvas() {
     };
     setInteracting(true);
   }, [setActiveVectorPoint, setInteracting]);
+
+  const startLineEndpointDrag = useCallback((e, bpId, element, endpointIndex, worldX, worldY) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const resolved = resolveElement(element, bpId);
+    const endpoints = getLineEndpoints({
+      x: worldX, y: worldY,
+      width: resolved.width ?? 100,
+      height: resolved.height ?? 1,
+      rotation: resolved.rotation ?? 0,
+    });
+    const fixedEndpoint = endpoints[endpointIndex === 0 ? 1 : 0];
+    const parentOffsetX = worldX - (resolved.x ?? 0);
+    const parentOffsetY = worldY - (resolved.y ?? 0);
+    drag.current = {
+      type: 'line-endpoint',
+      bpId,
+      elementId: element.id,
+      endpointIndex,
+      fixedPoint: fixedEndpoint,
+      parentOffsetX,
+      parentOffsetY,
+      resolvedStyles: resolved.styles ? { ...resolved.styles } : {},
+      startMX: e.clientX,
+      startMY: e.clientY,
+      hasMoved: false,
+    };
+    setInteracting(true);
+  }, [setInteracting]);
 
   const startVectorResize = useCallback((e, bpId, element, handle, frameWorldX, frameWorldY, vectorWidth, vectorHeight, centerClientX, centerClientY) => {
     e.stopPropagation();
@@ -6068,7 +6363,8 @@ export default function InfiniteCanvas() {
           } : null}
           onStartCommentDrag={startCommentDrag}
         />
-        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} onStartGradientDrag={startGradientDrag} onStartVectorPointDrag={startVectorPointDrag} onInsertVectorPoint={insertVectorPoint} dragOverlay={dragOverlay} gradientDragOverlay={gradientDragOverlay} />
+        <SelectionOverlay onStartResize={startResize} onStartMove={startMoveFromOverlay} onStartRadiusDrag={startRadiusDrag} onStartGradientDrag={startGradientDrag} onStartVectorPointDrag={startVectorPointDrag} onStartLineEndpointDrag={startLineEndpointDrag} onInsertVectorPoint={insertVectorPoint} dragOverlay={dragOverlay} gradientDragOverlay={gradientDragOverlay} />
+        <LineHoverOverlay />
         {penDraft?.points?.length ? (
           <svg
             className="fb-sel-overlay-svg"
@@ -6348,17 +6644,25 @@ export default function InfiniteCanvas() {
         </div>
       )}
       {drawRect && (
-        <div style={{
-          position: 'fixed',
-          left: drawRect.left,
-          top: drawRect.top,
-          width: drawRect.width,
-          height: drawRect.height,
-          border: '1.5px dashed var(--accent-light)',
-          background: 'rgba(99,179,237,0.08)',
-          pointerEvents: 'none',
-          zIndex: 99999,
-        }} />
+        drawRect.drawType === 'line' ? (
+          <svg style={{ position: 'fixed', left: 0, top: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 99999, overflow: 'visible' }}>
+            <line x1={drawRect.lineX1} y1={drawRect.lineY1} x2={drawRect.lineX2} y2={drawRect.lineY2} stroke="#3b82f6" strokeWidth={2} strokeLinecap="round" />
+            <circle cx={drawRect.lineX1} cy={drawRect.lineY1} r={4} fill="#fff" stroke="#3b82f6" strokeWidth={1.5} />
+            <circle cx={drawRect.lineX2} cy={drawRect.lineY2} r={4} fill="#fff" stroke="#3b82f6" strokeWidth={1.5} />
+          </svg>
+        ) : (
+          <div style={{
+            position: 'fixed',
+            left: drawRect.left,
+            top: drawRect.top,
+            width: drawRect.width,
+            height: drawRect.height,
+            border: '1.5px dashed var(--accent-light)',
+            background: 'rgba(99,179,237,0.08)',
+            pointerEvents: 'none',
+            zIndex: 99999,
+          }} />
+        )
       )}
       <CanvasContextMenu
         menu={contextMenu}

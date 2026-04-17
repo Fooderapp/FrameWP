@@ -1,0 +1,571 @@
+diff --git a/src/canvas/CanvasElement.jsx b/src/canvas/CanvasElement.jsx
+index ee7be3c..fe71ae0 100644
+--- a/src/canvas/CanvasElement.jsx
++++ b/src/canvas/CanvasElement.jsx
+@@ -1899,6 +1899,7 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
+             '--fb-icon-stroke-color': strokeWidth > 0 ? strokeColor : undefined,
+             pointerEvents: 'none',
+             userSelect: 'none',
++            overflow: shapeKind === 'line' ? 'visible' : undefined,
+           }}
+         >
+           {vectorFillMask ? (
+@@ -1919,7 +1920,7 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
+               }}
+             />
+           ) : null}
+-          <div style={{ position: 'absolute', inset: 0 }} dangerouslySetInnerHTML={{ __html: vectorShapeMarkup || iconMarkup }} />
++          <div style={{ position: 'absolute', inset: 0, overflow: shapeKind === 'line' ? 'visible' : undefined }} dangerouslySetInnerHTML={{ __html: vectorShapeMarkup || iconMarkup }} />
+         </div>
+       ) : (
+         <div style={{
+diff --git a/src/canvas/InfiniteCanvas.jsx b/src/canvas/InfiniteCanvas.jsx
+index 41f1428..be6c57e 100644
+--- a/src/canvas/InfiniteCanvas.jsx
++++ b/src/canvas/InfiniteCanvas.jsx
+@@ -1,5 +1,5 @@
+ import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
+-import { useEditorStore, createFrame, createLoop, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementClipboard, writeStoredElementClipboard, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
++import { useEditorStore, createFrame, createLoop, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, createVectorLineData, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementClipboard, writeStoredElementClipboard, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch, roundVectorNumber } from '../store/editorStore';
+ import { getAssetStyleUpdatesForElement, parseAssetDragPayload } from '../store/assetStyles';
+ import Artboard from './Artboard';
+ import VariantInteractionModal from '../components/VariantInteractionModal';
+@@ -19,6 +19,7 @@ const TELEPORT_MARKER = 'FRAMEWP_TELEPORT';
+ const EDITOR_CLIPBOARD_MARKER = 'FRAMEWP_CLIPBOARD';
+ 
+ const OVERLAY_HANDLES = ['nw','n','ne','e','se','s','sw','w'];
++const ROTATE_CURSOR_CLASS = 'fb-rotate-cursor';
+ 
+ function isCanvasContainerElement(candidate) {
+   return candidate?.type === 'frame' || isLoopElementType(candidate?.type) || isFormContainerType(candidate?.type);
+@@ -2446,6 +2447,18 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
+   ) : null;
+ 
+   if (vectorShapeData && shapeKind === 'line') {
++    console.log('[LINE OVERLAY DEBUG]', {
++      worldX, worldY,
++      overlayW, overlayH,
++      'resolved.x': resolved.x, 'resolved.y': resolved.y,
++      'resolved.width': resolved.width, 'resolved.height': resolved.height,
++      vectorPoints: vectorShapeData.points.map(p => ({ x: p.x, y: p.y })),
++      measuredRect,
++      visualRect,
++      shouldUseVisualPosition,
++      'bp.x': bp.x, 'bp.y': bp.y,
++      scale,
++    });
+     const pathD = buildWorldVectorPathD(vectorShapeData, worldX, worldY);
+     const vectorPoints = vectorShapeData.points.map((point) => ({
+       x: point.x + worldX,
+@@ -2485,6 +2498,22 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
+           vectorEffect="non-scaling-stroke"
+           style={{ filter: outlineShadow !== 'transparent' ? `drop-shadow(0 0 ${1 / scale}px ${outlineShadow})` : undefined }}
+         />
++        {!el.locked && !isDragging && vectorPoints.map((point, index) => (
++          <circle
++            key={`rotate-${index}`}
++            cx={point.x}
++            cy={point.y}
++            r={18 / scale}
++            fill="rgba(0,0,0,0.001)"
++            pointerEvents="all"
++            className={ROTATE_CURSOR_CLASS}
++            onMouseDown={(e) => {
++              e.stopPropagation();
++              e.preventDefault();
++              onStartResize(e, selection.bpId, el, `rotate-${index === 0 ? 'nw' : 'se'}`, resizePayload);
++            }}
++          />
++        ))}
+         {vectorPoints.map((point, index) => (
+           <circle
+             key={`anchor-${index}`}
+@@ -2610,7 +2639,7 @@ function SelectionOverlay({ onStartResize, onStartMove, onStartRadiusDrag, onSta
+               height={rotateHandleSize}
+               fill="rgba(0,0,0,0.001)"
+               pointerEvents="all"
+-              style={{ cursor: 'grab' }}
++              className={ROTATE_CURSOR_CLASS}
+               onMouseDown={(e) => {
+                 e.stopPropagation();
+                 e.preventDefault();
+@@ -3801,6 +3830,9 @@ export default function InfiniteCanvas() {
+     const shapeKind = getShapePresetKind(resolvedElement);
+     const strokeColor = resolvedElement?.styles?.strokeColor ?? resolvedElement?.styles?.color ?? (shapeKind === 'line' ? '#111827' : '#2563eb');
+     const strokeWidth = Math.max(0.5, resolvedElement?.styles?.strokeWidth || (shapeKind === 'line' ? 2 : 1.5));
++    const commitWidth = Math.max(1, reframed.width);
++    const commitHeight = Math.max(1, reframed.height);
++    const commitVectorData = reframed.vectorData;
+     const fillValue = reframed.vectorData.kind !== 'line' && reframed.vectorData.closed && typeof resolvedElement?.styles?.backgroundColor === 'string' && !resolvedElement.styles.backgroundColor.includes('gradient(')
+       ? resolvedElement.styles.backgroundColor
+       : 'none';
+@@ -3809,12 +3841,12 @@ export default function InfiniteCanvas() {
+       ...(Number.isFinite(resolvedElement?.y) ? { y: resolvedElement.y } : {}),
+       ...(typeof resolvedElement?.positionType === 'string' ? { positionType: resolvedElement.positionType } : {}),
+       ...(resolvedElement?.absoluteInLayout != null ? { absoluteInLayout: resolvedElement.absoluteInLayout } : {}),
+-      width: reframed.width,
+-      height: reframed.height,
+-      vectorData: reframed.vectorData,
+-      svgMarkup: buildVectorShapeSvgMarkup(reframed.vectorData, {
+-        width: reframed.width,
+-        height: reframed.height,
++      width: commitWidth,
++      height: commitHeight,
++      vectorData: commitVectorData,
++      svgMarkup: buildVectorShapeSvgMarkup(commitVectorData, {
++        width: commitWidth,
++        height: commitHeight,
+         fill: fillValue,
+         stroke: strokeColor,
+         strokeWidth,
+@@ -4288,14 +4320,32 @@ export default function InfiniteCanvas() {
+     // ── Draw rubber-band preview ────────────────────────────
+     if (drag.current.type === 'draw') {
+       const rect = containerRef.current.getBoundingClientRect();
+-      const rawW = e.clientX - drag.current.startMX;
+-      const rawH = e.clientY - drag.current.startMY;
+-      setDrawRect({
+-        left:   rect.left + Math.min(drag.current.startMX, e.clientX) - rect.left,
+-        top:    rect.top  + Math.min(drag.current.startMY, e.clientY) - rect.top,
+-        width:  Math.abs(rawW),
+-        height: Math.abs(rawH),
+-      });
++      let rawW = e.clientX - drag.current.startMX;
++      let rawH = e.clientY - drag.current.startMY;
++      if (drag.current.drawType === 'line' && e.shiftKey) {
++        const len = Math.hypot(rawW, rawH);
++        if (len > 1) {
++          const ang = Math.round(Math.atan2(rawH, rawW) / (Math.PI / 4)) * (Math.PI / 4);
++          rawW = len * Math.cos(ang);
++          rawH = len * Math.sin(ang);
++        }
++      }
++      if (drag.current.drawType === 'line') {
++        setDrawRect({
++          drawType: 'line',
++          x1: drag.current.startMX - rect.left,
++          y1: drag.current.startMY - rect.top,
++          x2: drag.current.startMX - rect.left + rawW,
++          y2: drag.current.startMY - rect.top + rawH,
++        });
++      } else {
++        setDrawRect({
++          left:   rect.left + Math.min(drag.current.startMX, e.clientX) - rect.left,
++          top:    rect.top  + Math.min(drag.current.startMY, e.clientY) - rect.top,
++          width:  Math.abs(rawW),
++          height: Math.abs(rawH),
++        });
++      }
+       return;
+     }
+ 
+@@ -4395,11 +4445,24 @@ export default function InfiniteCanvas() {
+       const frameWorldX = Number.isFinite(drag.current.frameWorldX) ? drag.current.frameWorldX : (resolvedVectorEl.x ?? 0);
+       const frameWorldY = Number.isFinite(drag.current.frameWorldY) ? drag.current.frameWorldY : (resolvedVectorEl.y ?? 0);
+       const worldVectorData = getWorldVectorData(vectorShapeData, frameWorldX, frameWorldY);
++      let targetPos = { x: pointer.worldX, y: pointer.worldY };
++      // Shift-snap for lines: constrain to 0/45/90° relative to the other endpoint
++      if (e.shiftKey && vectorShapeData.kind === 'line' && drag.current.handleMode === 'anchor' && worldVectorData.points.length === 2) {
++        const otherIdx = drag.current.pointIndex === 0 ? 1 : 0;
++        const other = worldVectorData.points[otherIdx];
++        const dx = targetPos.x - other.x;
++        const dy = targetPos.y - other.y;
++        const len = Math.hypot(dx, dy);
++        if (len > 1) {
++          const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
++          targetPos = { x: other.x + len * Math.cos(ang), y: other.y + len * Math.sin(ang) };
++        }
++      }
+       let nextWorldVectorData = worldVectorData;
+       if (drag.current.handleMode === 'anchor') {
+-        nextWorldVectorData = moveVectorAnchor(worldVectorData, drag.current.pointIndex, { x: pointer.worldX, y: pointer.worldY });
++        nextWorldVectorData = moveVectorAnchor(worldVectorData, drag.current.pointIndex, targetPos);
+       } else if (drag.current.handleMode === 'in' || drag.current.handleMode === 'out') {
+-        nextWorldVectorData = updateVectorHandle(worldVectorData, drag.current.pointIndex, drag.current.handleMode, { x: pointer.worldX, y: pointer.worldY }, !e.altKey);
++        nextWorldVectorData = updateVectorHandle(worldVectorData, drag.current.pointIndex, drag.current.handleMode, targetPos, !e.altKey);
+       }
+ 
+       const reframed = reframeVectorShapeData(nextWorldVectorData);
+@@ -4536,7 +4599,27 @@ export default function InfiniteCanvas() {
+       const currentAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX) * 180 / Math.PI;
+       let nextRotation = Math.round((startRotation + currentAngle - startAngle) * 10) / 10;
+       if (e.shiftKey) nextRotation = Math.round(nextRotation / 15) * 15;
+-      useEditorStore.getState().updateElementLayout(rotId, bpId, { rotation: nextRotation });
++
++      if (drag.current.isLineRotation && drag.current.startVectorData) {
++        // For lines: rotate endpoints around center instead of applying CSS rotation
++        const { startVectorData, startFrameWorldX, startFrameWorldY, startLocalX, startLocalY, rotateCenterWX, rotateCenterWY } = drag.current;
++        const deltaAngle = nextRotation - startRotation;
++        const rotCenter = { x: rotateCenterWX, y: rotateCenterWY };
++        const rotatedPoints = startVectorData.points.map((p) => {
++          const wp = { x: p.x + startFrameWorldX, y: p.y + startFrameWorldY };
++          return rotatePointAround(wp, rotCenter, deltaAngle);
++        });
++        const nextWorldVectorData = {
++          ...startVectorData,
++          points: startVectorData.points.map((p, i) => ({ ...p, x: rotatedPoints[i].x, y: rotatedPoints[i].y })),
++        };
++        const reframed = reframeVectorShapeData(nextWorldVectorData);
++        const nextLocalX = startLocalX + (reframed.offsetX - startFrameWorldX);
++        const nextLocalY = startLocalY + (reframed.offsetY - startFrameWorldY);
++        commitVectorShapeData(rotId, bpId, { ...resolveCanvasEditingElement(useEditorStore.getState().getAllElements().find(ee => ee.id === rotId), bpId, useEditorStore.getState().animationEditor), x: nextLocalX, y: nextLocalY, rotation: 0 }, nextWorldVectorData);
++      } else {
++        useEditorStore.getState().updateElementLayout(rotId, bpId, { rotation: nextRotation });
++      }
+       setDragHint({ label: `${Math.round(nextRotation)}deg`, clientX: e.clientX, clientY: e.clientY });
+     } else if (type === 'resize') {
+         const resizeBoundsResolver = drag.current.centerResize ? resolveCenteredResizedBounds : resolveResizedBounds;
+@@ -4707,10 +4790,18 @@ export default function InfiniteCanvas() {
+       const rect = containerRef.current.getBoundingClientRect();
+       const endWorldX = (e.clientX - rect.left - panX) / scale;
+       const endWorldY = (e.clientY - rect.top  - panY) / scale;
+-      const rawW = endWorldX - startWorldX;
+-      const rawH = endWorldY - startWorldY;
+-      const elX = Math.round(Math.min(startWorldX, endWorldX));
+-      const elY = Math.round(Math.min(startWorldY, endWorldY));
++      let rawW = endWorldX - startWorldX;
++      let rawH = endWorldY - startWorldY;
++      if (drawType === 'line' && e.shiftKey) {
++        const len = Math.hypot(rawW, rawH);
++        if (len > 1) {
++          const ang = Math.round(Math.atan2(rawH, rawW) / (Math.PI / 4)) * (Math.PI / 4);
++          rawW = len * Math.cos(ang);
++          rawH = len * Math.sin(ang);
++        }
++      }
++      const elX = Math.round(Math.min(startWorldX, startWorldX + rawW));
++      const elY = Math.round(Math.min(startWorldY, startWorldY + rawH));
+       const elW = Math.max(20, Math.round(Math.abs(rawW)));
+       const elH = Math.max(20, Math.round(Math.abs(rawH)));
+       // Detect which artboard: check which bp contains the DRAW-START point.
+@@ -4773,8 +4864,8 @@ export default function InfiniteCanvas() {
+         newEl.base.height = drawType === 'line' ? Math.max(2, Math.min(elH, 12)) : elH;
+       }
+       if (drawType === 'line') {
+-        const lineWidth = Math.max(1, Math.round(Math.abs(rawW)));
+-        const lineHeight = Math.max(1, Math.round(Math.abs(rawH)));
++        const lineWidth = Math.round(Math.abs(rawW));
++        const lineHeight = Math.round(Math.abs(rawH));
+         const vectorData = reframeVectorShapeData({
+           kind: 'line',
+           points: [
+@@ -4782,6 +4873,10 @@ export default function InfiniteCanvas() {
+             { x: rawW < 0 ? 0 : lineWidth, y: rawH < 0 ? 0 : lineHeight },
+           ],
+         });
++        const lineStrokeWidth = Math.max(0.5, newEl.base.styles?.strokeWidth || 2);
++        // Adjust position for reframe padding offset
++        newEl.base.x = localX + vectorData.offsetX;
++        newEl.base.y = localY + vectorData.offsetY;
+         newEl.base.width = vectorData.width;
+         newEl.base.height = vectorData.height;
+         newEl.base.vectorData = vectorData.vectorData;
+@@ -4790,7 +4885,7 @@ export default function InfiniteCanvas() {
+           height: vectorData.height,
+           fill: 'none',
+           stroke: newEl.base.styles?.strokeColor ?? '#111827',
+-          strokeWidth: Math.max(0.5, newEl.base.styles?.strokeWidth || 2),
++          strokeWidth: lineStrokeWidth,
+         });
+       }
+       if (drawType === 'path') {
+@@ -5692,6 +5787,24 @@ export default function InfiniteCanvas() {
+         centerX,
+         centerY,
+       };
++      // For lines, store initial vector data so rotation moves endpoints instead of CSS rotation
++      if (shapeKind === 'line') {
++        const vectorShapeData = getVectorShapeData(resolved) || getVectorShapeData(el);
++        if (vectorShapeData) {
++          const frameWorldX = payload?.frameWorldX ?? (resolved.x ?? 0);
++          const frameWorldY = payload?.frameWorldY ?? (resolved.y ?? 0);
++          const worldP0 = { x: vectorShapeData.points[0].x + frameWorldX, y: vectorShapeData.points[0].y + frameWorldY };
++          const worldP1 = { x: vectorShapeData.points[1].x + frameWorldX, y: vectorShapeData.points[1].y + frameWorldY };
++          drag.current.isLineRotation = true;
++          drag.current.startVectorData = vectorShapeData;
++          drag.current.startFrameWorldX = frameWorldX;
++          drag.current.startFrameWorldY = frameWorldY;
++          drag.current.startLocalX = resolved.x ?? 0;
++          drag.current.startLocalY = resolved.y ?? 0;
++          drag.current.rotateCenterWX = (worldP0.x + worldP1.x) / 2;
++          drag.current.rotateCenterWY = (worldP0.y + worldP1.y) / 2;
++        }
++      }
+       setDragHint({ label: `${Math.round(startRotation)}deg`, clientX: e.clientX, clientY: e.clientY });
+       setInteracting(true);
+       return;
+@@ -6347,7 +6460,17 @@ export default function InfiniteCanvas() {
+           {dragHint.label}
+         </div>
+       )}
+-      {drawRect && (
++      {drawRect && drawRect.drawType === 'line' && (
++        <svg style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', pointerEvents: 'none', zIndex: 99999, overflow: 'visible' }}>
++          <line
++            x1={drawRect.x1} y1={drawRect.y1} x2={drawRect.x2} y2={drawRect.y2}
++            stroke="var(--accent-light)" strokeWidth={1.5} strokeDasharray="6 4"
++          />
++          <circle cx={drawRect.x1} cy={drawRect.y1} r={4} fill="#fff" stroke="var(--accent-light)" strokeWidth={1.5} />
++          <circle cx={drawRect.x2} cy={drawRect.y2} r={4} fill="#fff" stroke="var(--accent-light)" strokeWidth={1.5} />
++        </svg>
++      )}
++      {drawRect && drawRect.drawType !== 'line' && (
+         <div style={{
+           position: 'fixed',
+           left: drawRect.left,
+diff --git a/src/panels/PropertiesPanel.jsx b/src/panels/PropertiesPanel.jsx
+index 6663b11..0d671d8 100644
+--- a/src/panels/PropertiesPanel.jsx
++++ b/src/panels/PropertiesPanel.jsx
+@@ -3959,18 +3959,13 @@ export default function PropertiesPanel() {
+                 className="fb-prop-input"
+                 value={(() => {
+                   if (!resolved.absoluteInLayout) {
+-                    return (resolved.positionType ?? 'relative') === 'sticky' ? 'sticky' : 'auto';
++                    return (resolved.positionType ?? 'relative') === 'sticky' ? 'sticky' : 'relative';
+                   }
+                   return resolved.positionType ?? 'absolute';
+                 })()}
+                 onChange={e => {
+                   const v = e.target.value;
+-                  if (v === 'auto') {
+-                    updateElementLayout(element.id, bpId, {
+-                      absoluteInLayout: false,
+-                      positionType: resolved.positionType === 'fixed' ? 'fixed' : 'relative',
+-                    });
+-                  } else if (v === 'relative' || v === 'sticky') {
++                  if (v === 'relative' || v === 'sticky') {
+                     updateElementLayout(element.id, bpId, {
+                       absoluteInLayout: false,
+                       positionType: v,
+@@ -3983,7 +3978,6 @@ export default function PropertiesPanel() {
+                   commit();
+                 }}
+               >
+-                <option value="auto">Auto (flow)</option>
+                 <option value="absolute">Absolute</option>
+                 <option value="fixed">Fixed</option>
+                 <option value="relative">Relative</option>
+diff --git a/src/store/editorStore.js b/src/store/editorStore.js
+index 3fa645d..2a9e39e 100644
+--- a/src/store/editorStore.js
++++ b/src/store/editorStore.js
+@@ -2055,7 +2055,7 @@ export function createFrame(x = 80, y = 80, name) {
+       styles: {
+         backgroundColor: 'rgba(180,180,200,0.18)',
+         borderRadius: 0, borderWidth: 0, borderColor: '#000000', borderStyle: 'solid',
+-        opacity: 1, mixBlendMode: 'normal', overflow: 'visible', display: 'flex', flexDirection: 'row',
++        opacity: 1, mixBlendMode: 'normal', overflow: 'visible',
+         flexWrap: 'nowrap', gap: 0, paddingTop: 0, paddingRight: 0, paddingBottom: 0,
+         paddingLeft: 0, alignItems: 'flex-start', justifyContent: 'flex-start', boxShadow: '', zIndex: 1,
+       },
+@@ -3041,7 +3041,7 @@ function normalizePolygonSides(value, fallback = 6) {
+   return Math.max(3, Math.min(12, Math.round(parsed)));
+ }
+ 
+-function roundVectorNumber(value, fallback = 0) {
++export function roundVectorNumber(value, fallback = 0) {
+   const parsed = typeof value === 'number' ? value : parseFloat(value);
+   if (!Number.isFinite(parsed)) return fallback;
+   return Math.round(parsed * 1000) / 1000;
+@@ -3475,21 +3475,28 @@ export function getVectorShapeBounds(vectorData) {
+ export function reframeVectorShapeData(vectorData) {
+   const data = normalizeVectorShapeData(vectorData, vectorData?.kind === 'line' ? 'line' : 'path');
+   const bounds = getVectorShapeBounds(data);
++  // For lines, ensure a minimum 2px bounding box so the element has integer CSS position/height.
++  // Using 1px caused sub-pixel (0.5px) offsets that drift between DOM measurement and rendering.
++  let padX = 0, padY = 0;
++  if (data.kind === 'line') {
++    if (bounds.height < 1) padY = 1;
++    if (bounds.width < 1) padX = 1;
++  }
+   return {
+-    offsetX: bounds.minX,
+-    offsetY: bounds.minY,
+-    width: bounds.width,
+-    height: bounds.height,
++    offsetX: bounds.minX - padX,
++    offsetY: bounds.minY - padY,
++    width: Math.max(1, bounds.width + padX * 2),
++    height: Math.max(1, bounds.height + padY * 2),
+     vectorData: {
+       ...data,
+       points: data.points.map((point) => ({
+         ...point,
+-        x: roundVectorNumber(point.x - bounds.minX),
+-        y: roundVectorNumber(point.y - bounds.minY),
+-        inX: roundVectorNumber(point.inX - bounds.minX),
+-        inY: roundVectorNumber(point.inY - bounds.minY),
+-        outX: roundVectorNumber(point.outX - bounds.minX),
+-        outY: roundVectorNumber(point.outY - bounds.minY),
++        x: roundVectorNumber(point.x - bounds.minX + padX),
++        y: roundVectorNumber(point.y - bounds.minY + padY),
++        inX: roundVectorNumber(point.inX - bounds.minX + padX),
++        inY: roundVectorNumber(point.inY - bounds.minY + padY),
++        outX: roundVectorNumber(point.outX - bounds.minX + padX),
++        outY: roundVectorNumber(point.outY - bounds.minY + padY),
+       })),
+     },
+   };
+@@ -3534,7 +3541,8 @@ export function buildVectorShapeSvgMarkup(vectorData, options = {}) {
+   const strokeWidth = Math.max(0, roundVectorNumber(options.strokeWidth, data.kind === 'line' ? 2 : 1.5));
+   const lineCap = options.lineCap ?? 'round';
+   const lineJoin = options.lineJoin ?? 'round';
+-  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"><path d="${pathD}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}"/></svg>`;
++  const overflowAttr = data.kind === 'line' ? ' overflow="visible"' : '';
++  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" width="100%" height="100%"${overflowAttr} xmlns="http://www.w3.org/2000/svg"><path d="${pathD}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}"/></svg>`;
+ }
+ 
+ export function getVectorShapeData(element = null) {
+@@ -4094,6 +4102,64 @@ export const useEditorStore = create((set, get) => {
+       };
+     });
+ 
++  // Helper: propagate primary-variant element edits to non-primary variants
++  // so inherited (non-overridden) properties follow the primary in real time.
++  const propagatePrimaryVariantEdit = (elementId) => {
++    const state = get();
++    if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return;
++    const elements = state.componentEditor.page?.elements ?? [];
++    const editedEl = elements.find(el => el.id === elementId);
++    if (!editedEl || !editedEl.componentVariantPrimary) return;
++    const sourceId = editedEl.componentSourceId ?? editedEl.id;
++    const primaryVariantId = editedEl.componentEditorVariantId;
++    // Find the OLD primary snapshot (before this edit) from the component's stored variant data
++    const storedVariants = state.componentEditor.variants ?? [];
++    const storedPrimaryVariant = storedVariants.find(v => v.id === primaryVariantId) ?? storedVariants[0];
++    const storedPrimarySnapshot = storedPrimaryVariant?.snapshot ?? [];
++    const storedPrimaryEl = storedPrimarySnapshot.find(el => el.id === sourceId);
++    if (!storedPrimaryEl) return;
++    // Find all non-primary variant elements with the same componentSourceId
++    const hasTargets = elements.some(el =>
++      el.componentSourceId === sourceId
++      && el.componentEditorVariantId !== primaryVariantId
++      && !el.componentVariantPrimary
++    );
++    if (!hasTargets) return;
++    // For each non-primary variant element, find properties that haven't been overridden
++    // (match the stored primary's value) and update them to match the new primary
++    withPage(els => els.map(el => {
++      if (el.componentSourceId !== sourceId || el.componentEditorVariantId === primaryVariantId || el.componentVariantPrimary) return el;
++      const variantId = el.componentEditorVariantId;
++      const storedVariant = storedVariants.find(v => v.id === variantId);
++      const storedOverrides = storedVariant?.snapshot ?? [];
++      const storedOverrideEntry = storedOverrides.find(entry => entry.id === sourceId);
++      // Merge: copy base properties from the new primary UNLESS the variant has an override for that key
++      const overriddenBaseKeys = storedOverrideEntry?.base ? Object.keys(storedOverrideEntry.base) : [];
++      const overriddenBaseSet = new Set(overriddenBaseKeys);
++      const newBase = { ...el.base };
++      Object.keys(editedEl.base ?? {}).forEach(key => {
++        if (key === 'x' || key === 'y') return; // never propagate position
++        if (key === 'styles') return; // handle styles separately
++        if (!overriddenBaseSet.has(key)) {
++          newBase[key] = JSON.parse(JSON.stringify(editedEl.base[key]));
++        }
++      });
++      // Merge styles: copy each style property unless overridden
++      const overriddenStyles = storedOverrideEntry?.base?.styles ? Object.keys(storedOverrideEntry.base.styles) : [];
++      const overriddenStyleSet = new Set(overriddenStyles);
++      if (editedEl.base?.styles) {
++        const newStyles = { ...newBase.styles };
++        Object.keys(editedEl.base.styles).forEach(key => {
++          if (!overriddenStyleSet.has(key)) {
++            newStyles[key] = JSON.parse(JSON.stringify(editedEl.base.styles[key]));
++          }
++        });
++        newBase.styles = newStyles;
++      }
++      return { ...el, base: newBase };
++    }));
++  };
++
+   const getEls = () => {
+     const s = get();
+     if (s.activeSurface === 'component' && s.componentEditor?.isOpen) {
+@@ -5714,7 +5780,16 @@ export const useEditorStore = create((set, get) => {
+         && (el.base?.positionType == null || el.base.positionType === 'absolute')
+         && !el.base?.absoluteInLayout;
+ 
+-      if (shouldFlowAtRoot) {
++      // Check if parent frame is auto-layout (display: flex)
++      const parentEl = resolvedParentId ? currentElements.find(e => e.id === resolvedParentId) : null;
++      const parentResolved = parentEl ? resolveElement(parentEl, bpId) : null;
++      const parentIsAutoLayout = parentResolved?.styles?.display === 'flex';
++      const shouldFlowInParent = resolvedParentId
++        && parentIsAutoLayout
++        && (el.base?.positionType == null || el.base.positionType === 'absolute')
++        && !el.base?.absoluteInLayout;
++
++      if (shouldFlowAtRoot || shouldFlowInParent) {
+         el = {
+           ...el,
+           base: {
+@@ -5735,7 +5810,7 @@ export const useEditorStore = create((set, get) => {
+             [bpId]: {
+               ...(el.overrides?.[bpId] ?? {}),
+               hidden: false,
+-              ...(shouldFlowAtRoot ? { positionType: 'relative', absoluteInLayout: false } : {}),
++              ...(shouldFlowAtRoot || shouldFlowInParent ? { positionType: 'relative', absoluteInLayout: false } : {}),
+             },
+           },
+         };
+@@ -5930,6 +6005,7 @@ export const useEditorStore = create((set, get) => {
+           },
+         });
+       }));
++      propagatePrimaryVariantEdit(elementId);
+     },
+ 
+     updateElementsStyles(elementIds, bpId, styleUpdates) {
+@@ -6013,6 +6089,7 @@ export const useEditorStore = create((set, get) => {
+         return;
+       }
+       withPage(els => applyElementLayoutUpdate(els, elementId, bpId, safeUpdates));
++      propagatePrimaryVariantEdit(elementId);
+       if (safeUpdates?.hidden === true) {
+         const currentDrilled = get().drilledContainerId;
+         const nextUiState = {};
+diff --git a/src/styles/globals.css b/src/styles/globals.css
+index bc246f0..cd32762 100644
+--- a/src/styles/globals.css
++++ b/src/styles/globals.css
+@@ -1298,6 +1298,14 @@ html, body, #framebuilder-root {
+ .fb-el--vector-line.fb-el--selected {
+   outline: none;
+ }
++.fb-el--vector-line::before {
++  content: '';
++  position: absolute;
++  left: -4px;
++  right: -4px;
++  top: -8px;
++  bottom: -8px;
++}
+ .fb-el--component.fb-el--selected {
+   outline-color: var(--component-accent);
+ }
+@@ -1692,6 +1700,10 @@ html, body, #framebuilder-root {
+ .fb-sel-overlay__handle--rotate:active {
+   cursor: grabbing !important;
+ }
++.fb-sel-overlay__rotate-handle,
++.fb-rotate-cursor {
++  cursor: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgZmlsbD0ibm9uZSI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiBmaWxsPSJ0cmFuc3BhcmVudCIvPjxwYXRoIGQ9Ik0xNSAzYTkgOSAwIDEgMCA1LjUgNy41IiBzdHJva2U9ImJsYWNrIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0xNSA3VjIuNWg0LjUiIHN0cm9rZT0iYmxhY2siIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+") 12 12, auto !important;
++}
+ .fb-sel-overlay__rotate-handle {
+   position: absolute;
+   width: calc(14px * var(--inv-scale, 1));
+@@ -1701,10 +1713,10 @@ html, body, #framebuilder-root {
+   box-shadow: none;
+   pointer-events: all;
+   z-index: 3;
+-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23B7BEC5' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 6H4v4'/%3E%3Cpath d='M4 10a8 8 0 0 1 13.7-5.7L20 6'/%3E%3Cpath d='M16 18h4v-4'/%3E%3Cpath d='M20 14a8 8 0 0 1-13.7 5.7L4 18'/%3E%3C/svg%3E") 12 12, grab;
+ }
+-.fb-sel-overlay__rotate-handle:active {
+-  cursor: grabbing;
++.fb-sel-overlay__rotate-handle:active,
++.fb-rotate-cursor:active {
++  cursor: grabbing !important;
+ }
+ /* Positions: center of each handle sits on the overlay edge */
+ .fb-sel-overlay__handle--nw { top: calc(-4px * var(--inv-scale, 1)); left: calc(-4px * var(--inv-scale, 1)); cursor: nw-resize; }

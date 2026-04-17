@@ -113,6 +113,33 @@ export default function Artboard({
       return;
     }
     if (e.target === e.currentTarget) {
+      // Check if clicking near a line element before deselecting
+      const container = e.currentTarget.closest('.fb-canvas-container');
+      if (container) {
+        const lineDoms = container.querySelectorAll('.fb-el--vector-line');
+        let hitLine = null;
+        const hitDist = 6;
+        for (const lineDom of lineDoms) {
+          const svgLine = lineDom.querySelector('line');
+          if (!svgLine) continue;
+          const ctm = svgLine.closest('svg')?.getScreenCTM();
+          if (!ctm) continue;
+          const a = new DOMPoint(svgLine.x1.baseVal.value, svgLine.y1.baseVal.value).matrixTransform(ctm);
+          const b = new DOMPoint(svgLine.x2.baseVal.value, svgLine.y2.baseVal.value).matrixTransform(ctm);
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const lenSq = dx * dx + dy * dy;
+          if (lenSq < 1) continue;
+          const t = Math.max(0, Math.min(1, ((e.clientX - a.x) * dx + (e.clientY - a.y) * dy) / lenSq));
+          const px = a.x + t * dx, py = a.y + t * dy;
+          const dist = Math.sqrt((e.clientX - px) ** 2 + (e.clientY - py) ** 2);
+          if (dist <= hitDist) { hitLine = lineDom.dataset.id; break; }
+        }
+        if (hitLine) {
+          setSelection({ elementId: hitLine, bpId: bp.id });
+          setDrilledContainerId(null);
+          return;
+        }
+      }
       setSelection(null);
       setDrilledContainerId(null);
     }

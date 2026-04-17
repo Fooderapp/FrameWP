@@ -1298,6 +1298,9 @@ html, body, #framebuilder-root {
 .fb-el--vector-line.fb-el--selected {
   outline: none;
 }
+.fb-el--vector-line {
+  overflow: visible !important;
+}
 .fb-el--component.fb-el--selected {
   outline-color: var(--component-accent);
 }
@@ -9718,6 +9721,11 @@ body > .fb-overlay-modal .fb-component-variables-modal {
   box-shadow:
     inset 0 0 0 calc(1px * var(--inv-scale, 1)) rgba(154,108,255,0.96),
     0 0 0 calc(6px * var(--inv-scale, 1)) rgba(154,108,255,0.14) !important;
+}
+
+.fb-app .fb-el--vector-line.fb-el--hovered {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .fb-app .fb-fill-popover {

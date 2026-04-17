@@ -3303,6 +3303,7 @@ export default function PropertiesPanel() {
         fill: 'none',
         stroke: s.strokeColor ?? s.color ?? '#2563eb',
         strokeWidth: Math.max(0.5, s.strokeWidth || 1.5),
+        lineCap: s.lineCap ?? 'round',
       }),
     });
   };
@@ -4293,6 +4294,20 @@ export default function PropertiesPanel() {
                         Add...
                       </button>
                     )}
+                  </div>
+                ) : null}
+                {shapeKind === 'line' ? (
+                  <div className="fb-prop-row" style={{ marginTop: 4 }}>
+                    <span className="fb-prop-label">Cap</span>
+                    <select
+                      className="fb-select"
+                      value={s.lineCap ?? 'round'}
+                      onChange={e => { updS('lineCap', e.target.value); commit(); }}
+                    >
+                      <option value="round">Round</option>
+                      <option value="butt">Butt</option>
+                      <option value="square">Square</option>
+                    </select>
                   </div>
                 ) : null}
               </>
