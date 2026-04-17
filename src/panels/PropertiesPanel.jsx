@@ -4189,6 +4189,15 @@ export default function PropertiesPanel() {
             {shapeKind === 'path' ? <div className="fb-artboard-bp-note">Path anchors and Bezier handles are editable on canvas when the shape is selected.</div> : null}
             {shapeKind === 'pen' ? <div className="fb-artboard-bp-note">Pen now draws anchor-based Bezier paths. Click to add points, drag to pull handles, click the first anchor to close, then press Enter or Escape to finish an open path.</div> : null}
 
+            {(shapeKind === 'circle' || shapeKind === 'polygon') ? (
+              <div className="fb-prop-row" style={{ marginTop: 8 }}>
+                <span className="fb-prop-label">Fill</span>
+                <div style={{ width: '100%' }}>
+                  <FillPicker value={s.color ?? '#111827'} onChange={(value) => { updS('color', value); commit(); }} solidOnly />
+                </div>
+              </div>
+            ) : null}
+
             {(shapeKind === 'path' || shapeKind === 'pen') && vectorShapeData ? (
               <>
                 {vectorShapeData.closed ? (
@@ -5573,10 +5582,95 @@ export default function PropertiesPanel() {
 
         <Section title="Overlays" defaultOpen={false} />
 
-        <Section title="Cursor" defaultOpen={false} />
+        <Section title="Cursor" defaultOpen={false}>
+          <div className="fb-prop-row">
+            <span className="fb-prop-label">Mode</span>
+            <ChoiceGroup
+              value={resolved.cursorMode ?? 'default'}
+              onChange={(value) => { upd('cursorMode', value); commit(); }}
+              options={[
+                { value: 'default', label: 'Default' },
+                { value: 'image', label: 'Image' },
+                { value: 'component', label: 'Component' },
+              ]}
+            />
+          </div>
+          {(resolved.cursorMode === 'image') ? (
+            <>
+              <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+                <span className="fb-prop-label">Image</span>
+                <div style={{ width: '100%' }}>
+                  <MediaPickerButton value={resolved.cursorImage ?? ''} onChange={v => { upd('cursorImage', v); commit(); }} mediaType="image" />
+                </div>
+              </div>
+              <div className="fb-prop-row">
+                <span className="fb-prop-label">Hotspot</span>
+                <div className="fb-style-inline-group">
+                  <NumberInput value={resolved.cursorHotX ?? 0} min={0} label="X" onChange={v => { upd('cursorHotX', v); commit(); }} />
+                  <NumberInput value={resolved.cursorHotY ?? 0} min={0} label="Y" onChange={v => { upd('cursorHotY', v); commit(); }} />
+                </div>
+              </div>
+            </>
+          ) : null}
+          {(resolved.cursorMode === 'component') ? (
+            <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
+              <span className="fb-prop-label">Component</span>
+              <select
+                className="fb-prop-input"
+                value={resolved.cursorComponentId ?? ''}
+                onChange={e => { upd('cursorComponentId', e.target.value); commit(); }}
+              >
+                <option value="">Select…</option>
+                {components.map(c => (<option key={c.id} value={c.id}>{c.name || c.id}</option>))}
+              </select>
+            </div>
+          ) : null}
+        </Section>
 
-        {!isFormField ? (
-        <Section title="Styles" action={<ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','brightness','contrast','saturation','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','brightness','contrast','saturation','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />}>
+        {!isFormField ? (() => {
+          const _effectDefs = [
+            { key: 'pointerEvents', label: 'Pointer', defaultVal: 'auto', activeVal: 'none', allow: true },
+            { key: 'blur',          label: 'Blur',       defaultVal: 0,   activeVal: 8,   allow: true },
+            { key: 'brightness',    label: 'Brightness', defaultVal: 100, activeVal: 110, allow: true },
+            { key: 'contrast',      label: 'Contrast',   defaultVal: 100, activeVal: 110, allow: true },
+            { key: 'saturation',    label: 'Saturation', defaultVal: 100, activeVal: 110, allow: true },
+            { key: 'backdropBlur',  label: 'Background Blur', defaultVal: 0, activeVal: 8,
+              allow: (element.type === 'frame' || isLoopElement || isFormContainerType(element.type)) || element.type === 'icon' },
+          ];
+          const _isEffectActive = (d) => {
+            const v = s[d.key];
+            if (v === undefined || v === null || v === '') return false;
+            return v !== d.defaultVal;
+          };
+          const _addEffect = (key) => {
+            const d = _effectDefs.find(e => e.key === key);
+            if (!d) return;
+            updS(d.key, d.activeVal);
+            commit();
+          };
+          const _removeEffect = (key) => {
+            const d = _effectDefs.find(e => e.key === key);
+            if (!d) return;
+            updS(d.key, d.defaultVal);
+            commit();
+          };
+          const _allowed = _effectDefs.filter(d => d.allow);
+          const _inactive = _allowed.filter(d => !_isEffectActive(d));
+          return (
+        <Section title="Styles" action={<>
+          {!isComponentInstanceOnPage && _inactive.length > 0 ? (
+            <select
+              className="fb-effect-add-header"
+              value=""
+              onChange={(e) => { if (e.target.value) _addEffect(e.target.value); }}
+              title="Add effect"
+            >
+              <option value="">+ Add</option>
+              {_inactive.map(d => (<option key={d.key} value={d.key}>{d.label}</option>))}
+            </select>
+          ) : null}
+          <ResetBtn show={isComponentInstanceOnPage ? (isOv('hidden') || isSOv('opacity','zIndex')) : (isOv('hidden','rotation') || isSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','brightness','contrast','saturation','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'))} onReset={() => { if (isComponentInstanceOnPage) { resetOv('hidden'); resetSOv('opacity','zIndex'); } else { resetOv('hidden','rotation'); resetSOv('opacity','mixBlendMode','overflow','backgroundColor','backgroundImage','backgroundSize','backgroundPosition','borderRadius','borderRadiusTL','borderRadiusTR','borderRadiusBL','borderRadiusBR','borderWidth','borderColor','borderStyle','borderRadiusMode','boxShadow','shadowType','shadowPosition','shadowColor','shadowOpacity','shadowX','shadowY','shadowBlur','shadowSpread','shadowDiffusion','shadowFocus','blur','brightness','contrast','saturation','backdropBlur','strokeWidth','strokeColor','objectFit','zIndex'); } }} />
+        </>}>
           <div className="fb-prop-row">
             <span className="fb-prop-label">Opacity</span>
             <div className="fb-slider-field">
@@ -5673,7 +5767,70 @@ export default function PropertiesPanel() {
           </div>
           )}
 
-          {!isComponentInstanceOnPage && (
+          {/* Optional effects: only shown when "added". Each has an X to remove. */}
+          {!isComponentInstanceOnPage && (() => {
+            const active = _allowed.filter(_isEffectActive);
+            const rowForKey = (key) => {
+              if (key === 'pointerEvents') {
+                return (
+                  <div key={key} className="fb-prop-row fb-prop-row--effect">
+                    <span className="fb-prop-label">Pointer</span>
+                    <ChoiceGroup
+                      value={s.pointerEvents ?? 'auto'}
+                      onChange={(value) => { updS('pointerEvents', value); commit(); }}
+                      options={[
+                        { value: 'auto', label: 'Auto' },
+                        { value: 'none', label: 'None' },
+                      ]}
+                    />
+                    <button type="button" className="fb-effect-remove" title="Remove" onClick={() => _removeEffect('pointerEvents')}>×</button>
+                  </div>
+                );
+              }
+              const cfg = {
+                blur:         { max: 64,  step: 0.5, round: 10, fallback: 0 },
+                brightness:   { max: 200, step: 1,   round: 1,  fallback: 100 },
+                contrast:     { max: 200, step: 1,   round: 1,  fallback: 100 },
+                saturation:   { max: 200, step: 1,   round: 1,  fallback: 100 },
+                backdropBlur: { max: 64,  step: 0.5, round: 10, fallback: 0 },
+              }[key];
+              if (!cfg) return null;
+              const def = _effectDefs.find(e => e.key === key);
+              const val = s[key] ?? cfg.fallback;
+              return (
+                <div key={key} className="fb-prop-row fb-prop-row--effect">
+                  <span className="fb-prop-label">{def.label}</span>
+                  <div className="fb-slider-field">
+                    <input
+                      className="fb-prop-input fb-slider-field__value"
+                      type="number"
+                      min={0}
+                      max={cfg.max}
+                      step={cfg.step}
+                      value={Math.round(val * cfg.round) / cfg.round}
+                      onChange={e => { const next = Math.max(0, Math.min(cfg.max, parseFloat(e.target.value) || 0)); updS(key, next); }}
+                      onBlur={commit}
+                    />
+                    <input
+                      className="fb-slider"
+                      type="range"
+                      min={0}
+                      max={cfg.max}
+                      step={cfg.step}
+                      value={val}
+                      onChange={e => updS(key, parseFloat(e.target.value))}
+                      onMouseUp={commit}
+                    />
+                  </div>
+                  <button type="button" className="fb-effect-remove" title="Remove" onClick={() => _removeEffect(key)}>×</button>
+                </div>
+              );
+            };
+            return active.length > 0 ? active.map(d => rowForKey(d.key)) : null;
+          })()}
+
+          {/* removed: old always-on Blur/Brightness/Contrast/Saturation/Backdrop Blur/Pointer rows */}
+          {false && (
           <div className="fb-prop-row">
             <span className="fb-prop-label">Blur</span>
             <div className="fb-slider-field">
@@ -5700,118 +5857,6 @@ export default function PropertiesPanel() {
             </div>
           </div>
           )}
-
-          {!isComponentInstanceOnPage && (
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Brightness</span>
-            <div className="fb-slider-field">
-              <input
-                className="fb-prop-input fb-slider-field__value"
-                type="number"
-                min={0}
-                max={200}
-                step={1}
-                value={Math.round(s.brightness ?? 100)}
-                onChange={e => { const next = Math.max(0, Math.min(200, parseFloat(e.target.value) || 0)); updS('brightness', next); }}
-                onBlur={commit}
-              />
-              <input
-                className="fb-slider"
-                type="range"
-                min={0}
-                max={200}
-                step={1}
-                value={s.brightness ?? 100}
-                onChange={e => updS('brightness', parseFloat(e.target.value))}
-                onMouseUp={commit}
-              />
-            </div>
-          </div>
-          )}
-
-          {!isComponentInstanceOnPage && (
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Contrast</span>
-            <div className="fb-slider-field">
-              <input
-                className="fb-prop-input fb-slider-field__value"
-                type="number"
-                min={0}
-                max={200}
-                step={1}
-                value={Math.round(s.contrast ?? 100)}
-                onChange={e => { const next = Math.max(0, Math.min(200, parseFloat(e.target.value) || 0)); updS('contrast', next); }}
-                onBlur={commit}
-              />
-              <input
-                className="fb-slider"
-                type="range"
-                min={0}
-                max={200}
-                step={1}
-                value={s.contrast ?? 100}
-                onChange={e => updS('contrast', parseFloat(e.target.value))}
-                onMouseUp={commit}
-              />
-            </div>
-          </div>
-          )}
-
-          {!isComponentInstanceOnPage && (
-          <div className="fb-prop-row">
-            <span className="fb-prop-label">Saturation</span>
-            <div className="fb-slider-field">
-              <input
-                className="fb-prop-input fb-slider-field__value"
-                type="number"
-                min={0}
-                max={200}
-                step={1}
-                value={Math.round(s.saturation ?? 100)}
-                onChange={e => { const next = Math.max(0, Math.min(200, parseFloat(e.target.value) || 0)); updS('saturation', next); }}
-                onBlur={commit}
-              />
-              <input
-                className="fb-slider"
-                type="range"
-                min={0}
-                max={200}
-                step={1}
-                value={s.saturation ?? 100}
-                onChange={e => updS('saturation', parseFloat(e.target.value))}
-                onMouseUp={commit}
-              />
-            </div>
-          </div>
-          )}
-
-          {!isComponentInstanceOnPage && ((element.type === 'frame' || isLoopElement || isFormContainerType(element.type)) || element.type === 'icon') ? (
-            <div className="fb-prop-row">
-              <span className="fb-prop-label">Background Blur</span>
-              <div className="fb-slider-field">
-                <input
-                  className="fb-prop-input fb-slider-field__value"
-                  type="number"
-                  min={0}
-                  max={64}
-                  step={0.5}
-                  value={Math.round((s.backdropBlur ?? 0) * 10) / 10}
-                  onChange={e => { const next = Math.max(0, Math.min(64, parseFloat(e.target.value) || 0)); updS('backdropBlur', next); }}
-                  onBlur={commit}
-                />
-                <input
-                  className="fb-slider"
-                  type="range"
-                  min={0}
-                  max={64}
-                  step={0.5}
-                  value={s.backdropBlur ?? 0}
-                  onChange={e => updS('backdropBlur', parseFloat(e.target.value))}
-                  onMouseUp={commit}
-                />
-              </div>
-            </div>
-          ) : null}
 
           <div className="fb-prop-row">
             <VariableBindingLabel label="Visible">
@@ -5868,7 +5913,7 @@ export default function PropertiesPanel() {
             </>
           ) : null}
 
-          {!isComponentInstanceOnPage && (
+          {!isComponentInstanceOnPage && element.type !== 'text' && !(element.type === 'icon' && ['path', 'pen', 'line', 'circle', 'polygon'].includes(shapeKind ?? '')) && (
           <div className="fb-prop-row" style={{ alignItems: 'flex-start' }}>
             <VariableBindingLabel label="Fill">
               {allowVariableBindings && element.type !== 'image' ? (
@@ -6350,7 +6395,7 @@ export default function PropertiesPanel() {
             )}
           </div>
         </Section>
-        ) : null}
+        );})() : null}
 
         <Section title="Advanced" defaultOpen={false} action={<ResetBtn show={isOv('src')} onReset={() => { resetOv('src'); }} />}>
           <div className="fb-prop-row">

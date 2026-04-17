@@ -43,6 +43,11 @@ class FrameBuilder_Exporter {
 	private array $page_flows = [];
 	/** @var array<string,array<string,bool>> Google Fonts requested by family and variant */
 	private array $google_fonts = [];
+
+	/** Track component IDs used as custom cursors so we can emit hidden templates. */
+	private array $cursor_components_used = [];
+	/** Whether any element uses an image cursor — triggers runtime JS emission. */
+	private bool $has_image_cursors = false;
 	/** @var array<string,bool> Cascaded smooth-scroll setting per breakpoint */
 	private array $page_smooth_scroll = [ 'desktop' => false, 'tablet' => false, 'mobile' => false ];
 
@@ -984,6 +989,7 @@ class FrameBuilder_Exporter {
 
 		$html .= '</div>';
 		$html .= $this->get_component_runtime_assets();
+		$html .= $this->get_cursor_runtime_assets();
 		return $html;
 	}
 
@@ -1297,6 +1303,7 @@ class FrameBuilder_Exporter {
 			'opacity'          => 'opacity',
 			'mixBlendMode'     => 'mix-blend-mode',
 			'overflow'         => 'overflow',
+			'pointerEvents'    => 'pointer-events',
 			'display'          => 'display',
 			'flexDirection'    => 'flex-direction',
 			'flexWrap'         => 'flex-wrap',
@@ -1311,9 +1318,17 @@ class FrameBuilder_Exporter {
 			'zIndex'           => 'z-index',
 		];
 		$px_inline_props = [ 'border-radius', 'border-width', 'gap', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left' ];
+		// Vector shapes (pen/path/circle/polygon/line) render their fill inside the <svg>,
+		// so the container div must NOT paint any background — otherwise the rectangular
+		// bounding box leaks around the shape. Line has no fill at all.
+		$is_vector_shape = ( 'icon' === $element_type ) && in_array( $resolved['shapeType'] ?? '', [ 'path', 'pen', 'circle', 'polygon', 'line' ], true );
 		foreach ( $visual_props as $camel => $kebab ) {
 			if ( ! isset( $styles[ $camel ] ) || $styles[ $camel ] === '' ) continue;
 			$val = $styles[ $camel ];
+			// Suppress ALL container background/border for vector shapes (solid, gradient, border).
+			if ( $is_vector_shape && $camel === 'backgroundColor' ) {
+				continue;
+			}
 			// CSS gradient strings go to background-image, not background-color
 			if ( $camel === 'backgroundColor' && preg_match( '/gradient\(/', $val ) ) {
 				$inline .= 'background-image:' . $this->sanitize_css_value( $val ) . ';';
@@ -1344,8 +1359,8 @@ class FrameBuilder_Exporter {
 			$inline .= '-webkit-backdrop-filter:' . $backdrop_value . ';backdrop-filter:' . $backdrop_value . ';';
 		}
 
-		// Background image fill on frames / divs
-		$bg_img = $this->normalize_media_url( $styles['backgroundImage'] ?? '' );
+		// Background image fill on frames / divs (skip for vector shapes)
+		$bg_img = $is_vector_shape ? '' : $this->normalize_media_url( $styles['backgroundImage'] ?? '' );
 		if ( $bg_img !== '' ) {
 			$bg_size = $styles['backgroundSize'] ?? 'cover';
 			$bg_pos  = esc_attr( $this->sanitize_css_value( $styles['backgroundPosition'] ?? 'center center' ) );
@@ -1422,6 +1437,30 @@ class FrameBuilder_Exporter {
 		$runtime_attrs .= ' data-fb-base-rotation="' . esc_attr( (string) (float) ( $resolved['rotation'] ?? 0 ) ) . '"';
 		$runtime_attrs .= ' data-fb-base-rotation-x="' . esc_attr( (string) (float) ( $resolved['rotationX'] ?? 0 ) ) . '"';
 		$runtime_attrs .= ' data-fb-base-rotation-y="' . esc_attr( (string) (float) ( $resolved['rotationY'] ?? 0 ) ) . '"';
+
+		// Custom cursor (image or component mode)
+		$cursor_mode = isset( $resolved['cursorMode'] ) ? (string) $resolved['cursorMode'] : 'default';
+		if ( 'image' === $cursor_mode ) {
+			$cursor_img = $this->normalize_media_url( $resolved['cursorImage'] ?? '' );
+			if ( $cursor_img !== '' ) {
+				$hot_x = (float) ( $resolved['cursorHotX'] ?? 0 );
+				$hot_y = (float) ( $resolved['cursorHotY'] ?? 0 );
+				$inline .= 'cursor:none;';
+				$layout_inline .= 'cursor:none;';
+				$runtime_attrs .= ' data-fb-cursor-image="' . esc_attr( $cursor_img ) . '"';
+				$runtime_attrs .= ' data-fb-cursor-hot-x="' . esc_attr( (string) $hot_x ) . '"';
+				$runtime_attrs .= ' data-fb-cursor-hot-y="' . esc_attr( (string) $hot_y ) . '"';
+				$this->has_image_cursors = true;
+			}
+		} elseif ( 'component' === $cursor_mode ) {
+			$cursor_cid = sanitize_text_field( $resolved['cursorComponentId'] ?? '' );
+			if ( $cursor_cid !== '' && $this->get_component_definition( $cursor_cid ) ) {
+				$runtime_attrs .= ' data-fb-cursor-component="' . esc_attr( $cursor_cid ) . '"';
+				$inline .= 'cursor:none;';
+				$layout_inline .= 'cursor:none;';
+				$this->cursor_components_used[ $cursor_cid ] = true;
+			}
+		}
 		if ( $scroll_sequence_json !== '' ) {
 			$runtime_attrs .= ' data-fb-scroll-sequence="' . $scroll_sequence_json . '"';
 		}
@@ -1668,8 +1707,13 @@ class FrameBuilder_Exporter {
 				$vs_fill = 'none';
 				if ( $shape_type !== 'line' && ! empty( $vector_data['closed'] ) ) {
 					$bg = $styles['backgroundColor'] ?? 'transparent';
-					if ( $bg !== 'transparent' && is_string( $bg ) && strpos( $bg, 'gradient(' ) === false ) {
-						$vs_fill = $bg;
+					if ( $bg !== 'transparent' && is_string( $bg ) && $bg !== '' ) {
+						// Gradient backgrounds: use first-stop fallback color so path still has visible fill.
+						if ( strpos( $bg, 'gradient(' ) !== false ) {
+							$vs_fill = $this->get_gradient_fallback_color( $bg, '#111827' );
+						} else {
+							$vs_fill = $bg;
+						}
 					}
 				}
 				$icon_markup = $this->build_vector_shape_svg( $vector_data, [
@@ -1946,13 +1990,18 @@ class FrameBuilder_Exporter {
 		$rules[] = 'transform-origin: center center';
 
 		$allowed_props = $is_form_field
-			? [ 'opacity', 'mixBlendMode', 'zIndex' ]
+			? [ 'opacity', 'mixBlendMode', 'zIndex', 'pointerEvents' ]
 			: [
 				'backgroundColor', 'borderRadius', 'borderWidth', 'borderColor', 'borderStyle',
-				'opacity', 'mixBlendMode', 'overflow', 'display', 'flexDirection', 'flexWrap', 'gap',
+				'opacity', 'mixBlendMode', 'overflow', 'pointerEvents', 'display', 'flexDirection', 'flexWrap', 'gap',
 				'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
 				'alignItems', 'justifyContent', 'boxShadow', 'zIndex',
 			];
+		// Vector shapes render their fill inside the <svg>; container must not paint background.
+		$is_vector_shape = ( 'icon' === $element_type ) && in_array( $resolved['shapeType'] ?? '', [ 'path', 'pen', 'circle', 'polygon', 'line' ], true );
+		if ( $is_vector_shape ) {
+			$allowed_props = array_values( array_diff( $allowed_props, [ 'backgroundColor' ] ) );
+		}
 		$px_props = [
 			'border-radius', 'border-width', 'gap',
 			'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
@@ -1974,7 +2023,7 @@ class FrameBuilder_Exporter {
 		}
 		// Background image fill
 		$bg_img = $this->normalize_media_url( $styles['backgroundImage'] ?? '' );
-		if ( ! $is_form_field && $bg_img !== '' ) {
+		if ( ! $is_form_field && ! $is_vector_shape && $bg_img !== '' ) {
 			$bg_size = $styles['backgroundSize'] ?? 'cover';
 			$bg_pos  = $styles['backgroundPosition'] ?? 'center center';
 			$rules[] = 'background-image: url(' . $this->sanitize_css_value( $bg_img ) . ')';
@@ -7181,6 +7230,161 @@ SCRIPT;
 		);
 
 		return '<style>' . $css . '</style>' . $script;
+	}
+
+	private function get_cursor_runtime_assets(): string {
+		if ( empty( $this->cursor_components_used ) && ! $this->has_image_cursors ) return '';
+
+		$templates = '';
+		// --- Component cursor templates ---
+		foreach ( array_keys( $this->cursor_components_used ) as $cid ) {
+			$component = $this->get_component_definition( $cid );
+			if ( ! $component ) continue;
+			$variants = is_array( $component['variants'] ?? null ) ? $component['variants'] : [];
+			if ( empty( $variants ) ) continue;
+			$default_variant_id = sanitize_text_field( $component['defaultVariantId'] ?? ( $variants[0]['id'] ?? '' ) );
+			$root_w = 40.0;
+			$root_h = 40.0;
+			foreach ( $variants as $v ) {
+				if ( is_array( $v ) && ( $v['id'] ?? '' ) === $default_variant_id ) {
+					$snapshot = is_array( $v['snapshot'] ?? null ) ? $v['snapshot'] : [];
+					$snap_root = $this->get_snapshot_root( $snapshot );
+					if ( $snap_root ) {
+						$root_w = max( 8, (float) ( $snap_root['base']['width'] ?? 40 ) );
+						$root_h = max( 8, (float) ( $snap_root['base']['height'] ?? 40 ) );
+					}
+					break;
+				}
+			}
+			$synthetic_el = [
+				'id' => 'fb-cursor-tpl-' . $cid,
+				'type' => 'frame',
+				'componentInstance' => [
+					'componentId' => $cid,
+					'variantId' => $default_variant_id,
+				],
+				'base' => [ 'x' => 0, 'y' => 0, 'width' => $root_w, 'height' => $root_h ],
+			];
+			$synthetic_resolved = [ 'width' => $root_w, 'height' => $root_h ];
+			$variant_html = '';
+			try {
+				$variant_html = $this->render_component_instance_variants( $synthetic_el, $synthetic_resolved, 'desktop' );
+			} catch ( \Throwable $e ) {
+				$variant_html = '';
+			}
+			$inner = $variant_html !== ''
+				? '<div class="fb-component-instance ' . esc_attr( $this->build_id ) . '" style="position:relative;width:' . $root_w . 'px;height:' . $root_h . 'px;overflow:hidden;" data-fb-component-id="' . esc_attr( $cid ) . '">' . $variant_html . '</div>'
+				: '<div style="width:' . $root_w . 'px;height:' . $root_h . 'px;border-radius:50%;background:#2563eb;"></div>';
+			$templates .= '<template data-fb-cursor-template="' . esc_attr( $cid ) . '" data-fb-cursor-w="' . esc_attr( (string) $root_w ) . '" data-fb-cursor-h="' . esc_attr( (string) $root_h ) . '">' . $inner . '</template>';
+		}
+
+		$css = '<style>'
+			. '.fb-cursor-floating{position:fixed;left:0;top:0;pointer-events:none;z-index:2147483647;will-change:transform;transform:translate(-9999px,-9999px);}'
+			. '.fb-cursor-floating *{pointer-events:none !important;}'
+			. '[data-fb-cursor-component],[data-fb-cursor-component] *{cursor:none !important;}'
+			. '[data-fb-cursor-image],[data-fb-cursor-image] *{cursor:none !important;}'
+			. '</style>';
+
+		$script = <<<'JS'
+<script>
+(function(){
+	var floating = null;
+	var activeKey = null;
+	var pendingW = 0, pendingH = 0, pendingHotX = 0, pendingHotY = 0;
+	var cache = {};
+
+	function getTpl(cid){
+		if (cache[cid]) return cache[cid];
+		var tpl = document.querySelector('template[data-fb-cursor-template="' + cid + '"]');
+		if (!tpl) return null;
+		cache[cid] = {
+			html: tpl.innerHTML,
+			w: parseFloat(tpl.getAttribute('data-fb-cursor-w') || '40'),
+			h: parseFloat(tpl.getAttribute('data-fb-cursor-h') || '40'),
+			hotX: 0, hotY: 0, centerOffset: true
+		};
+		return cache[cid];
+	}
+
+	function getImgEntry(url, hotX, hotY){
+		var key = 'img:' + url;
+		if (cache[key]) return cache[key];
+		cache[key] = {
+			html: '<img src="' + url.replace(/"/g,'&quot;') + '" alt="" style="display:block;max-width:64px;max-height:64px;width:auto;height:auto;" draggable="false">',
+			w: 64, h: 64,
+			hotX: hotX, hotY: hotY, centerOffset: false
+		};
+		return cache[key];
+	}
+
+	function ensureFloating(entry, key){
+		if (!entry) return null;
+		if (!floating){
+			floating = document.createElement('div');
+			floating.className = 'fb-cursor-floating';
+			document.body.appendChild(floating);
+		}
+		if (activeKey !== key){
+			floating.innerHTML = entry.html;
+			floating.style.width = entry.centerOffset ? entry.w + 'px' : 'auto';
+			floating.style.height = entry.centerOffset ? entry.h + 'px' : 'auto';
+			pendingW = entry.w; pendingH = entry.h;
+			pendingHotX = entry.hotX; pendingHotY = entry.hotY;
+			activeKey = key;
+		}
+		return floating;
+	}
+
+	function hide(){
+		if (floating) floating.style.transform = 'translate(-9999px,-9999px)';
+		activeKey = null;
+	}
+
+	function positionFloating(e, centerOffset){
+		if (!floating) return;
+		if (centerOffset) {
+			floating.style.transform = 'translate(' + (e.clientX - pendingW/2) + 'px,' + (e.clientY - pendingH/2) + 'px)';
+		} else {
+			floating.style.transform = 'translate(' + (e.clientX - pendingHotX) + 'px,' + (e.clientY - pendingHotY) + 'px)';
+		}
+	}
+
+	document.addEventListener('mousemove', function(e){
+		var t = e.target;
+		var host = null;
+		var type = null;
+		while (t && t.nodeType === 1){
+			if (t.hasAttribute){
+				if (!host && t.hasAttribute('data-fb-cursor-component')){ host = t; type = 'component'; break; }
+				if (!host && t.hasAttribute('data-fb-cursor-image')){ host = t; type = 'image'; break; }
+			}
+			t = t.parentNode;
+		}
+		if (!host){ hide(); return; }
+
+		if (type === 'component') {
+			var cid = host.getAttribute('data-fb-cursor-component');
+			if (!cid){ hide(); return; }
+			var entry = getTpl(cid);
+			if (!ensureFloating(entry, 'cmp:' + cid)){ hide(); return; }
+			positionFloating(e, true);
+		} else if (type === 'image') {
+			var url = host.getAttribute('data-fb-cursor-image');
+			if (!url){ hide(); return; }
+			var hotX = parseFloat(host.getAttribute('data-fb-cursor-hot-x') || '0');
+			var hotY = parseFloat(host.getAttribute('data-fb-cursor-hot-y') || '0');
+			var entry = getImgEntry(url, hotX, hotY);
+			if (!ensureFloating(entry, 'img:' + url)){ hide(); return; }
+			positionFloating(e, false);
+		}
+	}, { passive: true });
+
+	document.addEventListener('mouseleave', hide);
+	window.addEventListener('blur', hide);
+})();
+</script>
+JS;
+		return $css . $templates . $script;
 	}
 
 	private function sanitize_css_value( $value ): string {

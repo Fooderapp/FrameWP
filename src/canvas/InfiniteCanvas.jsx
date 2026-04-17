@@ -2905,6 +2905,7 @@ export default function InfiniteCanvas() {
   const containerRef = useRef(null);
   const worldRef     = useRef(null);
   const lastPointerClientRef = useRef({ x: null, y: null });
+  const floatingCursorRef = useRef(null);
 
   // Direct DOM transform — bypasses React reconciliation for pan/zoom
   useLayoutEffect(() => {
@@ -6129,17 +6130,62 @@ export default function InfiniteCanvas() {
 
   const onDragOver = (e) => e.preventDefault();
 
-  const cursor = pendingDraw
-    ? ((pendingDraw === 'pen' && penDraftCloseHint) ? 'pointer' : 'crosshair')
-    : activeCanvasTool === 'comment'
-    ? COMMENT_CURSOR
-    : activeCanvasTool === 'pan'
-    ? (isPanning.current ? 'grabbing' : 'grab')
-    : spacePanCursor
-    ? (isPanning.current ? 'grabbing' : 'grab')
-    : isPanning.current
-    ? 'grabbing'
-    : 'default';
+  const cursor = (() => {
+    if (pendingDraw) return (pendingDraw === 'pen' && penDraftCloseHint) ? 'pointer' : 'crosshair';
+    if (activeCanvasTool === 'comment') return COMMENT_CURSOR;
+    if (activeCanvasTool === 'pan') return isPanning.current ? 'grabbing' : 'grab';
+    if (spacePanCursor) return isPanning.current ? 'grabbing' : 'grab';
+    if (isPanning.current) return 'grabbing';
+    // Custom cursor from hovered element — use floating div approach
+    if (hoveredId) {
+      const state = useEditorStore.getState();
+      const hovEl = state.getAllElements().find(e => e.id === hoveredId);
+      if (hovEl) {
+        const selBp = state.selection?.bpId || Object.keys(state.breakpointDefs)[0] || 'desktop';
+        const res = resolveElement(hovEl, selBp);
+        if (res.cursorMode === 'image') {
+          const imgUrl = res.cursorImage && typeof res.cursorImage === 'object' ? res.cursorImage.url : res.cursorImage;
+          if (imgUrl) return 'none'; // native cursor hidden; floating div follows mouse
+        }
+      }
+    }
+    return 'default';
+  })();
+
+  // Floating cursor image info (computed alongside cursor)
+  const floatingCursorInfo = (() => {
+    if (cursor !== 'none') return null;
+    if (!hoveredId) return null;
+    const state = useEditorStore.getState();
+    const hovEl = state.getAllElements().find(e => e.id === hoveredId);
+    if (!hovEl) return null;
+    const selBp = state.selection?.bpId || Object.keys(state.breakpointDefs)[0] || 'desktop';
+    const res = resolveElement(hovEl, selBp);
+    if (res.cursorMode !== 'image') return null;
+    const imgUrl = res.cursorImage && typeof res.cursorImage === 'object' ? res.cursorImage.url : res.cursorImage;
+    if (!imgUrl) return null;
+    return { url: imgUrl, hotX: res.cursorHotX ?? 0, hotY: res.cursorHotY ?? 0 };
+  })();
+
+  // Update floating cursor position via ref (no re-render needed)
+  useEffect(() => {
+    const el = floatingCursorRef.current;
+    if (!el) return;
+    if (!floatingCursorInfo) {
+      el.style.transform = 'translate(-9999px, -9999px)';
+      return;
+    }
+    // Position at last known pointer immediately
+    const p = lastPointerClientRef.current;
+    if (p.x != null && p.y != null) {
+      el.style.transform = `translate(${p.x - floatingCursorInfo.hotX}px, ${p.y - floatingCursorInfo.hotY}px)`;
+    }
+    const onMove = (e) => {
+      el.style.transform = `translate(${e.clientX - floatingCursorInfo.hotX}px, ${e.clientY - floatingCursorInfo.hotY}px)`;
+    };
+    window.addEventListener('mousemove', onMove, { passive: true });
+    return () => window.removeEventListener('mousemove', onMove);
+  }, [floatingCursorInfo?.url, floatingCursorInfo?.hotX, floatingCursorInfo?.hotY]);
 
   const scale = Math.max(MIN_SCALE, Number.isFinite(canvasScale) ? canvasScale : 1);
   const baseVariantId = activeSurface === 'component'
@@ -6320,7 +6366,10 @@ export default function InfiniteCanvas() {
       className="fb-canvas-container"
       style={{ cursor }}
       onMouseDown={onMouseDown}
-      onMouseLeave={() => setHoveredId(null)}
+      onMouseLeave={() => {
+        setHoveredId(null);
+        if (floatingCursorRef.current) floatingCursorRef.current.style.transform = 'translate(-9999px, -9999px)';
+      }}
       onContextMenu={onContextMenu}
       onDrop={onDrop}
       onDragOver={onDragOver}
@@ -6705,6 +6754,26 @@ export default function InfiniteCanvas() {
           }}
         />
       )}
+      {/* Floating custom cursor – positioned via ref, no React re-render per mousemove */}
+      <div
+        ref={floatingCursorRef}
+        style={{
+          position: 'fixed', left: 0, top: 0,
+          pointerEvents: 'none',
+          zIndex: 2147483647,
+          willChange: 'transform',
+          transform: 'translate(-9999px, -9999px)',
+        }}
+      >
+        {floatingCursorInfo && (
+          <img
+            src={floatingCursorInfo.url}
+            alt=""
+            style={{ display: 'block', maxWidth: 64, maxHeight: 64, width: 'auto', height: 'auto' }}
+            draggable={false}
+          />
+        )}
+      </div>
     </div>
   );
 }
