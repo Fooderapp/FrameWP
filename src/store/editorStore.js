@@ -1559,39 +1559,6 @@ const COMPONENT_EDITOR_VARIANT_GAP = 140;
 const COMPONENT_EDITOR_VARIANT_TOP = 100;
 const COMPONENT_EDITOR_VARIANT_SIDE_PAD = 120;
 
-function makeAssetStorageComponent() {
-  const root = makeComponentPrimaryRoot({
-    width: 2400,
-    height: 1600,
-    zIndex: 1,
-  });
-  root.base.styles = {
-    ...root.base.styles,
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    borderColor: 'transparent',
-    display: null,
-    overflow: 'visible',
-  };
-
-  const primaryVariantId = makeId('cmp-var');
-  return normalizeStoredComponent({
-    id: ASSET_STORAGE_COMPONENT_ID,
-    name: 'Asset Storage',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    defaultVariantId: primaryVariantId,
-    variants: [{
-      id: primaryVariantId,
-      name: 'Primary',
-      mode: 'default',
-      snapshot: [root],
-    }],
-    snapshot: [root],
-    controls: [],
-  });
-}
-
 function setValueAtPath(target, path, value) {
   if (!target || !Array.isArray(path) || !path.length) return;
   let cursor = target;
@@ -1954,6 +1921,9 @@ function makeComponentEditorBreakpoints(elements = []) {
 const makeDefaultPage = () => ({
   id: 'page-1',
   title: 'Untitled Page',
+  // Template / detail-page marking (Phase 4)
+  templateType: 'regular',      // 'regular' | 'post-single' | 'post-archive' | 'woo-product' | 'woo-category' | 'woo-shop'
+  templateTarget: '',           // post type slug (e.g. 'post', 'product') or taxonomy slug
   // tablet/mobile start as null = inherit from parent breakpoint
   background: { desktop: '#ffffff', tablet: null, mobile: null },
   smoothScroll: { desktop: false, tablet: null, mobile: null },
@@ -4186,6 +4156,23 @@ export const useEditorStore = create((set, get) => {
     }),
     variablesModalOpen: false,
     setVariablesModalOpen: (open) => set({ variablesModalOpen: !!open }),
+    pageSettingsModalOpen: false,
+    setPageSettingsModalOpen: (open) => set({ pageSettingsModalOpen: !!open }),
+    updatePageSettings: (patch = {}) => {
+      set((state) => ({
+        pages: state.pages.map((page) => (
+          page.id === state.currentPageId
+            ? {
+                ...page,
+                ...(patch.title != null ? { title: String(patch.title) } : {}),
+                ...(patch.templateType != null ? { templateType: String(patch.templateType) } : {}),
+                ...(patch.templateTarget != null ? { templateTarget: String(patch.templateTarget) } : {}),
+              }
+            : page
+        )),
+      }));
+      get().pushHistory?.();
+    },
     flowEditorState: { open: false, elementId: '', flowId: '' },
     openFlowEditor: (context = {}) => {
       const elementId = typeof context.elementId === 'string' ? context.elementId : '';
@@ -4508,28 +4495,7 @@ export const useEditorStore = create((set, get) => {
     components: [],
     setComponents: (components) => set({ components }),
 
-    ensureAssetStorageComponent() {
-      const currentComponents = get().components ?? [];
-      const existing = currentComponents.find((component) => isAssetStorageComponentId(component.id)) ?? null;
-      const fallback = makeAssetStorageComponent();
-      const normalized = existing ? normalizeStoredComponent(existing) : fallback;
-      const hasPrimaryRoot = !!getSnapshotRoot(normalized.snapshot ?? normalized.variants?.[0]?.snapshot ?? []);
-      const nextComponent = hasPrimaryRoot ? normalized : fallback;
-      const changed = !existing || JSON.stringify(existing) !== JSON.stringify(nextComponent);
-      if (changed) {
-        const nextComponents = upsertComponent(currentComponents, nextComponent);
-        set({ components: nextComponents });
-        get().saveComponents(nextComponents);
-      }
-      return nextComponent.id;
-    },
 
-    openAssetStorage() {
-      const componentId = get().ensureAssetStorageComponent();
-      if (!componentId) return;
-      get().openComponentEditor(componentId);
-      set({ leftTab: 'components' });
-    },
 
     async loadComponents() {
       try {
@@ -4827,23 +4793,24 @@ export const useEditorStore = create((set, get) => {
     openComponentEditor(componentId) {
       const component = get().components.find(item => item.id === componentId);
       if (!component) return;
+
       const normalizedComponent = normalizeStoredComponent(component);
       const editorCanvas = buildComponentEditorElements(normalizedComponent);
       const componentBreakpoints = makeComponentEditorBreakpoints(editorCanvas.elements);
       const initialVariantId = normalizedComponent.variants?.[0]?.id ?? null;
       const initialRoot = initialVariantId ? getEditorVariantRoot(editorCanvas.elements, initialVariantId) : null;
 
-      const state = get();
+      const freshState = get();
       const uiRestore = {
-        selection: state.selection,
-        artboardSel: state.artboardSel,
-        hoveredId: state.hoveredId,
-        activeCommentId: state.activeCommentId,
-        activeCanvasTool: state.activeCanvasTool,
-        drilledContainerId: state.drilledContainerId,
-        pendingDraw: state.pendingDraw,
-        leftTab: state.leftTab,
-        breakpointDefs: deepClone(state.breakpointDefs),
+        selection: freshState.selection,
+        artboardSel: freshState.artboardSel,
+        hoveredId: freshState.hoveredId,
+        activeCommentId: freshState.activeCommentId,
+        activeCanvasTool: freshState.activeCanvasTool,
+        drilledContainerId: freshState.drilledContainerId,
+        pendingDraw: freshState.pendingDraw,
+        leftTab: freshState.leftTab,
+        breakpointDefs: deepClone(freshState.breakpointDefs),
       };
 
       const nextComponentEditor = {
@@ -4883,7 +4850,7 @@ export const useEditorStore = create((set, get) => {
         hoveredId: null,
         layerHoveredId: null,
         activeCommentId: null,
-        activeCanvasTool: state.activeCanvasTool === 'comment' ? 'select' : state.activeCanvasTool,
+        activeCanvasTool: freshState.activeCanvasTool === 'comment' ? 'select' : freshState.activeCanvasTool,
         drilledContainerId: null,
         pendingDraw: null,
         componentEditor: nextComponentEditor,
@@ -5161,19 +5128,18 @@ export const useEditorStore = create((set, get) => {
       const state = get();
       if (state.activeSurface !== 'component' || !state.componentEditor?.isOpen) return;
       const current = state.componentEditor;
-      const syncedVariants = syncComponentEditorVariants(current);
       const nextComponents = state.components.map(component => (
-        component.id === current.componentId
-          ? normalizeStoredComponent({
-              ...component,
-              updatedAt: Date.now(),
-              defaultVariantId: component.defaultVariantId ?? syncedVariants[0]?.id ?? null,
-              controls: current.controls ?? component.controls ?? [],
-              variants: syncedVariants,
-              snapshot: syncedVariants[0]?.snapshot ?? [],
-            })
-          : component
-      ));
+          component.id === current.componentId
+            ? normalizeStoredComponent({
+                ...component,
+                updatedAt: Date.now(),
+                defaultVariantId: component.defaultVariantId ?? syncComponentEditorVariants(current)[0]?.id ?? null,
+                controls: current.controls ?? component.controls ?? [],
+                variants: syncComponentEditorVariants(current),
+                snapshot: syncComponentEditorVariants(current)[0]?.snapshot ?? [],
+              })
+            : component
+        ));
       set({
         activeSurface: 'page',
         selection: normalizeSelection(current.uiRestore?.selection),
@@ -5190,8 +5156,10 @@ export const useEditorStore = create((set, get) => {
         componentHistory: [],
         componentHistoryIndex: -1,
       });
-      get().saveComponents(nextComponents);
-      get().applyComponentToInstances(current.componentId);
+      if (!isStorage) {
+        get().saveComponents(nextComponents);
+        get().applyComponentToInstances(current.componentId);
+      }
     },
 
     updateEditingComponentMeta(updates = {}) {

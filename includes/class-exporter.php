@@ -867,6 +867,146 @@ class FrameBuilder_Exporter {
 		return $this->plain_text_to_rich_text_html( (string) ( $resolved['text'] ?? 'Text' ) );
 	}
 
+	/**
+	 * Phase 5: Resolve a field binding string like "post.title" / "product.price"
+	 * against the current post/product context ($this->post_id).
+	 *
+	 * Returns an associative array:
+	 *   [ 'kind' => 'text'|'image'|'', 'text' => ?string, 'src' => ?string, 'html' => bool ]
+	 * - kind='text'  → $resolved['text'] should be replaced (and richTextHtml regenerated)
+	 * - kind='image' → $resolved['src'] should be replaced
+	 * - html=true    → 'text' is already HTML and should be fed through sanitize_rich_text_html
+	 */
+	private function resolve_field_binding( string $binding ): array {
+		$out = [ 'kind' => '', 'text' => null, 'src' => null, 'html' => false ];
+		if ( $binding === '' || strpos( $binding, '.' ) === false ) return $out;
+		$parts = explode( '.', $binding, 2 );
+		$source = $parts[0];
+		$field  = $parts[1];
+		$pid    = (int) $this->post_id;
+		if ( $pid <= 0 ) return $out;
+
+		if ( $source === 'post' ) {
+			$post = get_post( $pid );
+			if ( ! $post ) return $out;
+			switch ( $field ) {
+				case 'title':
+					$out['kind'] = 'text';
+					$out['text'] = get_the_title( $pid );
+					break;
+				case 'excerpt':
+					$out['kind'] = 'text';
+					$out['text'] = get_the_excerpt( $post );
+					break;
+				case 'content':
+					$out['kind'] = 'text';
+					$out['text'] = apply_filters( 'the_content', $post->post_content );
+					$out['html'] = true;
+					break;
+				case 'date':
+					$out['kind'] = 'text';
+					$out['text'] = get_the_date( '', $post );
+					break;
+				case 'author':
+					$out['kind'] = 'text';
+					$out['text'] = get_the_author_meta( 'display_name', (int) $post->post_author );
+					break;
+				case 'permalink':
+					$out['kind'] = 'text';
+					$out['text'] = get_permalink( $pid );
+					break;
+				case 'featured_image':
+					$out['kind'] = 'image';
+					$thumb = get_the_post_thumbnail_url( $pid, 'full' );
+					$out['src'] = $thumb ? (string) $thumb : null;
+					break;
+			}
+			return $out;
+		}
+
+		if ( $source === 'product' && function_exists( 'wc_get_product' ) ) {
+			$product = wc_get_product( $pid );
+			if ( ! $product ) return $out;
+			switch ( $field ) {
+				case 'title':
+					$out['kind'] = 'text';
+					$out['text'] = $product->get_name();
+					break;
+				case 'price':
+					$out['kind'] = 'text';
+					$out['text'] = $product->get_price_html();
+					$out['html'] = true;
+					break;
+				case 'regular_price':
+					$out['kind'] = 'text';
+					$rp = $product->get_regular_price();
+					$out['text'] = ( $rp !== '' && $rp !== null ) ? wc_price( (float) $rp ) : '';
+					$out['html'] = true;
+					break;
+				case 'sale_price':
+					$out['kind'] = 'text';
+					$sp = $product->get_sale_price();
+					$out['text'] = ( $sp !== '' && $sp !== null ) ? wc_price( (float) $sp ) : '';
+					$out['html'] = true;
+					break;
+				case 'sku':
+					$out['kind'] = 'text';
+					$out['text'] = $product->get_sku();
+					break;
+				case 'stock_status':
+					$out['kind'] = 'text';
+					$out['text'] = $product->get_stock_status();
+					break;
+				case 'short_description':
+					$out['kind'] = 'text';
+					$out['text'] = apply_filters( 'woocommerce_short_description', $product->get_short_description() );
+					$out['html'] = true;
+					break;
+				case 'description':
+					$out['kind'] = 'text';
+					$out['text'] = apply_filters( 'the_content', $product->get_description() );
+					$out['html'] = true;
+					break;
+				case 'permalink':
+					$out['kind'] = 'text';
+					$out['text'] = get_permalink( $pid );
+					break;
+				case 'featured_image':
+					$out['kind'] = 'image';
+					$thumb = get_the_post_thumbnail_url( $pid, 'full' );
+					$out['src'] = $thumb ? (string) $thumb : null;
+					break;
+			}
+			return $out;
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Phase 5: Apply a field binding (if present on the element) to the already
+	 * resolved render data, replacing text/richTextHtml or src as appropriate.
+	 */
+	private function apply_field_binding( array $el, array $resolved ): array {
+		$binding = isset( $el['base']['binding'] ) ? trim( (string) $el['base']['binding'] ) : '';
+		if ( $binding === '' ) return $resolved;
+		$bound = $this->resolve_field_binding( $binding );
+		if ( $bound['kind'] === 'text' && $bound['text'] !== null ) {
+			$text = (string) $bound['text'];
+			if ( ! empty( $bound['html'] ) ) {
+				$clean = $this->sanitize_rich_text_html( $text );
+				$resolved['richTextHtml'] = $clean !== '' ? $clean : $this->plain_text_to_rich_text_html( wp_strip_all_tags( $text ) );
+				$resolved['text'] = wp_strip_all_tags( $text );
+			} else {
+				$resolved['text'] = $text;
+				$resolved['richTextHtml'] = $this->plain_text_to_rich_text_html( $text );
+			}
+		} elseif ( $bound['kind'] === 'image' && $bound['src'] !== null ) {
+			$resolved['src'] = (string) $bound['src'];
+		}
+		return $resolved;
+	}
+
 	public function __construct( array $layout, int $post_id = 0 ) {
 		$this->layout   = $layout;
 		$this->build_id = 'fb' . substr( md5( wp_json_encode( $layout ) ), 0, 6 );
@@ -1118,6 +1258,8 @@ class FrameBuilder_Exporter {
 	private function render_element( array $el, string $bpId, float $cw, float $ch, bool $artboard_layout_on = false, string $parent_flex_dir = 'none', string $parent_align_items = 'stretch', array $loop_item_variables = [] ): string {
 		$resolved = $this->resolve_element_with_variables( $el, $bpId, $loop_item_variables );
 		if ( ! empty( $resolved['hidden'] ) ) return '';
+		// Phase 5: apply field bindings (post.* / product.*) to override text/image src.
+		$resolved = $this->apply_field_binding( $el, $resolved );
 		$element_type = isset( $el['type'] ) ? (string) $el['type'] : '';
 
 		$id     = preg_replace( '/[^a-zA-Z0-9_-]/', '', $el['id'] ?? '' );

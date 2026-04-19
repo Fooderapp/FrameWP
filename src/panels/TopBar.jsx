@@ -1,7 +1,117 @@
-import React from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorStore } from '../store/editorStore';
 import AtomLogo from '../components/AtomLogo';
 import { IconButton, UIIcons } from '../components/UIIcons';
+
+const TEMPLATE_LABELS = {
+  'regular':      'Regular',
+  'post-single':  'Post detail',
+  'post-archive': 'Post list',
+  'woo-product':  'Product detail',
+  'woo-category': 'Product category',
+  'woo-shop':     'Shop',
+};
+
+function templateBadgeLabel(t) {
+  return TEMPLATE_LABELS[t] || (t ? t.replace(/-/g, ' ') : '');
+}
+
+function PagesDropdown({ currentPage, isReadOnly }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const setPageSettingsModalOpen = useEditorStore(s => s.setPageSettingsModalOpen);
+
+  const layouts = useMemo(() => {
+    const list = Array.isArray(window.fbData?.layouts) ? window.fbData.layouts : [];
+    return list;
+  }, []);
+
+  const currentPostId = parseInt(window.fbData?.postId, 10) || 0;
+  const currentTitle = currentPage?.title || 'Untitled Page';
+  const currentTemplateType = currentPage?.templateType || 'regular';
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const handleNavigate = (editUrl, pid) => {
+    if (pid === currentPostId) { setOpen(false); return; }
+    window.location.href = editUrl;
+  };
+
+  return (
+    <div className="fb-topbar__pages" ref={wrapRef}>
+      <button
+        type="button"
+        className="fb-topbar__page-btn"
+        onClick={() => setOpen((v) => !v)}
+        title="Switch page"
+      >
+        <span className="fb-topbar__page-name">{currentTitle}</span>
+        {currentTemplateType && currentTemplateType !== 'regular' ? (
+          <span className="fb-topbar__page-badge">{templateBadgeLabel(currentTemplateType)}</span>
+        ) : null}
+        <svg width="10" height="10" viewBox="0 0 10 10" style={{ opacity: 0.55 }}>
+          <path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open ? (
+        <div className="fb-topbar__pages-menu" role="menu">
+          <div className="fb-topbar__pages-header">Pages</div>
+          <div className="fb-topbar__pages-list">
+            {layouts.length === 0 ? (
+              <div className="fb-topbar__pages-empty">No other layouts yet.</div>
+            ) : (
+              layouts.map((p) => {
+                const isCurrent = p.id === currentPostId;
+                const t = isCurrent ? currentTemplateType : (p.templateType || 'regular');
+                return (
+                  <button
+                    type="button"
+                    key={p.id}
+                    className={`fb-topbar__pages-item${isCurrent ? ' is-current' : ''}`}
+                    onClick={() => handleNavigate(p.editUrl, p.id)}
+                    title={`${p.title} (${p.postType})`}
+                  >
+                    <span className="fb-topbar__pages-item-title">{isCurrent ? currentTitle : p.title}</span>
+                    {t && t !== 'regular' ? (
+                      <span className="fb-topbar__pages-item-badge">{templateBadgeLabel(t)}</span>
+                    ) : null}
+                    {isCurrent ? <span className="fb-topbar__pages-item-dot" aria-hidden>●</span> : null}
+                  </button>
+                );
+              })
+            )}
+          </div>
+          <div className="fb-topbar__pages-footer">
+            <button
+              type="button"
+              className="fb-topbar__pages-settings"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setOpen(false);
+                setPageSettingsModalOpen(true);
+              }}
+            >
+              Page settings…
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export default function TopBar() {
   const viewport       = useEditorStore(s => s.viewport);
@@ -13,6 +123,7 @@ export default function TopBar() {
   const bpDefs         = useEditorStore(s => s.breakpointDefs);
   const documentLock   = useEditorStore(s => s.documentLock);
   const setVariablesModalOpen = useEditorStore(s => s.setVariablesModalOpen);
+  const currentPage = useEditorStore(s => s.getCurrentPage());
   const pct = Math.round(viewport.scale * 100);
   const postId = parseInt(window.fbData?.postId, 10) || 0;
   const backToWordPressUrl = postId > 0
@@ -74,6 +185,10 @@ export default function TopBar() {
           {UIIcons.arrowLeft}
           <span>WordPress</span>
         </button>
+        <PagesDropdown
+          currentPage={currentPage}
+          isReadOnly={isReadOnly}
+        />
       </div>
 
       <div className="fb-topbar__center">

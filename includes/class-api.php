@@ -457,6 +457,13 @@ class FrameBuilder_API {
 		$css      = $exporter->generate_css();
 		update_post_meta( $post_id, '_fb_published_html', wp_slash( $html ) );
 		update_post_meta( $post_id, '_fb_published_css',  wp_slash( $css ) );
+
+		// Phase 4: persist detail-page template marking as indexable meta
+		$template_type   = isset( $layout['templateType'] ) ? sanitize_key( $layout['templateType'] ) : 'regular';
+		$template_target = isset( $layout['templateTarget'] ) ? sanitize_text_field( $layout['templateTarget'] ) : '';
+		update_post_meta( $post_id, '_fb_template_type', $template_type );
+		update_post_meta( $post_id, '_fb_template_target', $template_target );
+
 		wp_update_post( [ 'ID' => $post_id, 'post_status' => 'publish' ] );
 		return [
 			'success'   => true,

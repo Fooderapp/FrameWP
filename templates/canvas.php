@@ -9,7 +9,12 @@
 defined( 'ABSPATH' ) || exit;
 
 global $post;
-$layout_raw = get_post_meta( $post->ID, '_fb_layout', true );
+// Phase 4/5: if a detail-template override is active, load the LAYOUT from the
+// override post but keep the queried post as the binding context.
+$fb_override_id = (int) get_query_var( '_fb_template_override_id' );
+$fb_layout_post_id  = $fb_override_id > 0 ? $fb_override_id : (int) $post->ID;
+$fb_context_post_id = (int) $post->ID;
+$layout_raw = get_post_meta( $fb_layout_post_id, '_fb_layout', true );
 $html = '';
 if ( is_string( $layout_raw ) && '' !== trim( $layout_raw ) ) {
 	$layout = json_decode( $layout_raw, true );
@@ -17,12 +22,14 @@ if ( is_string( $layout_raw ) && '' !== trim( $layout_raw ) ) {
 		$layout = json_decode( wp_unslash( $layout_raw ), true );
 	}
 	if ( is_array( $layout ) ) {
-		$exporter = new FrameBuilder_Exporter( $layout, (int) $post->ID );
+		// post_id passed to the exporter is the binding context (the queried post),
+		// so field bindings resolve to the post/product being viewed.
+		$exporter = new FrameBuilder_Exporter( $layout, $fb_context_post_id );
 		$html = $exporter->generate_html();
 	}
 }
 if ( ! is_string( $html ) || '' === trim( $html ) ) {
-	$html = get_post_meta( $post->ID, '_fb_published_html', true );
+	$html = get_post_meta( $fb_layout_post_id, '_fb_published_html', true );
 }
 $global_variables_raw = get_option( '_fb_global_variables', '[]' );
 $global_variables = json_decode( $global_variables_raw, true );

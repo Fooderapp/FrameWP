@@ -190,6 +190,83 @@ class FrameBuilder_Plugin {
 		add_filter( 'the_content',            [ __CLASS__, 'frontend_content' ], 999 );
 		// Full-page canvas: bypass theme entirely on FrameBuilder pages.
 		add_filter( 'template_include',       [ __CLASS__, 'canvas_template' ] );
+		// Phase 4: route single/archive templates to marked FrameBuilder layouts.
+		add_filter( 'template_include',       [ __CLASS__, 'detail_template_include' ], 95 );
+	}
+
+	/**
+	 * Phase 4: if the current request is a single post/product/archive that
+	 * matches a FrameBuilder layout marked as its detail template, render that
+	 * layout's published HTML/CSS instead of the theme template.
+	 */
+	public static function detail_template_include( $template ) {
+		if ( is_admin() ) {
+			return $template;
+		}
+		$match_id = 0;
+
+		if ( is_singular() && ! is_page() ) {
+			$post_type = get_post_type();
+			$match_id  = self::find_layout_by_template( 'post-single', $post_type );
+			if ( ! $match_id && class_exists( 'WooCommerce' ) && $post_type === 'product' ) {
+				$match_id = self::find_layout_by_template( 'woo-product', '' );
+				if ( ! $match_id ) {
+					$match_id = self::find_layout_by_template( 'woo-product', 'product' );
+				}
+			}
+		} elseif ( is_post_type_archive() ) {
+			$match_id = self::find_layout_by_template( 'post-archive', get_query_var( 'post_type' ) );
+		} elseif ( class_exists( 'WooCommerce' ) && function_exists( 'is_shop' ) && is_shop() ) {
+			$match_id = self::find_layout_by_template( 'woo-shop', '' );
+		} elseif ( class_exists( 'WooCommerce' ) && function_exists( 'is_product_category' ) && is_product_category() ) {
+			$term     = get_queried_object();
+			$slug     = ( $term && isset( $term->slug ) ) ? $term->slug : '';
+			$match_id = self::find_layout_by_template( 'woo-category', $slug );
+			if ( ! $match_id ) {
+				$match_id = self::find_layout_by_template( 'woo-category', '' ); // "All categories" catch-all
+			}
+		}
+
+		if ( $match_id ) {
+			// Render the matched layout via the canvas template. The canvas template
+			// reads `_fb_published_html` / `_fb_published_css` for the requested ID
+			// (via query var swap below).
+			set_query_var( '_fb_template_override_id', $match_id );
+			$canvas = FB_DIR . 'templates/canvas.php';
+			if ( file_exists( $canvas ) ) {
+				return $canvas;
+			}
+		}
+
+		return $template;
+	}
+
+	/**
+	 * Find a published FrameBuilder layout marked as a detail template.
+	 *
+	 * @param string $template_type   e.g. 'post-single', 'woo-product'
+	 * @param string $template_target e.g. 'post', 'product' (may be '' for catch-all)
+	 * @return int Matching layout post ID, or 0 if none.
+	 */
+	public static function find_layout_by_template( string $template_type, string $template_target ): int {
+		$meta_query = [
+			[ 'key' => '_fb_template_type', 'value' => $template_type, 'compare' => '=' ],
+		];
+		if ( $template_target !== '' ) {
+			$meta_query[] = [ 'key' => '_fb_template_target', 'value' => $template_target, 'compare' => '=' ];
+		}
+		$query = new WP_Query( [
+			'post_type'      => 'any',
+			'post_status'    => 'publish',
+			'posts_per_page' => 1,
+			'fields'         => 'ids',
+			'no_found_rows'  => true,
+			'meta_query'     => $meta_query,
+		] );
+		if ( ! empty( $query->posts ) ) {
+			return (int) $query->posts[0];
+		}
+		return 0;
 	}
 
 	// ── Admin menu ────────────────────────────────────────────
@@ -966,11 +1043,96 @@ class FrameBuilder_Plugin {
 			'siteUrl'  => site_url(),
 			'adminUrl' => admin_url(),
 			'postId'   => isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0,
+			'woocommerce_active' => class_exists( 'WooCommerce' ),
+			'templateTargets'    => self::get_template_targets(),
+			'layouts'            => self::get_fb_layouts(),
 			'currentUser' => [
 				'displayName' => wp_get_current_user()->display_name,
 				'avatarUrl'   => get_avatar_url( get_current_user_id(), [ 'size' => 96 ] ),
 			],
 		] );
+	}
+
+	/**
+	 * Build list of available template targets for detail-page marking (Phase 4).
+	 *
+	 * @return array
+	 */
+	private static function get_template_targets(): array {
+		$post_types = [];
+		$candidates = get_post_types( [ 'public' => true ], 'objects' );
+		foreach ( $candidates as $pt ) {
+			// Skip attachment and framebuilder's own CPT
+			if ( in_array( $pt->name, [ 'attachment', 'framebuilder_layout' ], true ) ) {
+				continue;
+			}
+			$post_types[] = [
+				'slug'  => $pt->name,
+				'label' => $pt->labels->singular_name ?: $pt->name,
+			];
+		}
+
+		$product_categories = [];
+		if ( class_exists( 'WooCommerce' ) && taxonomy_exists( 'product_cat' ) ) {
+			$terms = get_terms( [
+				'taxonomy'   => 'product_cat',
+				'hide_empty' => false,
+				'number'     => 200,
+			] );
+			if ( ! is_wp_error( $terms ) ) {
+				foreach ( $terms as $term ) {
+					$product_categories[] = [
+						'slug' => $term->slug,
+						'name' => $term->name,
+					];
+				}
+			}
+		}
+
+		return [
+			'postTypes'          => $post_types,
+			'productCategories'  => $product_categories,
+		];
+	}
+
+	/**
+	 * List every WP post that has a FrameBuilder layout attached. Used by the
+	 * TopBar Pages dropdown so the user can switch between layouts without
+	 * leaving the builder.
+	 *
+	 * @return array<int,array{id:int,title:string,postType:string,editUrl:string,templateType:string,templateTarget:string,status:string}>
+	 */
+	private static function get_fb_layouts(): array {
+		$query = new WP_Query( [
+			'post_type'      => 'any',
+			'post_status'    => [ 'publish', 'draft', 'pending', 'private', 'future' ],
+			'posts_per_page' => 200,
+			'orderby'        => 'modified',
+			'order'          => 'DESC',
+			'fields'         => 'ids',
+			'no_found_rows'  => true,
+			'meta_query'     => [
+				[ 'key' => '_fb_layout', 'compare' => 'EXISTS' ],
+			],
+		] );
+		$out = [];
+		if ( ! empty( $query->posts ) ) {
+			foreach ( $query->posts as $pid ) {
+				$pid   = (int) $pid;
+				$title = get_the_title( $pid );
+				if ( $title === '' ) $title = '(untitled)';
+				$out[] = [
+					'id'             => $pid,
+					'title'          => $title,
+					'postType'       => (string) get_post_type( $pid ),
+					'status'         => (string) get_post_status( $pid ),
+					'editUrl'        => admin_url( 'admin.php?page=framebuilder&post_id=' . $pid ),
+					'templateType'   => (string) get_post_meta( $pid, '_fb_template_type', true ),
+					'templateTarget' => (string) get_post_meta( $pid, '_fb_template_target', true ),
+				];
+			}
+		}
+		return $out;
 	}
 
 	public static function filter_script_loader_tag( $tag, $handle, $src ) {

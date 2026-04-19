@@ -15,6 +15,7 @@ import { hasElement3DRotation } from '../utils/elementTransform';
 import { isFormContainerType, isFormFieldType, isFormSubmitButtonType, normalizeFormConfig } from '../domain/formModel';
 import { isLoopElementType, normalizeLoopConfig } from '../domain/loopModel';
 import { FORM_STYLE_DEFAULTS } from '../domain/formStyleModel';
+import FieldBindingPicker from '../components/FieldBindingPicker';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -3012,8 +3013,7 @@ export default function PropertiesPanel() {
   const isLoopElement = isLoopElementType(element.type);
   const supportsDirectLink = !isComponentInstanceOnPage && !isFormField && !isFormSubmitButton && !isFormContainerType(element.type);
   const formConfig = normalizeFormConfig(resolved?.formConfig);
-  const loopConfig = normalizeLoopConfig(resolved?.loop);
-  const formFieldOptions = ensureFormOptions(resolved?.fieldOptions);
+  const loopConfig = normalizeLoopConfig(resolved?.loop);  const formFieldOptions = ensureFormOptions(resolved?.fieldOptions);
   const componentMeta = isComponentInstanceOnPage ? selectedComponentMeta : null;
   const componentVariants = isComponentInstanceOnPage ? selectedComponentVariants : [];
   const componentVariantId = componentVariants.some((variant) => variant.id === element.componentInstance?.variantId)
@@ -3118,6 +3118,20 @@ export default function PropertiesPanel() {
     ? (element?.componentSourceId ?? element?.id ?? null)
     : null;
   const allowVariableBindings = activeSurface === 'page' || (activeSurface === 'component' && !isAssetStorageSurface && !!componentControlTargetId);
+  // Phase 5: WooCommerce / post field binding availability
+  const pageTemplateType = page?.templateType || 'regular';
+  const loopTemplateRoot = element ? getLoopTemplateRootForElement(element, allEls) : null;
+  const isInsideLoop = !!loopTemplateRoot;
+  const canBindFields = allowVariableBindings
+    && !isComponentInstanceOnPage
+    && (pageTemplateType !== 'regular' || isInsideLoop)
+    && (element?.type === 'text' || element?.type === 'image');
+  const bindingKindForElement = element?.type === 'image' ? 'image' : 'text';
+  const handleBindingChange = (next) => {
+    updateElementBase(element.id, { binding: next || '' });
+    pushHistory();
+  };
+  const boundFieldBinding = element?.base?.binding || '';
   const componentControlPropertyOptions = activeSurface === 'component' && !isAssetStorageSurface
     ? getComponentControlPropertyOptions(element)
     : [];
@@ -4328,6 +4342,15 @@ export default function PropertiesPanel() {
           <Section title="Text" action={<ResetBtn show={isOv('text','richTextHtml') || isSOv('color','strokeWidth','strokeColor','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration')} onReset={() => { resetOv('text','richTextHtml'); resetSOv('color','strokeWidth','strokeColor','fontFamily','fontWeight','fontStyle','fontSize','fontSizeUnit','letterSpacing','letterSpacingUnit','lineHeight','lineHeightUnit','textAlign','textDecoration'); }} />}>
             {element.type === 'text' ? (
               <>
+                {canBindFields ? (
+                  <FieldBindingPicker
+                    element={element}
+                    kind="text"
+                    templateType={pageTemplateType}
+                    inLoop={isInsideLoop}
+                    onChange={handleBindingChange}
+                  />
+                ) : null}
                 <div className="fb-prop-row" style={{ marginBottom: 8 }}>
                   <VariableBindingLabel label="Content">
                     {allowVariableBindings ? (
@@ -4349,6 +4372,8 @@ export default function PropertiesPanel() {
                       onBlur={commit}
                       rows={4}
                       style={{ width: '100%', resize: 'vertical', minHeight: 92, lineHeight: 1.4 }}
+                      disabled={!!boundFieldBinding}
+                      placeholder={boundFieldBinding ? `Bound to ${boundFieldBinding}` : 'Text'}
                     />
                   </div>
                 )}
@@ -5928,7 +5953,24 @@ export default function PropertiesPanel() {
               {fillBindingVariable ? (
                 <BoundVariableCta variable={fillBindingVariable} fallbackLabel="Fill variable" />
               ) : element.type === 'image' ? (
-                <MediaPickerButton value={resolved.src ?? ''} onChange={v => { upd('src', v); commit(); }} mediaType="image" />
+                <>
+                  {canBindFields ? (
+                    <div style={{ marginBottom: 6 }}>
+                      <FieldBindingPicker
+                        element={element}
+                        kind="image"
+                        templateType={pageTemplateType}
+                        inLoop={isInsideLoop}
+                        onChange={handleBindingChange}
+                      />
+                    </div>
+                  ) : null}
+                  {boundFieldBinding ? (
+                    <div className="fb-prop-value" style={{ opacity: 0.7 }}>Bound to {boundFieldBinding}</div>
+                  ) : (
+                    <MediaPickerButton value={resolved.src ?? ''} onChange={v => { upd('src', v); commit(); }} mediaType="image" />
+                  )}
+                </>
               ) : (
                 <FillPicker value={s.backgroundColor ?? '#ffffff'} onChange={v => { updS('backgroundColor', v); commit(); }} />
               )}

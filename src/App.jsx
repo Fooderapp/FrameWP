@@ -8,6 +8,7 @@ import ComponentEditorOverlay from './components/ComponentEditorOverlay';
 import IconLibraryModal from './components/IconLibraryModal';
 import FlowEditorModal from './components/FlowEditorModal';
 import VariablesModal from './components/VariablesModal';
+import PageSettingsModal from './components/PageSettingsModal';
 import BottomToolbar from './components/BottomToolbar';
 import AtomLogo from './components/AtomLogo';
 import { ICON_PACK_MANIFEST, warmIconPackPreviewCache } from './components/iconCatalog';
@@ -279,6 +280,7 @@ export default function App() {
       {isReadOnly ? null : <BottomToolbar />}
       {flowEditorState.open ? <FlowEditorModal /> : null}
       {variablesModalOpen ? <VariablesModal /> : null}
+      <PageSettingsModal />
       {iconLibraryModal ? (
         <IconLibraryModal
           onClose={closeIconLibraryModal}
