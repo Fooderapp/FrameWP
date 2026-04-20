@@ -1046,6 +1046,7 @@ class FrameBuilder_Plugin {
 			'woocommerce_active' => class_exists( 'WooCommerce' ),
 			'templateTargets'    => self::get_template_targets(),
 			'layouts'            => self::get_fb_layouts(),
+			'aiEnabled'          => FrameBuilder_Settings::is_ai_enabled(),
 			'currentUser' => [
 				'displayName' => wp_get_current_user()->display_name,
 				'avatarUrl'   => get_avatar_url( get_current_user_id(), [ 'size' => 96 ] ),

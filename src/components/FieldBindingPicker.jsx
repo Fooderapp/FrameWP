@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { useEditorStore } from '../store/editorStore';
 
 /* Phase 5: WooCommerce / Post field binding picker.
  *
@@ -29,7 +30,7 @@ const PRODUCT_FIELDS = [
   { value: 'product.featured_image',    label: 'Featured image',    kind: 'image' },
 ];
 
-export function getAvailableBindingOptions({ templateType, inLoop, kind }) {
+export function getAvailableBindingOptions({ templateType, inLoop, kind, formTargets }) {
   const groups = [];
   const wooActive = !!(window.fbData?.woocommerce_active);
   const isPostCtx = templateType === 'post-single' || templateType === 'post-archive' || inLoop;
@@ -43,14 +44,36 @@ export function getAvailableBindingOptions({ templateType, inLoop, kind }) {
     const items = kind ? PRODUCT_FIELDS.filter((o) => o.kind === kind) : PRODUCT_FIELDS;
     if (items.length) groups.push({ label: 'Product', items });
   }
+
+  const targets = formTargets || {};
+  if (isPostCtx && Array.isArray(targets.post?.acfFields) && targets.post.acfFields.length) {
+    const acfItems = targets.post.acfFields
+      .filter((f) => {
+        if (!kind) return true;
+        return kind === 'image' ? f.type === 'image' : f.type !== 'image';
+      })
+      .map((f) => ({ value: `acf.${f.name}`, label: f.label || f.name, kind: f.type === 'image' ? 'image' : 'text' }));
+    if (acfItems.length) groups.push({ label: 'ACF (Post)', items: acfItems });
+  }
+  if (isProductCtx && wooActive && Array.isArray(targets.product?.acfFields) && targets.product.acfFields.length) {
+    const acfItems = targets.product.acfFields
+      .filter((f) => {
+        if (!kind) return true;
+        return kind === 'image' ? f.type === 'image' : f.type !== 'image';
+      })
+      .map((f) => ({ value: `acf.${f.name}`, label: f.label || f.name, kind: f.type === 'image' ? 'image' : 'text' }));
+    if (acfItems.length) groups.push({ label: 'ACF (Product)', items: acfItems });
+  }
+
   return groups;
 }
 
 export default function FieldBindingPicker({ element, kind, templateType, inLoop, onChange }) {
   const binding = element?.base?.binding || '';
+  const formTargets = useEditorStore((s) => s.variableSources?.formTargets);
   const groups = useMemo(
-    () => getAvailableBindingOptions({ templateType, inLoop, kind }),
-    [templateType, inLoop, kind],
+    () => getAvailableBindingOptions({ templateType, inLoop, kind, formTargets }),
+    [templateType, inLoop, kind, formTargets],
   );
   const hasAny = groups.some((g) => g.items.length > 0);
   if (!hasAny) return null;

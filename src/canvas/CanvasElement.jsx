@@ -395,6 +395,10 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
     : ['nw','n','ne','e','se','s','sw','w'];
   const inlineResizeHandles = resizeHandles;
   const resolvedRichTextHtml = el?.type === 'text' ? getResolvedRichTextHtml(resolved, 'Text') : '';
+  const fieldBinding = el?.base?.binding || '';
+  const displayRichTextHtml = fieldBinding && el?.type === 'text'
+    ? plainTextToRichTextHtml(`[${fieldBinding}]`)
+    : resolvedRichTextHtml;
   const handleRichTextDraftChange = (nextState) => {
     syncedTextDraftRef.current = nextState;
     updateElementLayout(id, bpId, nextState);
@@ -621,6 +625,7 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
     if (el.type === 'text') {
       e.stopPropagation();
       setSelection({ elementId: id, bpId });
+      if (fieldBinding) return;
       const initialText = resolved?.text || 'Text';
       const initialRichTextHtml = resolvedRichTextHtml || plainTextToRichTextHtml(initialText);
       textEditInitialRef.current = { text: initialText, richTextHtml: initialRichTextHtml };
@@ -1160,6 +1165,24 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
       ) : null}
       {/* Image element content */}
       {el.type === 'image' && (() => {
+        if (fieldBinding) {
+          return (
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'rgba(120,120,140,0.6)', fontSize: 11, pointerEvents: 'none',
+              border: '1.5px dashed rgba(120,120,160,0.35)', borderRadius: 'inherit',
+              gap: 4, flexDirection: 'column', fontStyle: 'italic',
+            }}>
+              <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <rect x="1" y="2" width="14" height="12" rx="1.5"/>
+                <circle cx="5.5" cy="6.5" r="1.2" fill="currentColor" stroke="none"/>
+                <path d="M1 12l4-3.5 3 2.5 2.5-2 4.5 4"/>
+              </svg>
+              <span>[{fieldBinding}]</span>
+            </div>
+          );
+        }
         const src = getMediaUrl(resolved.src);
         return src
           ? <img
@@ -1891,10 +1914,10 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
               aria-hidden="true"
               className="fb-text-content fb-text-content--outline-preview"
               style={textStrokeLayerStyle}
-              dangerouslySetInnerHTML={{ __html: resolvedRichTextHtml }}
+              dangerouslySetInnerHTML={{ __html: displayRichTextHtml }}
             />
           ) : null}
-          {isEditingText ? (
+          {isEditingText && !fieldBinding ? (
             <RichTextEditor
               value={textEditInitialRef.current.richTextHtml}
               style={textStyle}
@@ -1909,10 +1932,10 @@ function CanvasElement({ elementId, bpId, isSelected, isDropTarget, dropTargetId
           ) : (
             <div
               className="fb-text-content"
-              style={textStyle}
+              style={fieldBinding ? { ...textStyle, opacity: 0.55, fontStyle: 'italic' } : textStyle}
               draggable={false}
               suppressContentEditableWarning
-              dangerouslySetInnerHTML={{ __html: resolvedRichTextHtml }}
+              dangerouslySetInnerHTML={{ __html: displayRichTextHtml }}
             />
           )}
         </>

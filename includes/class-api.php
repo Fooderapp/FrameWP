@@ -59,6 +59,18 @@ class FrameBuilder_API {
 		];
 	}
 
+	private static function format_price_plain( $price ): string {
+		if ( $price === '' || $price === null || ! function_exists( 'wc_get_price_decimals' ) ) {
+			return '';
+		}
+		return number_format(
+			(float) $price,
+			wc_get_price_decimals(),
+			wc_get_price_decimal_separator(),
+			wc_get_price_thousand_separator()
+		);
+	}
+
 	public static function init() {
 		add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
 		add_action( 'wp_ajax_framebuilder_get_layout', [ __CLASS__, 'ajax_get_layout' ] );
@@ -732,6 +744,33 @@ class FrameBuilder_API {
 				[ 'key' => 'stock_quantity', 'label' => 'Stock Quantity' ],
 			],
 		];
+	}
+
+	private static function collect_acf_values( int $post_id, array $acf_fields ): array {
+		$values = [];
+		if ( ! function_exists( 'get_field' ) || empty( $acf_fields ) ) {
+			return $values;
+		}
+		foreach ( $acf_fields as $field ) {
+			$name = $field['name'] ?? '';
+			$type = $field['type'] ?? 'text';
+			if ( '' === $name ) continue;
+			if ( in_array( $type, [ 'repeater', 'group', 'flexible_content', 'clone', 'google_map', 'gallery' ], true ) ) continue;
+			$raw = get_field( $name, $post_id, true );
+			if ( $type === 'image' ) {
+				if ( is_array( $raw ) && ! empty( $raw['url'] ) ) {
+					$values[ $name ] = [ 'kind' => 'image', 'value' => esc_url_raw( $raw['url'] ) ];
+				} elseif ( is_numeric( $raw ) ) {
+					$url = wp_get_attachment_url( (int) $raw );
+					$values[ $name ] = [ 'kind' => 'image', 'value' => $url ? esc_url_raw( $url ) : '' ];
+				} elseif ( is_string( $raw ) ) {
+					$values[ $name ] = [ 'kind' => 'image', 'value' => esc_url_raw( $raw ) ];
+				}
+			} elseif ( is_scalar( $raw ) ) {
+				$values[ $name ] = [ 'kind' => 'text', 'value' => (string) $raw ];
+			}
+		}
+		return $values;
 	}
 
 	private static function flatten_acf_fields( array $fields, array &$flattened ): void {
@@ -2469,22 +2508,40 @@ class FrameBuilder_API {
 				if ( function_exists( 'wc_get_product' ) ) {
 					$product = wc_get_product( $post->ID );
 					if ( $product ) {
-						$item['price'] = wp_strip_all_tags( html_entity_decode( $product->get_price_html(), ENT_QUOTES, 'UTF-8' ) );
+						$item['price'] = self::format_price_plain( $product->get_price() );
+						$rp = $product->get_regular_price();
+						if ( $rp !== '' && $rp !== null ) {
+							$item['regular_price'] = self::format_price_plain( $rp );
+						}
+						$sp = $product->get_sale_price();
+						if ( $sp !== '' && $sp !== null ) {
+							$item['sale_price'] = self::format_price_plain( $sp );
+						}
 					}
 				}
 				return $item;
 			}, $product_posts );
 		}
 
+		$post_acf_fields = self::get_acf_fields_for_filter( [ 'post_type' => 'post' ] );
+		$product_acf_fields = post_type_exists( 'product' ) ? self::get_acf_fields_for_filter( [ 'post_type' => 'product' ] ) : [];
+
 		return [
 			'success'  => true,
 			'pages'    => array_map( static function( $post ) {
 				return self::map_variable_source_post( $post, 'page' );
 			}, $pages ),
-			'posts'    => array_map( static function( $post ) {
-				return self::map_variable_source_post( $post, 'post' );
+			'posts'    => array_map( static function( $post ) use ( $post_acf_fields ) {
+				$item = self::map_variable_source_post( $post, 'post' );
+				$item['acf'] = self::collect_acf_values( $post->ID, $post_acf_fields );
+				return $item;
 			}, $posts ),
-			'products' => $products,
+			'products' => array_map( static function( $item ) use ( $product_acf_fields ) {
+				if ( is_array( $item ) && ! empty( $item['id'] ) ) {
+					$item['acf'] = self::collect_acf_values( (int) $item['id'], $product_acf_fields );
+				}
+				return $item;
+			}, $products ),
 			'postCategories' => is_array( $post_categories ) ? array_map( static function( $term ) {
 				return [
 					'id' => (int) $term->term_id,

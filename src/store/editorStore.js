@@ -2442,6 +2442,42 @@ function buildLoopItemPreviewVariables(loopElement, variableSources = {}, pageVa
       value: sample.price,
     });
   }
+  if (typeof sample.regular_price === 'string' && sample.regular_price.trim()) {
+    variableEntries.push({
+      id: 'loop-item-regular-price',
+      scope: 'loop-item',
+      type: 'string',
+      name: 'Item Regular Price',
+      category: 'Loop Item',
+      value: sample.regular_price,
+    });
+  }
+  if (typeof sample.sale_price === 'string' && sample.sale_price.trim()) {
+    variableEntries.push({
+      id: 'loop-item-sale-price',
+      scope: 'loop-item',
+      type: 'string',
+      name: 'Item Sale Price',
+      category: 'Loop Item',
+      value: sample.sale_price,
+    });
+  }
+
+  if (sample.acf && typeof sample.acf === 'object') {
+    for (const [fieldName, fieldData] of Object.entries(sample.acf)) {
+      if (!fieldData || typeof fieldData !== 'object') continue;
+      const val = fieldData.value;
+      if (val == null || val === '') continue;
+      variableEntries.push({
+        id: `loop-item-acf-${fieldName}`,
+        scope: 'loop-item',
+        type: fieldData.kind === 'image' ? 'image' : 'string',
+        name: `ACF: ${fieldName}`,
+        category: 'Loop Item (ACF)',
+        value: val,
+      });
+    }
+  }
 
   return normalizeVariableList(variableEntries, 'loop-item');
 }
@@ -2596,7 +2632,46 @@ export function createForm(x = 80, y = 80, name) {
   };
 }
 
+function computeFormFieldMinH(type, config = {}) {
+  const fontSize = config.fontSize ?? FORM_STYLE_DEFAULTS.fontSize;       // 14
+  const lineHeight = config.lineHeight ?? FORM_STYLE_DEFAULTS.lineHeight; // 1.4
+  const gap = config.gap ?? FORM_STYLE_DEFAULTS.fieldGap;                 // 8
+  const padT = config.paddingTop ?? FORM_STYLE_DEFAULTS.fieldPaddingTop;  // 14
+  const padB = config.paddingBottom ?? FORM_STYLE_DEFAULTS.fieldPaddingBottom; // 14
+  const labelFontSize = Math.max(10, Math.round(fontSize * 0.86));
+  const labelLineH = Math.ceil(labelFontSize * lineHeight);               // ~17
+  const controlMinH = Math.max(36, Math.ceil(fontSize * lineHeight + padT + padB)); // ~48
+  const helperLineH = config.helperText ? Math.ceil(Math.max(11, fontSize - 1) * lineHeight) + gap : 0;
+
+  switch (type) {
+    case 'checkbox':
+      // checkbox control (16px) + label sits inline, no stacking
+      return Math.max(28, (FORM_STYLE_DEFAULTS.checkboxSize || 16) + gap) + helperLineH;
+    case 'radio-group': {
+      const optionCount = Math.max(1, (config.fieldOptions ?? []).length || 3);
+      const optionLineH = Math.ceil(Math.max(FORM_STYLE_DEFAULTS.checkboxSize || 16, fontSize * lineHeight));
+      return labelLineH + gap + optionCount * (optionLineH + gap) + helperLineH;
+    }
+    case 'textarea-field':
+      return labelLineH + gap + Math.max(96, controlMinH) + helperLineH;
+    case 'rich-text-editor':
+      // toolbar (~36) + editor area
+      return labelLineH + gap + 36 + Math.max(96, controlMinH) + helperLineH;
+    case 'file-upload':
+      // label + dropzone (3 text lines + padding)
+      return labelLineH + gap + padT + padB + 3 * Math.ceil(fontSize * lineHeight) + 2 * gap + helperLineH;
+    case 'captcha':
+      // just two centered text lines + padding
+      return padT + padB + 2 * Math.ceil(fontSize * lineHeight) + gap;
+    default:
+      // text-field, dropdown: label + gap + input control
+      return labelLineH + gap + controlMinH + helperLineH;
+  }
+}
+
 function createBaseFormField(type, x = 80, y = 80, name, config = {}) {
+  const dynamicMinH = computeFormFieldMinH(type, config);
+  const height = Math.max(config.height ?? 48, dynamicMinH);
   return {
     id: `${getElementIdPrefix(type)}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     type,
@@ -2607,7 +2682,7 @@ function createBaseFormField(type, x = 80, y = 80, name, config = {}) {
       x,
       y,
       width: config.width ?? 280,
-      height: config.height ?? 48,
+      height,
       rotation: 0,
       locked: false,
       hidden: false,
@@ -2616,9 +2691,9 @@ function createBaseFormField(type, x = 80, y = 80, name, config = {}) {
       positionType: 'relative',
       absoluteInLayout: false,
       lockAspectRatio: false,
-      minW: null,
+      minW: config.minW ?? 120,
       maxW: null,
-      minH: null,
+      minH: config.minH ?? dynamicMinH,
       maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
       fieldName: config.fieldName ?? '',
@@ -2769,9 +2844,9 @@ export function createFormSubmitButton(x = 80, y = 80, name) {
       positionType: 'relative',
       absoluteInLayout: false,
       lockAspectRatio: false,
-      minW: null,
+      minW: 80,
       maxW: null,
-      minH: null,
+      minH: 40,
       maxH: null,
       constraints: { top: true, left: true, right: false, bottom: false },
       label: 'Submit',
@@ -4139,6 +4214,63 @@ export const useEditorStore = create((set, get) => {
     setTextStyles: (styles) => set({ textStyles: Array.isArray(styles) ? styles : [] }),
     elementStyles: [],
     setElementStyles: (styles) => set({ elementStyles: Array.isArray(styles) ? styles : [] }),
+
+    // ── Asset bindings (global style propagation) ─────────
+    setElementAssetBindings(elementId, newBindings) {
+      withPage(els => els.map(el => {
+        if (el.id !== elementId) return el;
+        return { ...el, assetBindings: { ...(el.assetBindings ?? {}), ...newBindings } };
+      }));
+    },
+
+    propagateAssetUpdate(assetType, assetId, updateData) {
+      set(state => {
+        const updateElements = (elements) => {
+          let changed = false;
+          const next = elements.map(el => {
+            const ab = el.assetBindings;
+            if (!ab || typeof ab !== 'object') return el;
+            const matchingKeys = Object.entries(ab)
+              .filter(([, b]) => b.assetType === assetType && b.assetId === assetId)
+              .map(([key]) => key);
+            if (!matchingKeys.length) return el;
+            changed = true;
+            const nextStyles = { ...(el.base?.styles ?? {}) };
+            matchingKeys.forEach(key => {
+              const styleProp = key.replace('styles.', '');
+              if (assetType === 'color' && typeof updateData === 'string') {
+                nextStyles[styleProp] = updateData;
+              } else if (typeof updateData === 'object' && updateData !== null) {
+                if (updateData[styleProp] !== undefined) {
+                  nextStyles[styleProp] = updateData[styleProp];
+                }
+              }
+            });
+            return { ...el, base: { ...el.base, styles: nextStyles } };
+          });
+          return changed ? next : elements;
+        };
+
+        const nextPages = state.pages.map(page => {
+          const nextElements = updateElements(page.elements ?? []);
+          if (nextElements === (page.elements ?? [])) return page;
+          return { ...page, elements: nextElements };
+        });
+
+        let componentEditor = state.componentEditor;
+        if (componentEditor?.isOpen && componentEditor?.page?.elements) {
+          const nextCompElements = updateElements(componentEditor.page.elements);
+          if (nextCompElements !== componentEditor.page.elements) {
+            componentEditor = {
+              ...componentEditor,
+              page: { ...componentEditor.page, elements: nextCompElements },
+            };
+          }
+        }
+
+        return { pages: nextPages, componentEditor };
+      });
+    },
 
     // ── Variables (page + site-wide) ──────────────────────
     globalVariables: [],
@@ -5901,9 +6033,20 @@ export const useEditorStore = create((set, get) => {
       withPage(els => els.map(el => {
         if (el.id !== elementId) return el;
         const textFieldUpdates = getTextStyleDrivenFieldUpdates(el, bpId, styleUpdates);
+        // Clear asset bindings for any style keys being manually overridden
+        let nextAssetBindings = el.assetBindings;
+        if (nextAssetBindings && styleUpdates) {
+          const keysToCheck = Object.keys(styleUpdates).map(k => `styles.${k}`);
+          const matchingAny = keysToCheck.some(k => nextAssetBindings[k]);
+          if (matchingAny) {
+            nextAssetBindings = { ...nextAssetBindings };
+            keysToCheck.forEach(k => { delete nextAssetBindings[k]; });
+          }
+        }
         if (bpId === 'desktop') {
           return pruneElementBreakpointOverrides({
             ...el,
+            assetBindings: nextAssetBindings,
             base: {
               ...el.base,
               ...textFieldUpdates,

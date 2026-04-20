@@ -18,6 +18,10 @@ define( 'FB_VERSION', '0.8.52' );
 require_once FB_DIR . 'includes/class-plugin.php';
 require_once FB_DIR . 'includes/class-api.php';
 require_once FB_DIR . 'includes/class-exporter.php';
+require_once FB_DIR . 'includes/class-settings.php';
+require_once FB_DIR . 'includes/class-ai.php';
 
 FrameBuilder_Plugin::init();
 FrameBuilder_API::init();
+FrameBuilder_Settings::init();
+FrameBuilder_AI::init();

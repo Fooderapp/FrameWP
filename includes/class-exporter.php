@@ -48,6 +48,18 @@ class FrameBuilder_Exporter {
 	private array $cursor_components_used = [];
 	/** Whether any element uses an image cursor — triggers runtime JS emission. */
 	private bool $has_image_cursors = false;
+
+	private function format_price_plain( $price ): string {
+		if ( $price === '' || $price === null || ! function_exists( 'wc_get_price_decimals' ) ) {
+			return '';
+		}
+		return number_format(
+			(float) $price,
+			wc_get_price_decimals(),
+			wc_get_price_decimal_separator(),
+			wc_get_price_thousand_separator()
+		);
+	}
 	/** @var array<string,bool> Cascaded smooth-scroll setting per breakpoint */
 	private array $page_smooth_scroll = [ 'desktop' => false, 'tablet' => false, 'mobile' => false ];
 
@@ -924,6 +936,24 @@ class FrameBuilder_Exporter {
 			return $out;
 		}
 
+		if ( $source === 'acf' && function_exists( 'get_field' ) ) {
+			$raw = get_field( $field, $pid, true );
+			if ( is_array( $raw ) && ! empty( $raw['url'] ) ) {
+				$out['kind'] = 'image';
+				$out['src'] = esc_url_raw( $raw['url'] );
+			} elseif ( is_scalar( $raw ) ) {
+				$str = (string) $raw;
+				if ( preg_match( '/^https?:\/\/.+\.(jpe?g|png|gif|webp|svg)$/i', $str ) ) {
+					$out['kind'] = 'image';
+					$out['src'] = esc_url_raw( $str );
+				} else {
+					$out['kind'] = 'text';
+					$out['text'] = $str;
+				}
+			}
+			return $out;
+		}
+
 		if ( $source === 'product' && function_exists( 'wc_get_product' ) ) {
 			$product = wc_get_product( $pid );
 			if ( ! $product ) return $out;
@@ -934,20 +964,17 @@ class FrameBuilder_Exporter {
 					break;
 				case 'price':
 					$out['kind'] = 'text';
-					$out['text'] = $product->get_price_html();
-					$out['html'] = true;
+					$out['text'] = $this->format_price_plain( $product->get_price() );
 					break;
 				case 'regular_price':
 					$out['kind'] = 'text';
 					$rp = $product->get_regular_price();
-					$out['text'] = ( $rp !== '' && $rp !== null ) ? wc_price( (float) $rp ) : '';
-					$out['html'] = true;
+					$out['text'] = ( $rp !== '' && $rp !== null ) ? $this->format_price_plain( $rp ) : '';
 					break;
 				case 'sale_price':
 					$out['kind'] = 'text';
 					$sp = $product->get_sale_price();
-					$out['text'] = ( $sp !== '' && $sp !== null ) ? wc_price( (float) $sp ) : '';
-					$out['html'] = true;
+					$out['text'] = ( $sp !== '' && $sp !== null ) ? $this->format_price_plain( $sp ) : '';
 					break;
 				case 'sku':
 					$out['kind'] = 'text';
@@ -2982,7 +3009,15 @@ class FrameBuilder_Exporter {
 		if ( 'product' === $post_type && function_exists( 'wc_get_product' ) ) {
 			$product = wc_get_product( $post->ID );
 			if ( $product ) {
-				$item['price'] = wp_strip_all_tags( html_entity_decode( $product->get_price_html(), ENT_QUOTES, 'UTF-8' ) );
+				$item['price'] = $this->format_price_plain( $product->get_price() );
+				$rp = $product->get_regular_price();
+				if ( $rp !== '' && $rp !== null ) {
+					$item['regular_price'] = $this->format_price_plain( $rp );
+				}
+				$sp = $product->get_sale_price();
+				if ( $sp !== '' && $sp !== null ) {
+					$item['sale_price'] = $this->format_price_plain( $sp );
+				}
 			}
 		}
 		return $item;
@@ -3149,6 +3184,26 @@ class FrameBuilder_Exporter {
 				'value' => $item['price'],
 			];
 		}
+		if ( isset( $item['regular_price'] ) && is_string( $item['regular_price'] ) && '' !== trim( $item['regular_price'] ) ) {
+			$variables[] = [
+				'id' => 'loop-item-regular-price',
+				'scope' => 'loop-item',
+				'type' => 'string',
+				'name' => 'Item Regular Price',
+				'category' => 'Loop Item',
+				'value' => $item['regular_price'],
+			];
+		}
+		if ( isset( $item['sale_price'] ) && is_string( $item['sale_price'] ) && '' !== trim( $item['sale_price'] ) ) {
+			$variables[] = [
+				'id' => 'loop-item-sale-price',
+				'scope' => 'loop-item',
+				'type' => 'string',
+				'name' => 'Item Sale Price',
+				'category' => 'Loop Item',
+				'value' => $item['sale_price'],
+			];
+		}
 
 		return $variables;
 	}
@@ -3162,6 +3217,8 @@ class FrameBuilder_Exporter {
 			'date' => 'data-fb-loop-item-date',
 			'image' => 'data-fb-loop-item-image',
 			'price' => 'data-fb-loop-item-price',
+			'regular_price' => 'data-fb-loop-item-regular-price',
+			'sale_price' => 'data-fb-loop-item-sale-price',
 		];
 
 		foreach ( $attr_map as $key => $attr_name ) {
@@ -4122,7 +4179,9 @@ class FrameBuilder_Exporter {
 			'loop-item-excerpt': 'fbLoopItemExcerpt',
 			'loop-item-date': 'fbLoopItemDate',
 			'loop-item-image': 'fbLoopItemImage',
-			'loop-item-price': 'fbLoopItemPrice'
+			'loop-item-price': 'fbLoopItemPrice',
+			'loop-item-regular-price': 'fbLoopItemRegularPrice',
+			'loop-item-sale-price': 'fbLoopItemSalePrice'
 		};
 		var datasetKey = keyMap[variableId] || '';
 		if (!datasetKey) return null;

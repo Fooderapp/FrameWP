@@ -9171,7 +9171,7 @@ html, body, #framebuilder-root {
 .fb-app .fb-layer-item {
   border: 0 !important;
   background: rgba(255,255,255,0.025) !important;
-  border-radius: 12px !important;
+  border-radius: 14px !important;
   box-shadow: none !important;
 }
 
@@ -11139,3 +11139,483 @@ body > .fb-shadow-popup .fb-shadow-popup__actions {
 }
 .fb-asset-row:hover .fb-asset-row__edit-btn { opacity: 1; }
 .fb-asset-row__edit-btn:hover { background: rgba(255,255,255,0.08); color: #c4b5fd; }
+
+/* ── AI Chat Panel ──────────────────────────────────────── */
+.fb-topbar__ai-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 12px 5px 10px; border-radius: 8px;
+  background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+  color: #fff; font-size: 12px; font-weight: 600;
+  border: none; cursor: pointer;
+  transition: box-shadow 0.15s, opacity 0.15s;
+}
+.fb-topbar__ai-btn:hover { box-shadow: 0 0 0 2px rgba(124,58,237,0.35); }
+.fb-topbar__ai-btn.is-active { box-shadow: 0 0 0 2px rgba(124,58,237,0.6); }
+.fb-topbar__ai-btn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+.fb-topbar__ai-btn svg { flex-shrink: 0; }
+
+.fb-bottom-toolbar__separator {
+  width: 1px; height: 20px; background: rgba(255,255,255,0.1); margin: 0 2px; flex-shrink: 0;
+}
+
+/* ── AI toolbar button: green mesh gradient, no glow ───── */
+/* ::before carries the animated mesh; z-index stacking keeps it behind
+   the label text but above any parent bg.  We isolate the stacking
+   context so the pseudo-element's z-index works within the button. */
+.fb-app button.fb-bottom-toolbar__ai-tool,
+.fb-app .fb-bottom-toolbar__ai-tool,
+button.fb-bottom-toolbar__ai-tool,
+.fb-bottom-toolbar__ai-tool {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-width: 36px !important;
+  min-height: 36px !important;
+  padding: 0 12px !important;
+  border-radius: 14px !important;
+  color: #fff !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  transition: transform 0.18s, filter 0.18s;
+}
+.fb-app button.fb-bottom-toolbar__ai-tool::before,
+button.fb-bottom-toolbar__ai-tool::before,
+.fb-bottom-toolbar__ai-tool::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background-color: #0a1f0a;
+  background-image:
+    radial-gradient(circle at 25% 30%, hsla(130,70%,45%,1) 0px, transparent 50%),
+    radial-gradient(circle at 75% 70%, hsla(155,65%,40%,1) 0px, transparent 50%),
+    radial-gradient(circle at 50% 50%, hsla(140,80%,55%,1) 0px, transparent 50%),
+    radial-gradient(circle at 20% 80%, hsla(170,70%,45%,1) 0px, transparent 50%),
+    radial-gradient(circle at 80% 20%, hsla(100,65%,50%,1) 0px, transparent 50%),
+    radial-gradient(circle at 40% 60%, hsla(120,75%,35%,1) 0px, transparent 50%);
+  background-size: 150% 150%;
+  animation: fb-ai-mesh-morph 8s ease-in-out infinite;
+}
+/* Ensure all children (icon span, label span) sit above the mesh */
+.fb-app button.fb-bottom-toolbar__ai-tool > *,
+button.fb-bottom-toolbar__ai-tool > *,
+.fb-bottom-toolbar__ai-tool > * {
+  position: relative;
+  z-index: 1;
+}
+.fb-app button.fb-bottom-toolbar__ai-tool:hover,
+.fb-app .fb-bottom-toolbar__ai-tool:hover,
+button.fb-bottom-toolbar__ai-tool:hover,
+.fb-bottom-toolbar__ai-tool:hover {
+  transform: translateY(-1px) scale(1.04);
+  filter: brightness(1.12);
+}
+.fb-app button.fb-bottom-toolbar__ai-tool:hover::before,
+button.fb-bottom-toolbar__ai-tool:hover::before {
+  animation: fb-ai-mesh-morph 5s ease-in-out infinite;
+}
+.fb-app button.fb-bottom-toolbar__ai-tool.is-active,
+.fb-app .fb-bottom-toolbar__ai-tool.is-active,
+button.fb-bottom-toolbar__ai-tool.is-active,
+.fb-bottom-toolbar__ai-tool.is-active {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  color: #fff !important;
+}
+.fb-app button.fb-bottom-toolbar__ai-tool.is-active::before,
+button.fb-bottom-toolbar__ai-tool.is-active::before {
+  animation: fb-ai-mesh-morph 6s ease-in-out infinite;
+}
+
+@keyframes fb-ai-mesh-morph {
+  0%   { background-size: 100% 100%; }
+  10%  { background-size: 150% 120%; }
+  20%  { background-size: 180% 160%; }
+  30%  { background-size: 130% 140%; }
+  40%  { background-size: 160% 110%; }
+  50%  { background-size: 200% 150%; }
+  60%  { background-size: 170% 180%; }
+  70%  { background-size: 120% 130%; }
+  80%  { background-size: 140% 160%; }
+  90%  { background-size: 160% 120%; }
+  100% { background-size: 100% 100%; }
+}
+
+/* ── AI-mode: dim overlay on canvas ──────────────────────── */
+body.fb-ai-has-selection .fb-canvas-container::after {
+  content: '';
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 9998;
+  pointer-events: none;
+  animation: fb-ai-dim-in 0.3s ease-out;
+}
+@keyframes fb-ai-dim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+/* Selected elements punch through the dim */
+body.fb-ai-mode .fb-el--selected {
+  z-index: 9999 !important;
+  position: relative;
+}
+
+/* ── AI-mode: hide resize handles & overlays ─────────────── */
+body.fb-ai-mode .fb-sel-overlay-svg rect:not([fill="none"]),
+body.fb-ai-mode .fb-sel-overlay-svg circle:not([fill="none"]),
+body.fb-ai-mode .fb-el__handle,
+body.fb-ai-mode .fb-sel-overlay__handle,
+body.fb-ai-mode .fb-constraint-guide,
+body.fb-ai-mode .fb-sel-overlay__rotate-handle {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* ── AI-mode: mesh-gradient breathing glow on selected elements ──────── */
+/* Overflow:hidden blocks ::before/::after on canvas els, so we animate
+   outline + multi-layer box-shadow that morphs color/spread to create
+   a mesh-gradient-like living glow around the selection.                */
+
+body.fb-ai-mode .fb-el--selected {
+  outline: calc(2.5px * var(--inv-scale, 1)) solid #84d26c !important;
+  outline-offset: calc(1px * var(--inv-scale, 1)) !important;
+  z-index: 9999 !important;
+  position: relative;
+  animation: fb-ai-sel-mesh 6s ease-in-out infinite !important;
+}
+
+@keyframes fb-ai-sel-mesh {
+  0% {
+    outline-color: #5c9447;
+    box-shadow:
+      0 0 calc(12px * var(--inv-scale,1)) calc(2px * var(--inv-scale,1)) rgba(92,148,71,0.55),
+      0 0 calc(36px * var(--inv-scale,1)) calc(6px * var(--inv-scale,1)) rgba(92,148,71,0.25),
+      0 0 calc(60px * var(--inv-scale,1)) calc(10px * var(--inv-scale,1)) rgba(92,148,71,0.10) !important;
+  }
+  20% {
+    outline-color: #84d26c;
+    box-shadow:
+      0 0 calc(16px * var(--inv-scale,1)) calc(4px * var(--inv-scale,1)) rgba(132,210,108,0.60),
+      0 0 calc(44px * var(--inv-scale,1)) calc(8px * var(--inv-scale,1)) rgba(132,210,108,0.30),
+      0 0 calc(72px * var(--inv-scale,1)) calc(14px * var(--inv-scale,1)) rgba(132,210,108,0.12) !important;
+  }
+  40% {
+    outline-color: #4ade80;
+    box-shadow:
+      0 0 calc(20px * var(--inv-scale,1)) calc(5px * var(--inv-scale,1)) rgba(74,222,128,0.55),
+      0 0 calc(48px * var(--inv-scale,1)) calc(10px * var(--inv-scale,1)) rgba(74,222,128,0.28),
+      0 0 calc(80px * var(--inv-scale,1)) calc(16px * var(--inv-scale,1)) rgba(74,222,128,0.10) !important;
+  }
+  60% {
+    outline-color: #22d3ee;
+    box-shadow:
+      0 0 calc(22px * var(--inv-scale,1)) calc(6px * var(--inv-scale,1)) rgba(34,211,238,0.55),
+      0 0 calc(52px * var(--inv-scale,1)) calc(12px * var(--inv-scale,1)) rgba(34,211,238,0.28),
+      0 0 calc(84px * var(--inv-scale,1)) calc(18px * var(--inv-scale,1)) rgba(34,211,238,0.10) !important;
+  }
+  80% {
+    outline-color: #4ade80;
+    box-shadow:
+      0 0 calc(18px * var(--inv-scale,1)) calc(4px * var(--inv-scale,1)) rgba(74,222,128,0.58),
+      0 0 calc(46px * var(--inv-scale,1)) calc(9px * var(--inv-scale,1)) rgba(74,222,128,0.28),
+      0 0 calc(76px * var(--inv-scale,1)) calc(14px * var(--inv-scale,1)) rgba(74,222,128,0.10) !important;
+  }
+  100% {
+    outline-color: #5c9447;
+    box-shadow:
+      0 0 calc(12px * var(--inv-scale,1)) calc(2px * var(--inv-scale,1)) rgba(92,148,71,0.55),
+      0 0 calc(36px * var(--inv-scale,1)) calc(6px * var(--inv-scale,1)) rgba(92,148,71,0.25),
+      0 0 calc(60px * var(--inv-scale,1)) calc(10px * var(--inv-scale,1)) rgba(92,148,71,0.10) !important;
+  }
+}
+
+/* Override the duplicated rules */
+body.fb-ai-mode .fb-app .fb-el--selected,
+body.fb-ai-mode .fb-el--selected {
+  outline: calc(2.5px * var(--inv-scale, 1)) solid #84d26c !important;
+  outline-offset: calc(1px * var(--inv-scale, 1)) !important;
+  animation: fb-ai-sel-mesh 6s ease-in-out infinite !important;
+}
+body.fb-ai-mode .fb-app .fb-el--hovered.fb-el--selected,
+body.fb-ai-mode .fb-el--selected.fb-el--hovered {
+  outline: calc(3px * var(--inv-scale, 1)) solid #84d26c !important;
+  outline-offset: calc(2px * var(--inv-scale, 1)) !important;
+  animation: fb-ai-sel-mesh 4.5s ease-in-out infinite !important;
+}
+body.fb-ai-mode .fb-app .fb-el--hovered:not(.fb-el--selected),
+body.fb-ai-mode .fb-el--hovered:not(.fb-el--selected) {
+  outline: calc(2px * var(--inv-scale, 1)) solid rgba(132,210,108,0.5) !important;
+  box-shadow: 0 0 0 calc(4px * var(--inv-scale, 1)) rgba(132,210,108,0.12) !important;
+}
+
+/* Clean up old keyframes — no-op so nothing breaks */
+@keyframes fb-ai-rotate-glow {
+  0%, 100% { /* no-op */ }
+}
+
+/* ── AI-mode: floating edit label ────────────────────────── */
+.fb-ai-edit-label {
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 150001;
+  pointer-events: none;
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 12px 4px 8px;
+  background: linear-gradient(135deg, var(--accent-light) 0%, #4ade80 100%);
+  color: #0a0a0a;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+  border-radius: 8px;
+  white-space: nowrap;
+  box-shadow: 0 2px 16px rgba(132,210,108,0.35), 0 0 32px rgba(132,210,108,0.15);
+  animation: fb-ai-label-in 0.25s cubic-bezier(0.16,1,0.3,1);
+}
+.fb-ai-edit-label__icon {
+  display: flex; align-items: center; justify-content: center;
+  color: #0a0a0a;
+}
+@keyframes fb-ai-label-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* AI-mode: pulse animation on elements being modified */
+@keyframes fb-ai-pulse {
+  0%, 100% { box-shadow: 0 0 0 calc(4px * var(--inv-scale, 1)) rgba(132,210,108,0.2), 0 0 calc(20px * var(--inv-scale, 1)) rgba(132,210,108,0.12); }
+  50%      { box-shadow: 0 0 0 calc(10px * var(--inv-scale, 1)) rgba(132,210,108,0.35), 0 0 calc(50px * var(--inv-scale, 1)) rgba(132,210,108,0.25); }
+}
+body.fb-ai-mode .fb-el--ai-building {
+  outline: calc(2px * var(--inv-scale, 1)) solid var(--accent-light) !important;
+  animation: fb-ai-pulse 1.2s ease-in-out infinite;
+  z-index: 100000 !important;
+}
+
+/* ── AI Panel: all elements float independently, no container bg ─── */
+.fb-ai-panel {
+  position: fixed; bottom: 82px; left: 50%; transform: translateX(-50%);
+  width: 560px; max-width: calc(100vw - 32px);
+  height: 540px; max-height: calc(100vh - 120px);
+  /* no background, no border, no shadow — children are floating pieces */
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: none;
+  box-shadow: none;
+  display: flex; flex-direction: column;
+  z-index: 150000;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  color: #e2e2e8;
+  animation: fb-ai-panel-in 0.32s cubic-bezier(0.16,1,0.3,1);
+  overflow: visible;
+  pointer-events: none; /* children opt-in to pointer events */
+  gap: 10px;
+}
+.fb-ai-panel > * { pointer-events: auto; }
+
+@keyframes fb-ai-panel-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(16px) scale(0.95); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+/* Solid surface — reused by head, input, selection */
+.fb-ai-panel__head,
+.fb-ai-panel__input-row,
+.fb-ai-panel__selection {
+  background: #000000;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  box-shadow:
+    0 16px 40px rgba(0,0,0,0.5),
+    inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+.fb-ai-panel__head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  flex-shrink: 0;
+  align-self: center;
+  border-radius: 999px;
+}
+.fb-ai-panel__head svg { color: var(--accent-light); flex-shrink: 0; }
+.fb-ai-panel__title { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+.fb-ai-panel__close {
+  width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: rgba(255,255,255,0.45);
+  border-radius: 8px; cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.fb-ai-panel__close:hover { background: rgba(255,255,255,0.10); color: #fff; }
+
+/* Messages scroll area itself is click-through; only bubbles catch clicks */
+.fb-ai-panel__messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px;
+  display: flex; flex-direction: column; gap: 10px;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent;
+  pointer-events: none;
+  /* fade top + bottom */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 14px,
+    #000 calc(100% - 14px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 14px,
+    #000 calc(100% - 14px),
+    transparent 100%
+  );
+}
+.fb-ai-panel__messages > * { pointer-events: auto; }
+
+.fb-ai-panel__empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  flex: 1; text-align: center; color: #e2e2e8; gap: 14px; padding: 24px 0;
+  pointer-events: none;
+}
+.fb-ai-panel__empty p {
+  font-size: 13px; line-height: 1.5; margin: 0;
+  background: #000000;
+  padding: 10px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  box-shadow: 0 16px 40px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06);
+  pointer-events: auto;
+}
+.fb-ai-panel__suggestions {
+  display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+  pointer-events: auto;
+}
+.fb-ai-panel__suggestions button {
+  padding: 8px 14px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  background: #000000;
+  color: var(--accent-light);
+  border: 1px solid rgba(132,210,108,0.35);
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, transform 0.18s, box-shadow 0.18s;
+  box-shadow: 0 10px 26px rgba(0,0,0,0.4);
+}
+.fb-ai-panel__suggestions button:hover {
+  background: #0a150a;
+  border-color: rgba(132,210,108,0.55);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(132,210,108,0.3);
+}
+
+/* Solid floating message bubbles */
+.fb-ai-panel__msg {
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 13px; line-height: 1.55;
+  max-width: 82%;
+  white-space: pre-wrap; word-break: break-word;
+  box-shadow: 0 14px 32px rgba(0,0,0,0.45);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.fb-ai-panel__msg--user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #5c9447 0%, #84d26c 100%);
+  color: #fff;
+  border-bottom-right-radius: 6px;
+  border-color: rgba(132,210,108,0.45);
+  box-shadow: 0 14px 32px rgba(92,148,71,0.45);
+}
+.fb-ai-panel__msg--assistant {
+  align-self: flex-start;
+  background: #000000;
+  color: #eef0f2;
+  border-bottom-left-radius: 6px;
+}
+.fb-ai-panel__msg--error {
+  background: #1a0808;
+  color: #fecaca;
+  border-color: rgba(239,68,68,0.45);
+}
+.fb-ai-panel__msg--loading {
+  padding: 12px 16px;
+}
+
+.fb-ai-panel__dots { display: inline-flex; gap: 4px; }
+.fb-ai-panel__dots span {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent-light);
+  animation: fb-ai-dot-bounce 1.2s infinite ease-in-out;
+}
+.fb-ai-panel__dots span:nth-child(2) { animation-delay: 0.15s; }
+.fb-ai-panel__dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes fb-ai-dot-bounce {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
+/* Build progress indicator */
+.fb-ai-panel__build-progress {
+  display: flex; flex-direction: column; gap: 6px; width: 100%;
+}
+.fb-ai-panel__build-bar {
+  width: 100%; height: 4px; border-radius: 2px;
+  background: rgba(132,210,108,0.15); overflow: hidden;
+}
+.fb-ai-panel__build-fill {
+  height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-light) 100%);
+  transition: width 0.2s ease-out;
+}
+.fb-ai-panel__build-label {
+  font-size: 11px; color: var(--accent-light); font-weight: 500;
+}
+
+.fb-ai-panel__input-row {
+  display: flex; align-items: flex-end; gap: 8px;
+  padding: 8px 10px 8px 14px;
+  flex-shrink: 0;
+  border-radius: 18px;
+}
+.fb-ai-panel__input {
+  flex: 1; resize: none;
+  border: none;
+  background: transparent;
+  color: #e2e2e8;
+  padding: 8px 4px; font-size: 13px;
+  line-height: 1.4; font-family: inherit;
+  min-height: 24px; max-height: 120px;
+  outline: none;
+}
+.fb-ai-panel__input::placeholder { color: rgba(255,255,255,0.40); }
+.fb-ai-panel__send {
+  width: 36px; height: 36px; border-radius: 50%; border: none;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-light) 60%, #4ade80 100%);
+  color: #fff; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  transition: transform 0.15s, box-shadow 0.15s;
+  box-shadow: 0 4px 14px rgba(92,148,71,0.45);
+}
+.fb-ai-panel__send:hover {
+  transform: translateY(-1px) scale(1.06);
+  box-shadow: 0 6px 20px rgba(132,210,108,0.55);
+}
+.fb-ai-panel__send:disabled {
+  opacity: 0.3; cursor: default; transform: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.fb-ai-panel__selection {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center; gap: 6px;
+  padding: 5px 12px;
+  font-size: 11px; font-weight: 500;
+  color: var(--accent-light);
+  border-radius: 999px;
+  flex-shrink: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  max-width: 100%;
+  border-color: rgba(132,210,108,0.30);
+}
+.fb-ai-panel__selection svg { flex-shrink: 0; color: var(--accent); }

@@ -16,14 +16,22 @@ function sanitizeStyleProps(styleProps) {
 function buildColorStyleUpdates(targetElement, value) {
   if (!targetElement || typeof value !== 'string' || !value.trim()) return null;
   if (targetElement.type === 'text') return { color: value };
-  if (targetElement.type === 'frame' || targetElement.type === 'loop') return { backgroundColor: value };
   if (targetElement.type === 'icon') {
     return getShapePresetKind(targetElement) === 'line'
       ? { strokeColor: value }
       : { color: value };
   }
+  // All container-like and form elements → backgroundColor (fill)
+  if (KNOWN_ELEMENT_TYPES.has(targetElement.type) || FORM_ELEMENT_TYPES.has(targetElement.type)) {
+    return { backgroundColor: value };
+  }
   return null;
 }
+
+const FORM_ELEMENT_TYPES = new Set([
+  'form', 'text-field', 'textarea-field', 'dropdown', 'checkbox',
+  'radio-group', 'file-upload', 'submit-button', 'captcha',
+]);
 
 export function createAssetDragPayload(assetType, asset) {
   if (!assetType || !isPlainObject(asset)) return '';
@@ -103,4 +111,49 @@ export function getAssetStyleUpdatesForElement(targetElement, payload) {
 
 export function canAssetApplyToElement(targetElement, payload) {
   return !!getAssetStyleUpdatesForElement(targetElement, payload);
+}
+
+/**
+ * Return asset binding entries for the style keys an asset would affect on this element.
+ * Shape: { 'styles.color': { assetType, assetId }, … } or null.
+ */
+export function getAssetBindingsForElement(targetElement, payload) {
+  if (!targetElement || !payload || typeof payload !== 'object') return null;
+  const assetId = typeof payload.id === 'string' ? payload.id : '';
+  if (!assetId) return null;
+
+  if (payload.assetType === 'color') {
+    const styleUpdates = buildColorStyleUpdates(targetElement, payload.value);
+    if (!styleUpdates) return null;
+    const bindings = {};
+    Object.keys(styleUpdates).forEach(key => {
+      bindings[`styles.${key}`] = { assetType: 'color', assetId };
+    });
+    return bindings;
+  }
+
+  if (payload.assetType === 'text-style') {
+    if (targetElement.type !== 'text') return null;
+    const styleProps = sanitizeStyleProps(payload.styleProps);
+    if (!Object.keys(styleProps).length) return null;
+    const bindings = {};
+    Object.keys(styleProps).forEach(key => {
+      bindings[`styles.${key}`] = { assetType: 'text-style', assetId };
+    });
+    return bindings;
+  }
+
+  if (payload.assetType === 'element-style') {
+    const sourceType = typeof payload.styleType === 'string' ? payload.styleType : 'element';
+    if (KNOWN_ELEMENT_TYPES.has(sourceType) && sourceType !== targetElement.type) return null;
+    const styleProps = sanitizeStyleProps(payload.styleProps);
+    if (!Object.keys(styleProps).length) return null;
+    const bindings = {};
+    Object.keys(styleProps).forEach(key => {
+      bindings[`styles.${key}`] = { assetType: 'element-style', assetId };
+    });
+    return bindings;
+  }
+
+  return null;
 }

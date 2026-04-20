@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { isAssetStorageComponentId, resolveElementWithVariables, useEditorStore } from '../store/editorStore';
-import { canAssetApplyToElement, createAssetDragPayload, FB_ASSET_PAYLOAD_FALLBACK, FB_ASSET_PAYLOAD_MIME, getAssetStyleUpdatesForElement } from '../store/assetStyles';
+import { canAssetApplyToElement, createAssetDragPayload, FB_ASSET_PAYLOAD_FALLBACK, FB_ASSET_PAYLOAD_MIME, getAssetStyleUpdatesForElement, getAssetBindingsForElement } from '../store/assetStyles';
 import { UIIcons } from '../components/UIIcons';
 import FillPicker from '../components/FillPicker';
 import GoogleFontPicker from '../components/GoogleFontPicker';
@@ -366,6 +366,8 @@ export default function ComponentsPanel() {
   const saveTextStyles = useEditorStore(s => s.saveTextStyles);
   const saveElementStyles = useEditorStore(s => s.saveElementStyles);
   const updateElementStyles = useEditorStore(s => s.updateElementStyles);
+  const setElementAssetBindings = useEditorStore(s => s.setElementAssetBindings);
+  const propagateAssetUpdate = useEditorStore(s => s.propagateAssetUpdate);
   const pushHistory = useEditorStore(s => s.pushHistory);
 
   // UI state
@@ -495,6 +497,8 @@ export default function ComponentsPanel() {
     const styleUpdates = getAssetStyleUpdatesForElement(selectedElement, payload);
     if (!styleUpdates) return;
     updateElementStyles(selectedElement.id, selection.bpId, styleUpdates);
+    const bindings = getAssetBindingsForElement(selectedElement, payload);
+    if (bindings) setElementAssetBindings(selectedElement.id, bindings);
     pushHistory();
   };
 
@@ -774,7 +778,10 @@ export default function ComponentsPanel() {
                 <div onClick={(e) => e.stopPropagation()}>
                   <FillPicker
                     value={style.value || '#000'}
-                    onChange={(v) => saveColorStyles((colorStyles ?? []).map((s) => s.id === style.id ? { ...s, value: v } : s))}
+                    onChange={(v) => {
+                      saveColorStyles((colorStyles ?? []).map((s) => s.id === style.id ? { ...s, value: v } : s));
+                      propagateAssetUpdate('color', style.id, v);
+                    }}
                     compact
                     popoverPlacement="right"
                   />
@@ -783,7 +790,7 @@ export default function ComponentsPanel() {
               subtitle: style.value,
               onCanvasDrag: (e) => handleAssetCanvasDrag(e, 'color', style),
               onDoubleClick: () => {
-                const payload = { assetType: 'color', value: style.value };
+                const payload = { assetType: 'color', id: style.id, value: style.value };
                 if (selectedSupportsAsset(payload)) applyAssetToSelection(payload);
               },
             }))}
@@ -819,7 +826,10 @@ export default function ComponentsPanel() {
                   {isEditing ? (
                     <TextStyleEditor
                       style={style}
-                      onChange={(updated) => saveTextStyles((textStyles ?? []).map((s) => s.id === style.id ? updated : s))}
+                      onChange={(updated) => {
+                        saveTextStyles((textStyles ?? []).map((s) => s.id === style.id ? updated : s));
+                        propagateAssetUpdate('text-style', style.id, updated.styleProps ?? {});
+                      }}
                     />
                   ) : null}
                 </div>
@@ -847,7 +857,7 @@ export default function ComponentsPanel() {
               subtitle: `${style.type || 'element'} style`,
               onCanvasDrag: (e) => handleAssetCanvasDrag(e, 'element-style', style),
               onDoubleClick: () => {
-                const payload = { assetType: 'element-style', styleType: style.type, styleProps: style.styleProps };
+                const payload = { assetType: 'element-style', id: style.id, styleType: style.type, styleProps: style.styleProps };
                 if (selectedSupportsAsset(payload)) applyAssetToSelection(payload);
               },
             }))}

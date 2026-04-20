@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useEditorStore } from '../store/editorStore';
+import { useEditorStore, getSelectionElementIds } from '../store/editorStore';
 import { UIIcons } from './UIIcons';
 import { ElementPickerGrid, FORM_ELEMENT_TYPES } from '../panels/ElementsPanel';
+import AIChatPanel from './AIChatPanel';
 
 const SHAPE_OPTIONS = [
   {
@@ -26,10 +27,11 @@ const SHAPE_OPTIONS = [
   },
 ];
 
-function ToolButton({ active = false, icon, title, openable = false, badge = null, className = '', onClick }) {
+function ToolButton({ active = false, icon, label, title, openable = false, badge = null, className = '', onClick }) {
   return (
-    <button type="button" className={`fb-bottom-toolbar__tool${active ? ' is-active' : ''}${className ? ` ${className}` : ''}`} onClick={onClick} title={title} aria-label={title}>
-      <span className="fb-bottom-toolbar__icon">{icon}</span>
+    <button type="button" className={`fb-bottom-toolbar__tool${active ? ' is-active' : ''}${label && !icon ? ' fb-bottom-toolbar__tool--labelled' : ''}${className ? ` ${className}` : ''}`} onClick={onClick} title={title} aria-label={title}>
+      {icon ? <span className="fb-bottom-toolbar__icon">{icon}</span> : null}
+      {label ? <span className="fb-bottom-toolbar__label">{label}</span> : null}
       {openable ? <span className="fb-bottom-toolbar__chevron">{UIIcons.chevronDown}</span> : null}
       {badge ? <span className="fb-bottom-toolbar__badge">{badge}</span> : null}
     </button>
@@ -70,7 +72,23 @@ export default function BottomToolbar({ showComments = true }) {
   const activeCommentId = useEditorStore((state) => state.activeCommentId);
   const activeSurface = useEditorStore((state) => state.activeSurface);
   const [openMenu, setOpenMenu] = useState(null);
+  const [aiOpen, setAiOpen] = useState(false);
   const wrapRef = useRef(null);
+  const aiEnabled = !!window.fbData?.aiEnabled;
+  const selection = useEditorStore((s) => s.selection);
+  const selectionIds = useMemo(() => getSelectionElementIds(selection), [selection]);
+
+  // Toggle body class for AI-mode selection styling
+  useEffect(() => {
+    document.body.classList.toggle('fb-ai-mode', aiOpen);
+    return () => document.body.classList.remove('fb-ai-mode');
+  }, [aiOpen]);
+
+  // Toggle body class for AI-mode + has-selection (dim overlay)
+  useEffect(() => {
+    document.body.classList.toggle('fb-ai-has-selection', aiOpen && selectionIds.length > 0);
+    return () => document.body.classList.remove('fb-ai-has-selection');
+  }, [aiOpen, selectionIds]);
 
   const unresolvedCount = useMemo(() => (comments ?? []).filter((entry) => !entry.resolved).length, [comments]);
   const elementToolActive = ['draw-frame', 'draw-image', 'draw-video', 'draw-text', 'draw-icon'].includes(activeCanvasTool);
@@ -191,7 +209,25 @@ export default function BottomToolbar({ showComments = true }) {
             }}
           />
         ) : null}
+
+        {aiEnabled ? (
+          <div className="fb-bottom-toolbar__separator" />
+        ) : null}
+        {aiEnabled ? (
+          <ToolButton
+            active={aiOpen}
+            icon={null}
+            label="AI"
+            title="AI Assistant"
+            className="fb-bottom-toolbar__ai-tool"
+            onClick={() => {
+              setOpenMenu(null);
+              setAiOpen((v) => !v);
+            }}
+          />
+        ) : null}
       </div>
+      {aiOpen ? <AIChatPanel open={aiOpen} onClose={() => setAiOpen(false)} /> : null}
     </div>
   );
 }

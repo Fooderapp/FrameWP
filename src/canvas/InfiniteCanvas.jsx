@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useCallback, useLayoutEffect, useMemo, useState } from 'react';
 import { useEditorStore, createFrame, createLoop, createForm, createFormTextField, createFormTextareaField, createFormRichTextEditor, createFormRadioGroup, createFormDropdown, createFormCheckbox, createFormFileUpload, createFormCaptcha, createFormSubmitButton, createImage, createVideo, createEmbed, createScrollSequence, createText, createIcon, createShapePreset, resolveElement, resolvePagePadding, resolvePageLayout, getSelectionElementIds, isElementSelected, getShapePresetKind, getVectorShapeData, getVectorShapePathD, reframeVectorShapeData, buildVectorShapeSvgMarkup, buildLineSvgMarkup, getLineEndpoints, moveVectorAnchor, updateVectorHandle, insertVectorAnchorAtSegment, removeVectorAnchor, toggleVectorPathClosed, setVectorAnchorMode, findClosestVectorSegment, scaleVectorShapeToBounds, readStoredElementClipboard, writeStoredElementClipboard, readStoredElementStyleClipboard, copyElementStylesToStoredClipboard, pasteStoredElementStylesToElement, applyAnimationPreviewPatch, getAnimationEditorPreviewPatch } from '../store/editorStore';
-import { getAssetStyleUpdatesForElement, parseAssetDragPayload } from '../store/assetStyles';
+import { getAssetStyleUpdatesForElement, getAssetBindingsForElement, parseAssetDragPayload } from '../store/assetStyles';
 import Artboard from './Artboard';
 import VariantInteractionModal from '../components/VariantInteractionModal';
 import { buildGradient, parseGradient } from '../components/FillPicker';
@@ -6107,6 +6107,8 @@ export default function InfiniteCanvas() {
     const assetStyleUpdates = getAssetStyleUpdatesForElement(targetElement, assetPayload);
     if (assetStyleUpdates) {
       useEditorStore.getState().updateElementStyles(targetElementId, targetBpId, assetStyleUpdates);
+      const assetBindings = getAssetBindingsForElement(targetElement, assetPayload);
+      if (assetBindings) useEditorStore.getState().setElementAssetBindings(targetElementId, assetBindings);
       pushHistory();
       return;
     }
